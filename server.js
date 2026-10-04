@@ -52,6 +52,7 @@ const Q = {
        OR orders.str IS NOT excluded.str OR orders.kurz IS NOT excluded.kurz OR orders.start IS NOT excluded.start OR orders.ende IS NOT excluded.ende`),
   upPruef: db.prepare('INSERT INTO pruef(auftrag,items,seq) VALUES(?,?,?) ON CONFLICT(auftrag) DO UPDATE SET items=excluded.items, seq=excluded.seq WHERE pruef.items IS NOT excluded.items'),
   wipePruef: db.prepare("UPDATE pruef SET items='[]', seq=? WHERE items<>'[]'"),
+  getErg: db.prepare('SELECT doc, seq FROM ergebnis WHERE auftrag=?'),
   getDev: db.prepare('SELECT team, sub FROM dev WHERE did=?'),
   seenDev: db.prepare('UPDATE dev SET seen=? WHERE did=?'),
   upDev: db.prepare('INSERT INTO dev(did,team,sub,seen) VALUES(?,?,?,?) ON CONFLICT(did) DO UPDATE SET team=excluded.team, sub=excluded.sub, seen=excluded.seen'),
@@ -253,9 +254,16 @@ async function api(req, res, url) {
   }
   let mm;
   if ((mm = p.match(/^\/api\/ergebnis\/(\d{1,20})$/)) && m === 'PUT') {          // Monteur: Ergebnis eines Auftrags
-    const d = cleanErg(mm[1], await readBody(req, 1e6));
-    const sq = await batched(() => { seq++; Q.upErg.run(mm[1], d.team, JSON.stringify(d), seq); return seq; });
-    notify(); return send(req, res, 200, { ok: true, sq });
+    // _b = Stand (Änderungsnummer), auf dem die Eingabe beruht. Hat inzwischen ein anderes Gerät gespeichert, gewinnt der Server:
+    // die Eingabe wird abgelehnt (409) und das Gerät bekommt den aktuellen Stand zurück. Ohne _b (alte App-Version): wie bisher.
+    const b = await readBody(req, 1e6), d = cleanErg(mm[1], b), base = b._b == null ? null : Number(b._b);
+    const r = await batched(() => {
+      const cur = Q.getErg.get(mm[1]);
+      if (base !== null && (cur ? cur.seq : 0) !== base) return { cur: cur || null };
+      seq++; Q.upErg.run(mm[1], d.team, JSON.stringify(d), seq); return { sq: seq };
+    });
+    if (r.sq == null) return send(req, res, 409, { error: 'Inzwischen auf einem anderen Gerät geändert', doc: r.cur ? JSON.parse(r.cur.doc) : null, sq: r.cur ? r.cur.seq : 0 });
+    notify(); return send(req, res, 200, { ok: true, sq: r.sq });
   }
   // Push: öffentlicher Schlüssel, Gerät/Team/Abo melden, Bestätigen
   if (p === '/api/push/key' && m === 'GET') return send(req, res, 200, { key: vapid.pub });
