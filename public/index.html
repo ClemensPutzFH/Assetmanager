@@ -91,21 +91,30 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .gkpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(6.5rem,1fr));gap:8px}.kpi{background:var(--bg);border-radius:8px;padding:8px 10px}.kv{font-size:1.25rem;font-weight:700;margin-top:2px}.kv.er{color:var(--er)}
 .ghead{display:flex;gap:8px 12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.ghead .chips{margin:0}
 .gsub{display:flex;gap:8px 16px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:10px 0 4px}.gsub .chips{margin:0;align-items:center}.glg{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:.875rem;color:var(--mu)}
-.grows{display:grid;grid-template-columns:fit-content(40%) minmax(3rem,1fr) max-content;column-gap:12px;margin-top:4px}
-.grows .grow{display:grid;grid-template-columns:subgrid;grid-column:1/-1;align-items:center;padding:10px 6px;margin:0 -6px;background:none;border:0;border-radius:0;color:var(--tx);text-align:left;font:inherit}.grows .grow+.grow{border-top:1px solid var(--bd)}
+.grows{display:grid;grid-template-columns:fit-content(40%) minmax(3rem,1fr) max-content auto;column-gap:12px;margin-top:4px}.grr{display:grid;grid-template-columns:subgrid;grid-column:1/-1;align-items:center}.grr+.grr{border-top:1px solid var(--bd)}
+.grows .grow{display:grid;grid-template-columns:subgrid;grid-column:1/4;align-items:center;padding:10px 6px;margin:0 -6px;background:none;border:0;border-radius:0;color:var(--tx);text-align:left;font:inherit}
 .gn{font-weight:600;overflow-wrap:anywhere}.gv{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}.gnk{display:block;font-size:.75rem;color:var(--er);font-weight:600}
 .gtw{overflow-x:auto;margin-top:8px}.gt{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:.875rem}.gt th,.gt td{padding:8px 10px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}.gt th{color:var(--mu);font-weight:600}.gt .n{text-align:right}.gt tfoot td{font-weight:700;border-bottom:0}.gt tbody tr{cursor:pointer}.gt .er{color:var(--er)}
 .tip{position:fixed;left:0;top:0;z-index:20;display:none;pointer-events:none;background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;box-shadow:0 4px 16px rgba(0,0,0,.18);font-size:.875rem;min-width:9rem}.tip .tr{display:flex;align-items:center;gap:6px;margin-top:3px}.tip .lk{display:inline-block;width:12px;height:3px;border-radius:2px}.tip .er{color:var(--er)}
 @media(hover:hover){.grows .grow:not(:disabled):hover{filter:none;background:var(--bg)}.gt tbody tr:hover{background:var(--bg)}}
-@media(max-width:599px){.grows{display:block}.grows .grow{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"n v" "b b";gap:6px 12px;width:calc(100% + 12px)}.grows .gn{grid-area:n}.grows .gv{grid-area:v}.grows .gbar{grid-area:b}}
+@media(max-width:599px){.grows{display:block}.grr{grid-template-columns:minmax(0,1fr) auto;column-gap:8px}.grows .grow{grid-column:1;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"n v" "b b";gap:6px 12px}.grows .gn{grid-area:n}.grows .gv{grid-area:v}.grows .gbar{grid-area:b}}
 @media(min-width:1100px){.gpage{display:grid;grid-template-columns:minmax(0,24rem) minmax(0,1fr);gap:16px;align-items:start}.gpage>.card{margin:0}}
+/* ---- Nachrichten / Push ---- */
+.gmsg{padding:8px 10px;font-size:1.05rem;line-height:1.2}.gmsg.on{border-color:var(--ac);background:color-mix(in srgb,var(--ac) 10%,var(--card))}.gms{display:block;font-size:.75rem;color:var(--mu);margin-top:1px}
+.mdlg{border-top:6px solid var(--ac)}.mtx{font-size:1.125rem;font-weight:600;white-space:pre-wrap;overflow-wrap:break-word}.dlg p:empty{display:none}.dlg textarea{margin:8px 0 4px}
+.amsg{margin:8px 0;padding:8px 10px;border:1px solid var(--ac);border-radius:8px;font-size:.875rem}.amsg>div{margin-top:2px;white-space:pre-wrap}.amsg button{margin-top:8px;padding:6px 10px;font-size:.875rem}
+.msg.pb{display:flex;gap:8px 12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.msg.pb button{margin:0;padding:8px 14px;font-size:.875rem}
 </style></head><body><header class="top" id="top"></header><main id="app"></main>
 <script>
 const app=document.getElementById('app');
 const el=(t,p,...c)=>{const e=document.createElement(t);for(const k in p||{}){const v=p[k];if(v==null||v===false)continue;if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(k==='value')e.value=v;else e.setAttribute(k,v)}e.append(...c.flat().filter(x=>x!=null&&x!==false));return e};
 let since=0,sk='',teamList=[],ordersMap=new Map(),ersSq=new Map(),plC=null,again=false,tok='',net=true,polling=false,cacheT=null,chunks=new Map(),meta=null,ready=false,canWrite=true,err='',msg='',busy=false,arm=false,q='',ft='',openA=null,pl={},pmeta=null,pcache=new Map(),armP=false,sy=0,ers=new Map(),pend=new Map(),wq=new Map(),dtab='ue',fs='',armA=false,mf='',edi=null,edt='',edE=false,unlocked=false,pinv='',pinE=false,tH='',tM='',tE='',tD='',tV='';
 let marks=new Map(),dha='',rf='',rv='',rb='',armM=false,und=null,undT=null;
-let upTok='',upPin='',upE=false;   // Upload-PIN: Token gilt nur, solange der Tab „Upload“ offen ist
+let upTok='',upPin='',upE=false;
+// Nachrichten/Push: msgs (Monteur: offene seines Teams; Disponent: letzte 24 h), devs = Geräte je Team [alle, mit Push]
+let msgs=[],devs={},pcfg={nag:5,hours:12},pushErr='',did='',ackQ=[],regT=null;
+try{did=localStorage.getItem('did')||'';ackQ=JSON.parse(localStorage.getItem('ackq')||'[]');regT=localStorage.getItem('regteam')}catch(e){}
+if(!/^[a-f0-9]{32}$/.test(did)){did=[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,'0')).join('');try{localStorage.setItem('did',did)}catch(e){}}   // Upload-PIN: Token gilt nur, solange der Tab „Upload“ offen ist
 try{dha=localStorage.getItem('dha')||''}catch(e){}
 let ses={role:null,team:null};
 try{ses=JSON.parse(localStorage.getItem('ses'))||ses}catch(e){}
@@ -371,18 +380,18 @@ const enc=encodeURIComponent;
 const skey=()=>ses.role==='dispo'?'dispo':ses.role==='monteur'?'m:'+(ses.team||''):'';
 function rebuildChunks(){chunks=new Map();for(const r of ordersMap.values()){let c=chunks.get(r.team);if(!c)chunks.set(r.team,c={team:r.team,rows:[]});c.rows.push(r)}}
 async function loadCacheFor(key){
-  ordersMap=new Map();ers=new Map();ersSq=new Map();marks=new Map();since=0;teamList=[];meta=null;pmeta=null;rebuildChunks();
+  ordersMap=new Map();ers=new Map();ersSq=new Map();marks=new Map();since=0;teamList=[];meta=null;pmeta=null;msgs=[];devs={};rebuildChunks();
   const c=await idb.get('st:'+key);
   if(c){
     for(const r of c.orders||[])ordersMap.set(r.auftrag,r);
     for(const [a,x] of Object.entries(c.ergebnis||{})){ers.set(a,x.doc);ersSq.set(a,x.sq)}
     for(const [a,x] of Object.entries(c.marks||{}))marks.set(a,x);
-    teamList=c.teams||[];meta=c.meta||null;pmeta=c.pmeta||null;since=c.since||0;rebuildChunks();ready=true;
+    teamList=c.teams||[];meta=c.meta||null;pmeta=c.pmeta||null;since=c.since||0;msgs=c.msgs||[];devs=c.devs||{};if(c.pcfg)pcfg=c.pcfg;rebuildChunks();ready=true;
   }
 }
 function saveCache(){
   if(!sk)return;
-  idb.set('st:'+sk,{since,orders:[...ordersMap.values()],ergebnis:Object.fromEntries([...ers].map(([a,d])=>[a,{doc:d,sq:ersSq.get(a)||0}])),teams:teamList,meta,pmeta,marks:Object.fromEntries(marks)}).catch(()=>{});
+  idb.set('st:'+sk,{since,orders:[...ordersMap.values()],ergebnis:Object.fromEntries([...ers].map(([a,d])=>[a,{doc:d,sq:ersSq.get(a)||0}])),teams:teamList,meta,pmeta,marks:Object.fromEntries(marks),msgs,devs,pcfg}).catch(()=>{});
 }
 // Abgleich: nur Änderungen seit der letzten Änderungsnummer holen (Monteur: nur das eigene Team)
 async function poll(){
@@ -392,7 +401,7 @@ async function poll(){
   try{
     if(key!==sk){sk=key;await loadCacheFor(key);render()}
     const team=ses.role==='monteur'?(ses.team||'-'):'';
-    const j=await api('GET',`/api/sync?since=${since}&team=${enc(team)}`,undefined,20000);
+    const j=await api('GET',`/api/sync?since=${since}&team=${enc(team)}`+(ses.role==='monteur'?'&did='+did:''),undefined,20000);
     net=true;
     if(!j.same){
       if(j.full){ordersMap=new Map();ers=new Map();ersSq=new Map();marks=new Map()}
@@ -402,6 +411,7 @@ async function poll(){
       if(j.full||(j.orders&&j.orders.length))rebuildChunks();
       const oa=(pmeta&&pmeta.at)||0;
       teamList=j.teams;meta=j.meta.upload||null;pmeta=j.meta.pruef||null;since=j.seq;ready=true;
+      if(j.msgs)msgs=j.msgs.map(m=>ackQ.includes(m.id)?{...m,ack:true}:m);if(j.devs)devs=j.devs;if(j.cfg)pcfg=j.cfg;
       clearTimeout(cacheT);cacheT=setTimeout(saveCache,1500);
       if(((pmeta&&pmeta.at)||0)!==oa){
         if(ses.role==='monteur')prefetch().then(()=>{if(openA)showOrder(openA)});
@@ -412,6 +422,8 @@ async function poll(){
     }
     if(off&&!pend.size)off=false;
     if(pend.size)flushAll();
+    if(ackQ.length)flushAcks();
+    checkMsg();
   }catch(e){if(e.net)net=false;else if(!/^Nicht angemeldet/.test(e.message||''))err=errTxt(e)}
   polling=false;
   if(again){again=false;poll()}
@@ -535,21 +547,116 @@ function teamCard(list,T,at){
   if(gtab){
     const tr=(t,name)=>{const op=t.n-t.done-t.teil;return el('tr',name?{}:{onclick:()=>openTeam(t.team)},
       el('td',{},name||t.team),...[t.n,t.done,t.teil,op].map(v=>el('td',{class:'n'},fmtN(v))),el('td',{class:'n'+(t.nok?' er':'')},t.nok?'✗ '+fmtN(t.nok):'0'),
-      el('td',{class:'n'},pct(t.done,t.n)+' %'),el('td',{class:'n'},t.n>t.done?(at?'≥ '+fmtN(pensum(t.n-t.done,at)):'Frist vorbei'):'✓'))};
+      el('td',{class:'n'},pct(t.done,t.n)+' %'),el('td',{class:'n'},t.n>t.done?(at?'≥ '+fmtN(pensum(t.n-t.done,at)):'Frist vorbei'):'✓'),
+      el('td',{},name?'':[msgBtn(t),activeMsg(t.team)&&el('span',{class:'gms'},msgStat(activeMsg(t.team),t.team))]))};
     c.append(el('div',{class:'gtw'},el('table',{class:'gt'},
-      el('thead',{},el('tr',{},['Team','Aufträge','Erledigt','In Arbeit','Offen','Nicht OK','Erledigt %','Pensum / Woche'].map((h,i)=>el('th',{class:i?'n':null},h)))),
+      el('thead',{},el('tr',{},['Team','Aufträge','Erledigt','In Arbeit','Offen','Nicht OK','Erledigt %','Pensum / Woche','Nachricht'].map((h,i)=>el('th',{class:i&&i<8?'n':null},h)))),
       el('tbody',{},sorted.map(t=>tr(t))),el('tfoot',{},tr(T,'Gesamt')))));
   }else{
     c.append(el('div',{class:'grows'},sorted.map(t=>{
       const op=t.n-t.done-t.teil,p=pct(t.done,t.n),pens=t.n>t.done?pensum(t.n-t.done,at):0;
       const lab=`${t.team}: ${p} % erledigt, ${t.done} von ${t.n}, ${t.teil} in Arbeit, ${op} offen`+(t.nok?`, ${t.nok} Nicht OK`:'')+(pens?`, mindestens ${pens} Prüfungen pro Woche nötig`:'')+'. Öffnet die Aufträge des Teams.';
-      return el('button',{class:'grow','aria-label':lab,onclick:()=>openTeam(t.team),onpointermove:e=>tipShow(e,t,p,op,pens),onpointerleave:tipHide},
+      const am=activeMsg(t.team);
+      return el('div',{class:'grr'},el('button',{class:'grow','aria-label':lab,onclick:()=>openTeam(t.team),onpointermove:e=>tipShow(e,t,p,op,pens),onpointerleave:tipHide},
         el('span',{class:'gn'},t.team),gbar(t),
-        el('span',{class:'gv'},el('b',{},p+' %'),el('span',{class:'mu'},` ${fmtN(t.done)}/${fmtN(t.n)}`),t.nok>0&&el('span',{class:'gnk'},`✗ ${fmtN(t.nok)} Nicht OK`)));
+        el('span',{class:'gv'},el('b',{},p+' %'),el('span',{class:'mu'},` ${fmtN(t.done)}/${fmtN(t.n)}`),t.nok>0&&el('span',{class:'gnk'},`✗ ${fmtN(t.nok)} Nicht OK`),am&&el('span',{class:'gms'},'📣 '+msgStat(am,t.team)))),
+        msgBtn(t));
     })));
   }
-  c.append(el('p',{class:'mu'},'Tippe auf ein Team, um seine Aufträge in der Übersicht zu sehen.'));
+  c.append(el('p',{class:'mu'},'Tippe auf ein Team, um seine Aufträge in der Übersicht zu sehen. Mit 📣 schickst du dem Team eine Nachricht aufs Handy.'));
   return c;
+}
+// ---- Nachrichten an Teams ----
+const activeMsg=team=>msgs.find(m=>m.team===team&&!m.closed&&Date.now()-m.at<pcfg.hours*3600e3);
+const nGer=n=>n===1?'1 Gerät':fmtN(n)+' Geräte';
+function msgStat(m,team){const d=devs[team]||[0,0],a=Math.min(m.acks|0,d[0]);return !d[0]?'gesendet '+dts(m.at):a>=d[0]?'✓ alle bestätigt':`${a} von ${fmtN(d[0])} ${d[0]===1?'Gerät':'Geräten'} bestätigt`}
+const msgBtn=t=>{const am=activeMsg(t.team);return el('button',{class:'gmsg'+(am?' on':''),title:'Nachricht an '+t.team,'aria-label':`Nachricht an Team ${t.team} senden`+(am?' (offene Nachricht vorhanden)':''),onclick:e=>{e.stopPropagation();msgDialog(t)}},'📣')};
+const sdlg=el('dialog',{class:'dlg'});document.body.append(sdlg);
+function msgDialog(t){
+  tipHide();
+  const d=devs[t.team]||[0,0],am=activeMsg(t.team),er=el('p',{class:'mu er'});
+  const ta=el('textarea',{rows:'4',maxlength:'300','aria-label':'Nachricht'});
+  ta.value=`Bitte mit den Prüfberichten schneller weitermachen! Aktueller Stand: ${pct(t.done,t.n)} % erledigt (${fmtN(t.done)} von ${fmtN(t.n)}).`;
+  const sb=el('button',{class:'sv'},am?'Neu senden':'Senden');
+  sb.onclick=async()=>{
+    const text=ta.value.trim();if(!text||sb.disabled)return;
+    sb.disabled=true;sb.textContent='Sende …';er.textContent='';
+    try{const r=await api('POST','/api/msg',{team:t.team,text},30000);sdlg.close();err='';
+      msg=`📣 Nachricht an ${t.team} gesendet – `+(r.pushed?`Benachrichtigung an ${nGer(r.pushed)} zugestellt.`:'kein Gerät mit Benachrichtigungen erreicht, sie erscheint beim Öffnen der App.');poll();render()}
+    catch(e){er.textContent=e.net?'Keine Verbindung zum Server':errTxt(e);sb.disabled=false;sb.textContent=am?'Neu senden':'Senden'}
+  };
+  sdlg.replaceChildren(el('div',{class:'dlg-b'},
+    el('div',{class:'dlg-t'},'📣 Nachricht an '+t.team),
+    el('p',{class:'mu'},d[0]?`${nGer(d[0])} angemeldet, davon ${fmtN(d[1])} mit Benachrichtigungen.`:'Noch kein Gerät dieses Teams angemeldet.'),
+    d[0]>d[1]&&el('p',{class:'mu er'},d[1]?`${nGer(d[0]-d[1])} ohne Benachrichtigungen – dort erscheint die Nachricht erst beim Öffnen der App.`:'Kein Gerät hat Benachrichtigungen aktiviert – die Nachricht erscheint erst beim Öffnen der App.'),
+    am&&el('div',{class:'amsg'},el('b',{},'Offene Nachricht von '+dts(am.at)),el('div',{},am.text),el('div',{class:'mu'},msgStat(am,t.team)),
+      el('button',{class:'er',onclick:async()=>{try{await api('POST','/api/msg/close',{id:am.id});sdlg.close();msg='Erinnerung an '+t.team+' beendet.';poll();render()}catch(e){er.textContent=errTxt(e)}}},'Erinnerung beenden')),
+    ta,
+    el('p',{class:'mu'},`Die Monteure bekommen eine Benachrichtigung, die ${pcfg.nag===1?'jede Minute':'alle '+pcfg.nag+' Minuten'} wiederkommt, bis sie auf „Bestätigen“ tippen (längstens ${pcfg.hours} Stunden).`+(am?' Eine neue Nachricht ersetzt die offene.':'')),
+    er,
+    el('div',{class:'ob'},sb,el('button',{onclick:()=>sdlg.close()},'Abbrechen'))));
+  sdlg.showModal();ta.focus();
+}
+// Monteur: offene Nachricht als Fenster, das nur mit „Bestätigen“ zugeht
+const mdlg=el('dialog',{class:'dlg mdlg'});document.body.append(mdlg);
+let mOpen=null;
+mdlg.addEventListener('cancel',e=>e.preventDefault());
+mdlg.addEventListener('close',()=>{if(mOpen){mOpen=null;setTimeout(checkMsg,400)}});   // schließt der Browser es trotzdem -> wieder öffnen
+const openMsgs=()=>ses.role==='monteur'&&ses.team?msgs.filter(m=>m.team===ses.team&&!m.ack&&!m.closed&&Date.now()-m.at<pcfg.hours*3600e3):[];
+const closeNotes=()=>{if('serviceWorker' in navigator)navigator.serviceWorker.getRegistration().then(r=>r&&r.getNotifications?r.getNotifications({tag:'nachricht'}):[]).then(ns=>ns.forEach(n=>n.close())).catch(()=>{})};
+function checkMsg(){
+  const m=openMsgs()[0];
+  if(!m){if(mdlg.open){mOpen=null;mdlg.close()}if(ses.role==='monteur')closeNotes();return}
+  if(mdlg.open&&mOpen&&mOpen.id===m.id)return;
+  mOpen=m;
+  mdlg.replaceChildren(el('div',{class:'dlg-b',role:'alertdialog','aria-labelledby':'mdt'},
+    el('div',{class:'dlg-t',id:'mdt'},'📣 Nachricht vom Disponenten'),
+    el('p',{class:'mtx'},m.text),
+    el('p',{class:'mu'},'Gesendet '+dts(m.at)+'. Bitte bestätige, dass du die Nachricht gelesen hast.'),
+    el('div',{class:'ob'},el('button',{class:'sv',onclick:()=>ackMsg(m)},'✓ Gelesen – bestätigen'))));
+  if(!mdlg.open&&typeof mdlg.showModal==='function'){try{mdlg.showModal();mdlg.querySelector('.sv').focus()}catch(e){}}
+}
+function ackMsg(m){
+  m.ack=true;if(!ackQ.includes(m.id))ackQ.push(m.id);try{localStorage.setItem('ackq',JSON.stringify(ackQ))}catch(e){}
+  mOpen=null;mdlg.close();closeNotes();flushAcks();checkMsg();
+}
+async function flushAcks(){   // Bestätigungen senden (ohne Netz gemerkt, später automatisch)
+  for(const id of [...ackQ]){
+    try{await api('POST','/api/msg/ack',{id,did})}catch(e){if(e.net)break}
+    ackQ=ackQ.filter(x=>x!==id);try{localStorage.setItem('ackq',JSON.stringify(ackQ))}catch(e){}
+  }
+}
+// Push-Abo: Gerät + Team beim Server melden; ask=true nur nach Tipp auf „Aktivieren“ (Browser verlangt das)
+const pushOk=()=>'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;
+const b64u=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');return Uint8Array.from(atob(s+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0))};
+async function pushSync(ask){
+  const team=ses.role==='monteur'&&ses.team?ses.team:null;
+  if(!team&&!regT)return;
+  let sub=null;pushErr='';
+  if(team&&pushOk()){
+    try{
+      if(ask&&Notification.permission==='default')await Notification.requestPermission();
+      if(Notification.permission==='granted'){
+        const reg=await Promise.race([navigator.serviceWorker.ready,new Promise((_,no)=>setTimeout(()=>no(new Error('Service Worker nicht bereit')),10000))]);
+        const key=(await api('GET','/api/push/key')).key;let pk='';try{pk=localStorage.getItem('pk')||''}catch(e){}
+        sub=await reg.pushManager.getSubscription();
+        if(sub&&pk!==key){await sub.unsubscribe();sub=null}          // Server hat neue Schlüssel -> neu abonnieren
+        if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(key)});
+        try{localStorage.setItem('pk',key)}catch(e){}
+      }
+    }catch(e){if(!e.net)pushErr='Benachrichtigungen konnten nicht eingerichtet werden ('+errTxt(e)+').'}
+  }
+  try{await api('POST','/api/push/sub',{did,team,sub:sub?sub.toJSON():null});regT=team;try{team?localStorage.setItem('regteam',team):localStorage.removeItem('regteam')}catch(e){}}catch(e){}
+  render();
+}
+function pushBanner(){
+  if(!pushOk()){
+    if(/iPhone|iPad|iPod/.test(navigator.userAgent)&&!navigator.standalone)return el('div',{class:'msg'},'🔔 Damit dich Nachrichten vom Disponenten erreichen: App über „Teilen → Zum Home-Bildschirm“ hinzufügen, von dort öffnen und Benachrichtigungen aktivieren.');
+    return window.isSecureContext===false?el('div',{class:'msg'},'🔔 Benachrichtigungen sind nur über eine sichere Verbindung (HTTPS) möglich.'):null;
+  }
+  if(Notification.permission==='granted')return pushErr?el('div',{class:'msg er'},pushErr):null;
+  if(Notification.permission==='denied')return el('div',{class:'msg'},'🔕 Benachrichtigungen sind blockiert – Nachrichten vom Disponenten siehst du nur bei geöffneter App. Freigeben in den Einstellungen von Browser bzw. Handy.');
+  return el('div',{class:'msg pb'},el('span',{},'🔔 Benachrichtigungen aktivieren, damit dich Nachrichten vom Disponenten auch bei geschlossener App erreichen.'),el('button',{class:'pri',onclick:()=>pushSync(true)},'Aktivieren'));
 }
 // Tooltip (nur Maus) – alle Werte stehen zusätzlich in Beschriftung und Tabelle
 const tip=el('div',{class:'tip'});document.body.append(tip);
@@ -614,7 +721,7 @@ addEventListener('popstate',()=>{
   else closeA();
 });
 document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!openA||dlg.open)return;e.preventDefault();if(edi!==null){edi=null;render()}else if(armA){armA=false;render()}else setTimeout(requestBack,0)});   // verzögert: sonst schließt derselbe Esc-Druck den neuen Dialog gleich wieder
-const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;upTok='';upPin='';upE=false;save();render();poll();prefetch()};
+const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;upTok='';upPin='';upE=false;save();render();poll();prefetch();pushSync(false)};
 
 function render(){
   const f=document.activeElement,k=f&&f.dataset&&f.dataset.keep,pos=k?f.selectionStart:0;
@@ -710,6 +817,7 @@ function draw(){
     const box=el('div',{});
     const sr=search(v=>{q=v;box.replaceChildren(list(view(),false))});sr.append(fzBtn());   // Schriftgröße neben der Suche: Kopfzeile bleibt unverändert
     const ctl=el('div',{class:'ctl'},chips([['','Alle',rows.length],['open','Offen',rows.length-nD],['done','Erledigt',nD],['nok','Nicht OK',nN]],mf,k=>{mf=k}),sr);
+    const pbn=pushBanner();if(pbn)app.append(pbn);
     app.append(rows.length?el('div',{class:'mtop'},fortschritt(rows.length,nD),ctl):ctl,box);
     box.append(list(view(),false));
     if(meta)app.append(el('p',{class:'mu'},'Stand: '+new Date(meta.at).toLocaleString('de-AT')));
@@ -809,7 +917,10 @@ addEventListener('offline',()=>{net=false;render()});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(pend.size)flushAll();poll()}});
 setInterval(()=>{if(!document.hidden)poll()},30000);   // Sicherheitsnetz; normalerweise kommt der Hinweis live vom Server
 render();
-poll().then(()=>{flushAll();prefetch()});
+poll().then(()=>{flushAll();prefetch();pushSync(false)});
 events();
-if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/sw.js').catch(()=>{});
+  navigator.serviceWorker.addEventListener('message',e=>{if(e.data&&e.data.t==='msg')poll()});   // Push angekommen / bestätigt -> sofort abgleichen
+}
 </script></body></html>

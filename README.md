@@ -15,6 +15,9 @@ Dann im Browser `http://localhost:3000` öffnen.
 | `DISPO_PIN` | PIN der Disponenten (**bitte ändern**) | `2510` |
 | `UPLOAD_PIN` | Zusätzlicher PIN für den Tab „Upload“ (Hochladen und Löschen) (**bitte ändern**) | `1025` |
 | `DATA_DIR` | Ordner für `data.db` und Sicherungen | `./data` |
+| `NAG_MIN` | Push-Erinnerung alle X Minuten wiederholen, bis das Gerät bestätigt | `5` |
+| `MSG_HOURS` | Nach so vielen Stunden hört eine Erinnerung von selbst auf | `12` |
+| `PUSH_CONTACT` | Kontakt für die Push-Dienste (`mailto:…` oder `https://…`), am besten eine echte Adresse der IT | `mailto:admin@example.com` |
 
 Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 
@@ -47,6 +50,18 @@ Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 - Die **Disponenten-PIN wird auf dem Server geprüft** (5 Fehlversuche pro 10 Minuten und IP). Export und Abhaken gehen nur mit PIN. Die Anmeldung gilt 12 Stunden und übersteht einen Neustart.
 - **Upload und Löschen** brauchen zusätzlich den **Upload-PIN**. Er wird bei jedem Öffnen des Tabs „Upload“ abgefragt, ebenfalls auf dem Server geprüft (5 Fehlversuche pro 10 Minuten) und gilt höchstens 30 Minuten.
 - **Monteure und Lesezugriffe brauchen keine Anmeldung.** Wer die Adresse kennt, kann Aufträge lesen und Ergebnisse schreiben. Für den Einsatz im Internet daher den Zugang vorschalten, z. B. Basic-Auth im Reverse Proxy oder nur über VPN/Firmennetz.
+
+## Nachrichten an Teams (Push-Benachrichtigungen)
+- Im Tab **Fortschritt** hat jedes Team einen 📣-Button. Der Disponent schickt damit eine Nachricht (Text vorbelegt, änderbar) an alle Geräte des Teams.
+- Auf den Handys erscheint eine **echte Benachrichtigung**, auch bei geschlossener App: bleibt stehen, vibriert, kommt nach dem Wegwischen sofort wieder und wird alle `NAG_MIN` Minuten erneut zugestellt – bis auf dem Gerät **„Bestätigen“** getippt wird (direkt in der Benachrichtigung oder im Fenster in der App). Bei offener App erscheint zusätzlich ein Fenster, das sich nur mit „Bestätigen“ schließen lässt.
+- Bestätigt wird **je Gerät**. Der Disponent sieht „x von y Geräten bestätigt“ und kann eine Erinnerung vorzeitig beenden. Eine neue Nachricht an dasselbe Team ersetzt die offene.
+- Monteure müssen Benachrichtigungen einmal erlauben (Hinweis mit Button „Aktivieren“ in der Teamansicht).
+- **Voraussetzungen:**
+  - **HTTPS** (siehe Betrieb) – ohne sichere Verbindung gibt es keine Benachrichtigungen.
+  - Der **Server braucht Internetzugang** zu den Push-Diensten (`fcm.googleapis.com` für Android/Chrome/Edge, `web.push.apple.com` für iPhone/Mac, `updates.push.services.mozilla.com` für Firefox, `*.notify.windows.com`). Andere Adressen ruft der Server nicht auf.
+  - **iPhone/iPad:** nur ab iOS 16.4 und nur, wenn die App über „Teilen → Zum Home-Bildschirm“ installiert und von dort geöffnet wird.
+  - Energiesparfunktionen mancher Android-Handys können Benachrichtigungen verzögern; ggf. Akku-Optimierung für den Browser ausschalten.
+- Die Schlüssel für die Push-Dienste (VAPID) entstehen beim ersten Start und liegen in `data.db`. Geht die Datei verloren, melden sich die Geräte beim nächsten Öffnen der App automatisch neu an.
 
 ## Offline
 Die Oberfläche startet auch ohne Netz (nach dem ersten Öffnen mit Netz). Eingaben der Monteure werden im Gerät gesichert und automatisch gesendet, sobald der Server wieder erreichbar ist. Den letzten Stand der Aufträge und die Prüfobjekte des eigenen Teams merkt sich das Gerät in IndexedDB.

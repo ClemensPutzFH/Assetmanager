@@ -1,5 +1,5 @@
 // Service Worker: App-Oberfläche offline verfügbar machen (Daten laufen über /api und werden von der App selbst zwischengespeichert)
-const C = 'auftraege-v2';
+const C = 'auftraege-v3';
 const SHELL = ['/', '/index.html', '/worker.js', '/vendor/xlsx.full.min.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 self.addEventListener('install', e => e.waitUntil(caches.open(C).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(k => Promise.all(k.filter(x => x !== C).map(x => caches.delete(x)))).then(() => self.clients.claim())));
@@ -9,4 +9,47 @@ self.addEventListener('fetch', e => {
   // erst Netz (damit Updates sofort ankommen), ohne Netz die gemerkte Version
   e.respondWith(fetch(e.request).then(r => { if (r.ok) { const cp = r.clone(); caches.open(C).then(c => c.put(e.request, cp)); } return r; })
     .catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match('/index.html'))));
+});
+
+// ---- Push: Nachricht vom Disponenten ----
+// bleibt stehen, vibriert, kommt nach dem Wegwischen sofort wieder – bis auf „Bestätigen“ getippt wird
+const TITLE = 'Nachricht vom Disponenten';
+const opts = d => ({
+  body: d.body || '', tag: 'nachricht', renotify: true, requireInteraction: true, silent: false,
+  vibrate: [500, 200, 500, 200, 900], icon: '/icon-192.png', badge: '/icon-192.png', timestamp: d.at || Date.now(),
+  data: d, actions: [{ action: 'ok', title: '✓ Bestätigen' }]
+});
+const show = d => self.registration.showNotification(d.title || TITLE, opts(d));
+const tellApp = () => self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(ws => ws.forEach(w => w.postMessage({ t: 'msg' })));
+
+self.addEventListener('push', e => {
+  let d = {}; try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(Promise.all([show(d), tellApp()]));
+});
+
+const ack = d => fetch('/api/msg/ack', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: d.id, did: d.did }) })
+  .then(r => r.ok).catch(() => false);
+self.addEventListener('notificationclick', e => {
+  const n = e.notification, d = n.data || {};
+  n.close();
+  if (e.action === 'ok') {   // direkt in der Benachrichtigung bestätigt
+    e.waitUntil(ack(d).then(ok => ok ? tellApp() : show({ ...d, body: '⚠ Keine Verbindung – bitte erneut bestätigen.\n' + (d.body || '') })));
+    return;
+  }
+  // Tipp auf die Nachricht: App öffnen, dort wird bestätigt
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    .then(ws => ws.length ? ws[0].focus().then(w => (w || ws[0]).postMessage({ t: 'msg' })) : self.clients.openWindow('/')));
+});
+self.addEventListener('notificationclose', e => {   // weggewischt ohne Bestätigung -> wieder anzeigen, solange die Nachricht offen ist
+  const d = e.notification.data || {};
+  if (!d.id) return;
+  e.waitUntil(fetch(`/api/msg/state?id=${d.id}&did=${encodeURIComponent(d.did || '')}`).then(r => r.json()).then(s => s.open).catch(() => true)
+    .then(open => open && show(d)));
+});
+self.addEventListener('pushsubscriptionchange', e => {   // Browser hat das Abo erneuert -> beim Server nachziehen
+  const old = e.oldSubscription && e.oldSubscription.endpoint;
+  e.waitUntil((e.newSubscription ? Promise.resolve(e.newSubscription)
+    : fetch('/api/push/key').then(r => r.json()).then(k => self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: k.key })))
+    .then(sub => fetch('/api/push/resub', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ old, sub: sub.toJSON() }) }))
+    .catch(() => {}));
 });
