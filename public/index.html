@@ -38,6 +38,7 @@ label.ck{display:block;margin:10px 0;font-size:14px;color:var(--mu)}
 .it{padding:10px 0;border-top:1px solid var(--bd)}.it .t{margin-bottom:8px;word-break:break-word}.ob{display:flex;gap:8px}.ob button{flex:1;padding:12px 8px}
 .ob button.ok.on{background:var(--ok);border-color:var(--ok);color:#fff}.ob button.nk.on{background:var(--nk);border-color:var(--nk);color:#fff}
 button.allok{display:block;width:100%;background:var(--ok);border-color:var(--ok);color:#fff;padding:14px;font-size:17px;margin:10px 0}
+.cfm{margin:10px 0;padding:12px;border:2px solid var(--ok);border-radius:10px}.cfm .ob{margin-top:10px}.cfm button{padding:14px 8px;font-size:16px}.cfm button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
 .mk{display:inline-block;width:1.4em}
 .tabs{display:flex;gap:8px;margin-bottom:12px}.tabs button{flex:1}.tabs button.on{background:var(--ac);border-color:var(--ac);color:#fff}
 .tools select{flex:1;min-width:0}textarea{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px;width:100%;box-sizing:border-box;margin:8px 0}
@@ -429,7 +430,12 @@ function draw(){
       if(d&&!valid)pb.append(el('p',{class:'mu er'},'Die Prüfliste hat sich seit der letzten Bewertung geändert – bitte neu prüfen.'));
       // „Alles OK“ setzt nur offene Prüfobjekte auf OK – Nicht OK (samt Text) bleibt erhalten
       const op=n-ok-nx;
-      if(mon&&op>0)pb.append(el('button',{class:'allok',onclick:()=>{armA=false;edi=null;const c=cur(r.auftrag,L);setS(r,L,c.s.replace(/-/g,'o'),c.T)}},ok+nx>0?`✓ Alle offenen OK (${op})`:'✓ Alles OK'));
+      // immer zweite Bestätigung; Klicks kurz nach dem ersten zählen nicht (versehentlicher Doppel-Tipp)
+      if(mon&&op>0)pb.append(!armA?el('button',{class:'allok',onclick:()=>{armA=Date.now();edi=null;render()}},ok+nx>0?`✓ Alle offenen OK (${op})`:'✓ Alles OK')
+        :el('div',{class:'cfm'},el('b',{},op===n?`Wirklich alle ${n} Prüfobjekte OK?`:`Wirklich alle ${op} restlichen Prüfobjekte OK?`),
+          nx>0&&el('div',{class:'mu'},`${nx}× Nicht OK bleibt erhalten.`),
+          el('div',{class:'ob'},el('button',{class:'yes',onclick:()=>{if(Date.now()-armA<600)return;armA=false;const c=cur(r.auftrag,L);setS(r,L,c.s.replace(/-/g,'o'),c.T)}},'Ja, alle OK'),
+            el('button',{onclick:()=>{armA=false;render()}},'Abbrechen'))));
       L.forEach((t,i)=>{
         const c=s[i],m=txt(i);
         const nb=c==='x'?el('div',{class:'nokbox'},el('b',{},'Nicht OK: '),m||'–'):null;
