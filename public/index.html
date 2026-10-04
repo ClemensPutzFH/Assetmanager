@@ -47,11 +47,16 @@ button.dl{display:block;width:100%;margin-bottom:12px}
 input.tm{font:inherit;font-size:20px;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px;width:72px;text-align:center;box-sizing:border-box}
 .zt{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.qk{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.qk button{padding:8px 12px;border-radius:20px;font-size:14px}
 input.dt{font:inherit;font-size:18px;color:var(--tx);color-scheme:light dark;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:9px 10px;box-sizing:border-box;flex:1;min-width:150px}
+.flt{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;margin-bottom:12px}.flt select{width:100%;min-width:0}.flt .rg{grid-column:1/-1;display:flex;gap:8px;align-items:center}.flt .rg .dt{min-width:0;font-size:16px}
+.mkr{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}.mkb{padding:6px 12px;border-radius:20px;font-size:14px}.mkb.on{background:var(--ok);border-color:var(--ok);color:#fff}.mkb.ch{border-color:var(--nk);color:var(--nk);font-weight:600}.card.dn{opacity:.6}
+.msg button{margin-left:8px;padding:4px 10px;font-size:14px}
 </style></head><body><main id="app"></main>
 <script>
 const app=document.getElementById('app');
 const el=(t,p,...c)=>{const e=document.createElement(t);for(const k in p||{}){const v=p[k];if(v==null||v===false)continue;if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(k==='value')e.value=v;else e.setAttribute(k,v)}e.append(...c.flat().filter(x=>x!=null&&x!==false));return e};
 let since=0,sk='',teamList=[],ordersMap=new Map(),ersSq=new Map(),plC=null,again=false,tok='',net=true,polling=false,cacheT=null,chunks=new Map(),meta=null,ready=false,canWrite=true,err='',msg='',busy=false,arm=false,q='',ft='',openA=null,pl={},pmeta=null,pcache=new Map(),armP=false,sy=0,ers=new Map(),pend=new Map(),wq=new Map(),dtab='ue',fs='',armA=false,mf='',edi=null,edt='',edE=false,unlocked=false,pinv='',pinE=false,tH='',tM='',tE='',tD='',tV='';
+let marks=new Map(),dha='',rf='',rv='',rb='',armM=false,und=null,undT=null;
+try{dha=localStorage.getItem('dha')||''}catch(e){}
 let ses={role:null,team:null};
 try{ses=JSON.parse(localStorage.getItem('ses'))||ses}catch(e){}
 const save=()=>{try{localStorage.setItem('ses',JSON.stringify(ses))}catch(e){}};
@@ -104,18 +109,18 @@ async function exportXlsx(rows){
   busy=true;err='';msg='Erstelle Excel …';render();
   try{
     const lists=new Map(Object.entries((await api('POST','/api/pruef/get',{ids:rows.map(r=>r.auftrag)},120000)).map));
-    const A=[['Auftrag','Team (Verantw. Arb. Pl.)','Techn. Platz','Auftragsart','PLZ','Straße','Kurztext','Eckstarttermin','Eckendtermin','Status','Prüfergebnis','Prüfobjekte gesamt','OK','Nicht OK','Offen','Durchgeführt am','Beginn (Uhrzeit)','Dauer (Min)','Dauer (Std)','Zeit zurückgemeldet am','Nicht OK – Prüfobjekt → Text','Hinweis']];
+    const A=[['Auftrag','Team (Verantw. Arb. Pl.)','Techn. Platz','Auftragsart','PLZ','Straße','Kurztext','Eckstarttermin','Eckendtermin','Status','Prüfergebnis','Prüfobjekte gesamt','OK','Nicht OK','Offen','Durchgeführt am','Beginn (Uhrzeit)','Dauer (Min)','Dauer (Std)','Zeit zurückgemeldet am','Nicht OK – Prüfobjekt → Text','Hinweis','Abgehakt am']];
     const P=[['Auftrag','Team','Auftrag Kurztext','Pos.','Prüfobjekt (Kurztext)','Ergebnis','Text bei Nicht OK']];
     for(const r of rows){
       const L=lists.get(r.auftrag)||[],x=stat(r),n=L.length,valid=!!(x.s&&n>0&&x.n===n&&x.s.length===n),stale=!!(x.s&&n>0&&!valid),tot=n||x.n;
-      A.push([r.auftrag,r.team,r.tp,r.art,r.plz,r.str,r.kurz,r.start,r.ende,STL[stale&&x.st==='done'?'teil':x.st],x.nx>0?(x.op>0?'Nicht OK (unvollständig)':'Nicht OK'):x.n>0&&!x.op?'OK':x.ok>0?'unvollständig':'',tot,x.ok,x.nx,Math.max(0,tot-x.ok-x.nx),di(dOf(x)),tf(x.von),x.min!=null?x.min:null,x.min!=null?Math.round(x.min/60*100)/100:null,x.tat?new Date(x.tat).toLocaleString('de-AT'):null,x.nok.map(z=>z.m?`${z.t} → ${z.m}`:z.t).join(' | '),stale?'Prüfliste seit der Bewertung geändert':'']);
+      A.push([r.auftrag,r.team,r.tp,r.art,r.plz,r.str,r.kurz,r.start,r.ende,STL[stale&&x.st==='done'?'teil':x.st],x.nx>0?(x.op>0?'Nicht OK (unvollständig)':'Nicht OK'):x.n>0&&!x.op?'OK':x.ok>0?'unvollständig':'',tot,x.ok,x.nx,Math.max(0,tot-x.ok-x.nx),di(dOf(x)),tf(x.von),x.min!=null?x.min:null,x.min!=null?Math.round(x.min/60*100)/100:null,x.tat?new Date(x.tat).toLocaleString('de-AT'):null,x.nok.map(z=>z.m?`${z.t} → ${z.m}`:z.t).join(' | '),stale?'Prüfliste seit der Bewertung geändert':'',mk(r.auftrag)?new Date(marks.get(r.auftrag).at).toLocaleString('de-AT')+(mk(r.auftrag)===2?' (danach geändert)':''):null]);
       L.forEach((t,i)=>{
         const c=valid?x.s[i]:'-',z=valid?x.nok.find(z=>z.i===i):null;
         P.push([r.auftrag,r.team,r.kurz,i+1,t,stale?'veraltet':c==='o'?'OK':c==='x'?'Nicht OK':'Offen',z?z.m:'']);
       });
     }
     const out=await work({type:'xlsx',A,P,dc:A[0].indexOf('Durchgeführt am'),tc:A[0].indexOf('Beginn (Uhrzeit)')});
-    const nm='Pruefergebnisse'+(ft?'_'+ft.replace(/[^A-Za-z0-9_-]/g,'_'):'')+(fs?'_'+fs:'')+'_'+new Date().toLocaleDateString('sv-SE')+'.xlsx';
+    const nm='Pruefergebnisse'+(ft?'_'+ft.replace(/[^A-Za-z0-9_-]/g,'_'):'')+(fs?'_'+fs:'')+(rRange()?'_RM_'+(rRange()[0]||'')+'_bis_'+(rRange()[1]||''):'')+'_'+new Date().toLocaleDateString('sv-SE')+'.xlsx';
     const u=URL.createObjectURL(new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));const lk=document.createElement('a');lk.href=u;lk.download=nm;document.body.append(lk);lk.click();lk.remove();setTimeout(()=>URL.revokeObjectURL(u),10000);
     msg=`Export bereit: ${rows.length} Aufträge, ${P.length-1} Prüfobjekte`;
   }catch(e){msg='';if(e&&e.code==='declined')msg='Download abgebrochen';else err='Export fehlgeschlagen: '+(e.message||e)}
@@ -287,17 +292,18 @@ const enc=encodeURIComponent;
 const skey=()=>ses.role==='dispo'?'dispo':ses.role==='monteur'?'m:'+(ses.team||''):'';
 function rebuildChunks(){chunks=new Map();for(const r of ordersMap.values()){let c=chunks.get(r.team);if(!c)chunks.set(r.team,c={team:r.team,rows:[]});c.rows.push(r)}}
 async function loadCacheFor(key){
-  ordersMap=new Map();ers=new Map();ersSq=new Map();since=0;teamList=[];meta=null;pmeta=null;rebuildChunks();
+  ordersMap=new Map();ers=new Map();ersSq=new Map();marks=new Map();since=0;teamList=[];meta=null;pmeta=null;rebuildChunks();
   const c=await idb.get('st:'+key);
   if(c){
     for(const r of c.orders||[])ordersMap.set(r.auftrag,r);
     for(const [a,x] of Object.entries(c.ergebnis||{})){ers.set(a,x.doc);ersSq.set(a,x.sq)}
+    for(const [a,x] of Object.entries(c.marks||{}))marks.set(a,x);
     teamList=c.teams||[];meta=c.meta||null;pmeta=c.pmeta||null;since=c.since||0;rebuildChunks();ready=true;
   }
 }
 function saveCache(){
   if(!sk)return;
-  idb.set('st:'+sk,{since,orders:[...ordersMap.values()],ergebnis:Object.fromEntries([...ers].map(([a,d])=>[a,{doc:d,sq:ersSq.get(a)||0}])),teams:teamList,meta,pmeta}).catch(()=>{});
+  idb.set('st:'+sk,{since,orders:[...ordersMap.values()],ergebnis:Object.fromEntries([...ers].map(([a,d])=>[a,{doc:d,sq:ersSq.get(a)||0}])),teams:teamList,meta,pmeta,marks:Object.fromEntries(marks)}).catch(()=>{});
 }
 // Abgleich: nur Änderungen seit der letzten Änderungsnummer holen (Monteur: nur das eigene Team)
 async function poll(){
@@ -310,7 +316,8 @@ async function poll(){
     const j=await api('GET',`/api/sync?since=${since}&team=${enc(team)}`,undefined,20000);
     net=true;
     if(!j.same){
-      if(j.full){ordersMap=new Map();ers=new Map();ersSq=new Map()}
+      if(j.full){ordersMap=new Map();ers=new Map();ersSq=new Map();marks=new Map()}
+      for(const x of j.marks||[])if(x.sq>((marks.get(x.a)||{}).sq||0))marks.set(x.a,{v:x.v,at:x.at,sq:x.sq});
       for(const r of j.orders||[]){if(r.del)ordersMap.delete(r.auftrag);else ordersMap.set(r.auftrag,r)}
       for(const x of j.ergebnis||[])if(x.sq>(ersSq.get(x.a)||0)){ers.set(x.a,x.doc);ersSq.set(x.a,x.sq)}   // ältere Stände nie über neuere schreiben
       if(j.full||(j.orders&&j.orders.length))rebuildChunks();
@@ -349,24 +356,50 @@ function events(){try{const es=new EventSource('/api/events');es.onmessage=()=>p
 
 const rowsAll=()=>[...chunks.values()].flatMap(c=>c.rows.map(r=>({...r,team:c.team})));
 const teams=()=>teamList.map(([t,n])=>[t,n]).sort((a,b)=>cmp(a[0],b[0]));
-const card=(r,showTeam,click=true)=>el('div',{class:'card'+(click?' cl':''),onclick:click?()=>{sy=scrollY;showOrder(r);scrollTo(0,0)}:null},
+// Abhaken (nur Disponent): 0 = nicht abgehakt, 1 = abgehakt, 2 = abgehakt, aber das Ergebnis wurde danach noch geändert
+const mk=a=>{const m=marks.get(a);return!m||!m.v?0:(ersSq.get(a)||0)>m.sq?2:1};
+const dts=t=>new Date(t).toLocaleString('de-AT',{dateStyle:'short',timeStyle:'short'});
+async function setMark(ids,v,undo=true){
+  if(!ids.length)return;
+  const prev=ids.map(a=>[a,mk(a)]);err='';
+  try{
+    const j=await api('POST','/api/mark',{ids,v},60000);
+    for(const a of ids)marks.set(a,{v:v?1:0,at:j.at,sq:j.sq});
+    clearTimeout(cacheT);cacheT=setTimeout(saveCache,1500);
+    clearTimeout(undT);und=null;
+    if(undo){und={prev,v,txt:(ids.length===1?'Auftrag '+ids[0]:ids.length+' Aufträge')+(v?' abgehakt':' nicht mehr abgehakt')+(v&&dha==='hide'?' und ausgeblendet':'')};undT=setTimeout(()=>{und=null;render()},10000)}
+  }catch(e){err=e.net?'Keine Verbindung – Abhaken wurde nicht gespeichert':errTxt(e)}
+  render();
+}
+function undoMark(){const u=und;und=null;clearTimeout(undT);if(u)setMark(u.prev.filter(([,x])=>!!x!==!!u.v).map(([a])=>a),!u.v,false)}
+const mkRow=r=>{const x=mk(r.auftrag),m=marks.get(r.auftrag);
+  return el('div',{class:'mkr'},el('button',{class:'mkb'+(x===1?' on':x===2?' ch':''),onclick:e=>{e.stopPropagation();setMark([r.auftrag],x!==1)}},x===1?'☑ Abgehakt':x===2?'⚠ Danach geändert – neu abhaken':'☐ Abhaken'),
+    x>0&&el('span',{class:'mu'},'am '+dts(m.at)))};
+// Rückmeldezeitpunkt = wann die Zeit zurückgemeldet wurde (tat); Filterzeitraum als [von,bis] (JJJJ-MM-TT, leer = offen)
+const addD=n=>{const g=new Date();g.setDate(g.getDate()+n);return g.toLocaleDateString('sv-SE')};
+const rRange=()=>rf==='h'?[today(),today()]:rf==='g'?[addD(-1),addD(-1)]:rf==='7'?[addD(-6),today()]:rf==='m'?[today().slice(0,8)+'01',today()]:rf==='z'?[rv,rb]:null;
+const rmD=r=>{const d=docOf(r.auftrag);return d&&d.min!=null&&d.tat?new Date(d.tat).toLocaleDateString('sv-SE'):''};
+const inR=(r,R)=>{const x=rmD(r);return!!x&&(!R[0]||x>=R[0])&&(!R[1]||x<=R[1])};
+const matchQ=r=>{const t=q.trim().toLowerCase();return!t||[r.auftrag,r.kurz,r.str,r.plz,r.tp].join(' ').toLowerCase().includes(t)};
+const card=(r,showTeam,click=true)=>{const dsp=ses.role==='dispo',d=docOf(r.auftrag);return el('div',{class:'card'+(click?' cl':'')+(dsp&&click&&mk(r.auftrag)===1?' dn':''),onclick:click?()=>{sy=scrollY;showOrder(r);scrollTo(0,0)}:null},
   el('div',{class:'row'},el('b',{},r.auftrag),showTeam&&el('span',{class:'tag'},r.team),r.art&&el('span',{class:'tag'},r.art),stTag(r),zTag(r),click&&el('span',{class:'chev'},'Prüfobjekte ›')),
   el('div',{class:'kt'},r.kurz||'–'),
   (r.str||r.plz)&&el('div',{class:'mu'},[r.plz,r.str].filter(Boolean).join(' ')),
   r.tp&&el('div',{class:'mu'},'Techn. Platz: '+r.tp),
   (r.start||r.ende)&&el('div',{class:'mu'},'Termin: '+[r.start,r.ende].filter(Boolean).join(' – ')),
-  click&&showTeam&&stat(r).nx>0&&el('div',{class:'nokbox'},el('b',{},'Nicht OK:'),...stat(r).nok.map(x=>el('div',{class:'nk1'},'• '+x.t,x.m&&el('div',{class:'mu'},'→ '+x.m)))));
+  dsp&&d&&d.min!=null&&d.tat&&el('div',{class:'mu'},'Rückgemeldet: '+dts(d.tat)),
+  click&&showTeam&&stat(r).nx>0&&el('div',{class:'nokbox'},el('b',{},'Nicht OK:'),...stat(r).nok.map(x=>el('div',{class:'nk1'},'• '+x.t,x.m&&el('div',{class:'mu'},'→ '+x.m)))),
+  dsp&&mkRow(r))};
 
 function list(rows,showTeam){
-  const t=q.trim().toLowerCase();
-  const f=rows.filter(r=>!t||[r.auftrag,r.kurz,r.str,r.plz,r.tp].join(' ').toLowerCase().includes(t)).sort((a,b)=>cmp(a.auftrag,b.auftrag));
+  const f=rows.filter(matchQ).sort((a,b)=>cmp(a.auftrag,b.auftrag));
   const box=el('div',{});
   box.append(el('p',{class:'mu'},`${f.length} Aufträge`),...f.slice(0,300).map(r=>card(r,showTeam)));
   if(f.length>300)box.append(el('p',{class:'mu'},'Nur die ersten 300 angezeigt – Suche nutzen.'));
   return box;
 }
 const search=(onIn,extra)=>el('div',{class:'tools'},extra,el('input',{type:'search','data-keep':'s',placeholder:'Suchen (Auftrag, Kurztext, Straße …)',value:q,oninput:e=>onIn(e.target.value)}));
-const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;save();render();poll();prefetch()};
+const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;save();render();poll();prefetch()};
 
 function render(){
   const f=document.activeElement,k=f&&f.dataset&&f.dataset.keep,pos=k?f.selectionStart:0;
@@ -377,6 +410,7 @@ function draw(){
   app.replaceChildren();
   if(err)app.append(el('div',{class:'msg er'},err));
   if(msg&&!err)app.append(el('div',{class:'msg'},msg));
+  if(und&&ses.role==='dispo')app.append(el('div',{class:'msg'},und.txt,el('button',{onclick:undoMark},'Rückgängig')));
   if(!net&&!pend.size)app.append(el('div',{class:'msg'},'📴 Offline – angezeigt wird der zuletzt geladene Stand.'));
   if(pend.size&&(off||!net||navigator.onLine===false))app.append(el('div',{class:'msg'},`📴 Keine Verbindung – ${pend.size} ${pend.size===1?'Auftrag ist':'Aufträge sind'} noch nicht übertragen. Die Eingaben sind gesichert und werden automatisch gesendet, sobald wieder Netz da ist.`));
 
@@ -483,18 +517,27 @@ function draw(){
   }
   // Übersicht: Status je Auftrag, Filter
   if(ready&&!chunks.size)app.append(el('p',{class:'mu'},'Noch keine Aufträge – im Tab „Upload" hochladen.'));
-  const ts=teams();
-  const base=rowsAll().filter(r=>!ft||r.team===ft),cnt={done:0,teil:0,offen:0,nok:0};
+  const ts=teams(),R=rRange();
+  const base=rowsAll().filter(r=>(!ft||r.team===ft)&&(dha==='hide'?mk(r.auftrag)!==1:dha==='only'?mk(r.auftrag)>0:true)&&(!R||inR(r,R))&&matchQ(r)),cnt={done:0,teil:0,offen:0,nok:0};
   base.forEach(r=>{const x=stat(r);cnt[x.st]++;if(x.nx>0)cnt.nok++});
   const view=()=>base.filter(r=>!fs||(fs==='nok'?stat(r).nx>0:stat(r).st===fs));
   const tn=new Map();rowsAll().forEach(r=>{if(stat(r).nx>0)tn.set(r.team,(tn.get(r.team)||0)+1)});
   const sel=el('select',{onchange:e=>{ft=e.target.value;render()}},el('option',{value:''},'Alle Teams'),ts.map(([t,n])=>el('option',{value:t,...(t===ft?{selected:'selected'}:{})},`${t} (${n})`+(tn.get(t)?` · ⚠ ${tn.get(t)} Nicht OK`:''))));
-  app.append(el('div',{class:'tools'},el('span',{class:'mu'},'Team'),sel));
+  const opt=(v,l,c)=>el('option',{value:v,...(v===c?{selected:'selected'}:{})},l);
+  app.append(el('div',{class:'flt'},
+    el('span',{class:'mu'},'Team'),sel,
+    el('span',{class:'mu'},'Abgehakte'),el('select',{onchange:e=>{dha=e.target.value;armM=false;try{localStorage.setItem('dha',dha)}catch(x){}render()}},opt('','Anzeigen',dha),opt('hide','Ausblenden',dha),opt('only','Nur abgehakte',dha)),
+    el('span',{class:'mu'},'Rückgemeldet'),el('select',{onchange:e=>{rf=e.target.value;armM=false;render()}},opt('','Beliebig',rf),opt('h','Heute',rf),opt('g','Gestern',rf),opt('7','Letzte 7 Tage',rf),opt('m','Dieser Monat',rf),opt('z','Zeitraum …',rf)),
+    rf==='z'&&el('div',{class:'rg'},
+      el('input',{class:'dt',type:'date','data-nr':'1',max:today(),value:rv,onchange:e=>{rv=e.target.value;armM=false;render()}}),el('span',{},'–'),
+      el('input',{class:'dt',type:'date','data-nr':'1',max:today(),value:rb,onchange:e=>{rb=e.target.value;armM=false;render()}}))));
+  if(rf==='z'&&rv&&rb&&rv>rb)app.append(el('p',{class:'mu er'},'„Von“ liegt nach „Bis“ – es kann nichts gefunden werden.'));
   app.append(chips([['','Alle',base.length],['nok','Nicht OK',cnt.nok],['done','Erledigt',cnt.done],['teil','In Arbeit',cnt.teil],['offen','Offen',cnt.offen]],fs,k=>{fs=k}));
-  app.append(el('button',{class:'dl',disabled:busy||!view().length?'disabled':null,onclick:()=>exportXlsx(view())},`⬇ Excel exportieren (${view().length} Aufträge${ft||fs?', gefiltert':''})`));
-  const box=el('div',{});
-  app.append(search(v=>{q=v;box.replaceChildren(list(view(),true))}),box);
-  box.append(list(view(),true));
+  const flt=!!(ft||fs||dha||rf||q.trim());
+  app.append(el('button',{class:'dl',disabled:busy||!view().length?'disabled':null,onclick:()=>exportXlsx(view())},`⬇ Excel exportieren (${view().length} Aufträge${flt?', gefiltert':''})`));
+  const toM=view().filter(r=>mk(r.auftrag)!==1).map(r=>r.auftrag);
+  if(toM.length)app.append(armM?el('button',{class:'dl',onclick:()=>{armM=false;setMark(toM,true)}},`Wirklich ${toM.length} Aufträge abhaken?`):el('button',{class:'dl',onclick:()=>{armM=true;render()}},`☑ Alle angezeigten abhaken (${toM.length})`));
+  app.append(search(v=>{q=v;armM=false;render()}),list(view(),true));
 }
 
 loadOb();

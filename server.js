@@ -23,12 +23,16 @@ CREATE TABLE IF NOT EXISTS pruef(auftrag TEXT PRIMARY KEY, items TEXT NOT NULL, 
 CREATE INDEX IF NOT EXISTS pruef_seq ON pruef(seq);
 CREATE TABLE IF NOT EXISTS ergebnis(auftrag TEXT PRIMARY KEY, team TEXT, doc TEXT NOT NULL, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ergebnis_seq ON ergebnis(seq, team);
+-- Abhaken durch den Disponenten (nur Disponentenansicht): v=1 abgehakt, v=0 zurückgenommen
+CREATE TABLE IF NOT EXISTS dmark(auftrag TEXT PRIMARY KEY, v INTEGER NOT NULL, at INTEGER, seq INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS dmark_seq ON dmark(seq);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `);
 const Q = {
   getMeta: db.prepare('SELECT v FROM meta WHERE k=?'),
   setMeta: db.prepare('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v'),
-  maxSeq: db.prepare('SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis)'),
+  maxSeq: db.prepare('SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark)'),
+  upMark: db.prepare('INSERT INTO dmark(auftrag,v,at,seq) VALUES(?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET v=excluded.v, at=excluded.at, seq=excluded.seq'),
   upErg: db.prepare('INSERT INTO ergebnis(auftrag,team,doc,seq) VALUES(?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET team=excluded.team, doc=excluded.doc, seq=excluded.seq'),
   tombTeam: db.prepare('UPDATE orders SET del=1, ts=?, seq=? WHERE team=? AND del=0 AND auftrag NOT IN (SELECT value FROM json_each(?))'),
   tombAll: db.prepare('UPDATE orders SET del=1, ts=?, seq=? WHERE del=0'),
@@ -148,6 +152,7 @@ async function api(req, res, url) {
       }
       const rows = team ? db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>? AND team=?').all(from, team) : db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>?').all(from);
       out.ergebnis = rows.map(r => ({ a: r.auftrag, doc: JSON.parse(r.doc), sq: r.seq }));
+      if (!team) out.marks = db.prepare('SELECT auftrag,v,at,seq FROM dmark WHERE seq>?' + (full ? ' AND v=1' : '')).all(from).map(r => ({ a: r.auftrag, v: r.v, at: r.at, sq: r.seq }));   // nur Disponentenansicht
     }
     return send(req, res, 200, out);
   }
@@ -173,6 +178,12 @@ async function api(req, res, url) {
     const ids = (await readBody(req)).ids, map = {};
     if (Array.isArray(ids)) for (const r of db.prepare('SELECT auftrag,items FROM pruef WHERE auftrag IN (SELECT value FROM json_each(?))').all(JSON.stringify(ids.map(String)))) map[r.auftrag] = JSON.parse(r.items);
     return send(req, res, 200, { map });
+  }
+  if (p === '/api/mark' && m === 'POST') {                                        // Aufträge abhaken / Haken entfernen
+    const b = await readBody(req, 2e6), ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(String).filter(a => /^\d{1,20}$/.test(a)))].slice(0, 20000);
+    if (!ids.length) return send(req, res, 400, { error: 'Keine Aufträge angegeben' });
+    const now = Date.now(), sq = tx(() => { seq++; for (const a of ids) Q.upMark.run(a, b.v ? 1 : 0, now, seq); return seq; });
+    notify(); return send(req, res, 200, { ok: true, sq, at: now });
   }
   if (p === '/api/orders' && m === 'POST') {
     const b = await readBody(req), rows = (Array.isArray(b.rows) ? b.rows : []).filter(r => r && String(r.auftrag || '').replace(/\D/g, '') && r.team);
