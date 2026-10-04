@@ -1,6 +1,6 @@
 // Aufträge nach Team – eigenständiger Server (Node 22.13+, eingebautes SQLite, keine weiteren Pakete)
 // Daten: data/data.db (SQLite, WAL). Abgleich der Geräte per Änderungsnummer (nur Änderungen) + Live-Push (SSE).
-const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto'), zlib = require('zlib');
+const http = require('http'), https = require('https'), fs = require('fs'), path = require('path'), crypto = require('crypto'), zlib = require('zlib');
 let DatabaseSync;
 try { ({ DatabaseSync } = require('node:sqlite')); }
 catch { console.error(`Dieser Server braucht Node.js 22.13 oder neuer (eingebautes SQLite). Aktuell: ${process.version}`); process.exit(1); }
@@ -367,8 +367,34 @@ function serve(req, res, url) {
   res.end(z ? e.gz : e.buf);
 }
 
-http.createServer(async (req, res) => {
+const handler = async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try { url.pathname.startsWith('/api/') ? await api(req, res, url) : serve(req, res, url); }
   catch (e) { if (!res.headersSent) send(req, res, e.code >= 400 && e.code < 600 ? e.code : 500, { error: e.msg || 'Serverfehler' }); else res.end(); if (!e.code) console.error(e); }
-}).listen(PORT, HOST, () => console.log(`Läuft auf http://localhost:${PORT}  (Daten: ${path.join(DIR, 'data.db')})`));
+};
+
+// ---------- HTTP oder HTTPS ----------
+// HTTPS direkt mit Node: TLS_CERT + TLS_KEY (PEM-Dateien) oder TLS_PFX (.pfx/.p12, z. B. von der IT), Passwort in TLS_PASS
+const { TLS_CERT, TLS_KEY, TLS_PFX, TLS_PASS } = process.env, TLS = !!(TLS_PFX || (TLS_CERT && TLS_KEY));
+const tlsFiles = () => (TLS_PFX ? [TLS_PFX] : [TLS_CERT, TLS_KEY]);
+const tlsOpts = () => TLS_PFX ? { pfx: fs.readFileSync(TLS_PFX), passphrase: TLS_PASS } : { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY), passphrase: TLS_PASS };
+let server;
+try { server = TLS ? https.createServer(tlsOpts(), handler) : http.createServer(handler); }
+catch (e) { console.error(`Zertifikat konnte nicht geladen werden (${tlsFiles().join(', ')}): ${e.message}`); process.exit(1); }
+server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `Port ${PORT} ist schon belegt.` : e.code === 'EACCES' ? `Keine Berechtigung für Port ${PORT}.` : e.message); process.exit(1); });
+server.listen(PORT, HOST, () => console.log(`Läuft auf ${TLS ? 'https' : 'http'}://localhost:${PORT}  (Daten: ${path.join(DIR, 'data.db')})`));
+if (TLS) {
+  // erneuertes Zertifikat (z. B. Let's Encrypt, IT) ohne Neustart übernehmen: stündlich prüfen
+  const stamp = () => tlsFiles().map(f => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }).join();
+  let last = stamp();
+  setInterval(() => {
+    const now = stamp(); if (now === last) return;
+    try { server.setSecureContext(tlsOpts()); last = now; console.log('Neues Zertifikat übernommen.'); } catch (e) { console.error('Neues Zertifikat fehlerhaft, altes bleibt aktiv:', e.message); }
+  }, 3600e3).unref();
+  // optional: Aufrufe über http:// auf https:// umleiten (HTTP_REDIRECT_PORT, z. B. 80)
+  const RP = +process.env.HTTP_REDIRECT_PORT;
+  if (RP) http.createServer((req, res) => {
+    const host = String(req.headers.host || 'localhost').replace(/:\d+$/, '');
+    res.writeHead(301, { Location: `https://${host}${PORT === 443 ? '' : ':' + PORT}${req.url}` }); res.end();
+  }).on('error', e => console.error(`Umleitung auf Port ${RP} nicht möglich: ${e.message}`)).listen(RP, HOST);
+}

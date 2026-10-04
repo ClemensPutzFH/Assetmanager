@@ -18,6 +18,10 @@ Dann im Browser `http://localhost:3000` öffnen.
 | `NAG_MIN` | Push-Erinnerung alle X Minuten wiederholen, bis das Gerät bestätigt | `5` |
 | `MSG_HOURS` | Nach so vielen Stunden hört eine Erinnerung von selbst auf | `12` |
 | `PUSH_CONTACT` | Kontakt für die Push-Dienste (`mailto:…` oder `https://…`), am besten eine echte Adresse der IT | `mailto:admin@example.com` |
+| `TLS_CERT` + `TLS_KEY` | HTTPS direkt mit Node: Zertifikat und privater Schlüssel als PEM-Dateien | – (HTTP) |
+| `TLS_PFX` | HTTPS direkt mit Node: Zertifikat als `.pfx`/`.p12` (statt `TLS_CERT`/`TLS_KEY`) | – |
+| `TLS_PASS` | Passwort für `TLS_PFX` bzw. einen verschlüsselten Schlüssel | – |
+| `HTTP_REDIRECT_PORT` | Nur mit HTTPS: auf diesem Port `http://`-Aufrufe auf `https://` umleiten (z. B. `80`) | – |
 
 Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 
@@ -36,7 +40,14 @@ Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 - Excel-Dateien werden im Browser in einem Hintergrund-Thread gelesen und geschrieben, die Oberfläche bleibt bedienbar.
 
 ## Betrieb
-- **HTTPS ist nötig**, damit Offline-Start (Service Worker) und „Zum Startbildschirm hinzufügen" außerhalb von `localhost` funktionieren. Am einfachsten mit einem Reverse Proxy, z. B. Caddy:
+- **HTTPS ist nötig**, damit Offline-Start (Service Worker), „Zum Startbildschirm hinzufügen“ und Push-Benachrichtigungen außerhalb von `localhost` funktionieren.
+- **Das Zertifikat muss auf den Handys als vertrauenswürdig gelten.** Ein selbst ausgestelltes Zertifikat reicht nicht: Browser verweigern dann Service Worker und Push, auch wenn man die Warnung wegklickt. Möglich sind ein Zertifikat der firmeneigenen Zertifizierungsstelle (wenn deren Stammzertifikat per Geräteverwaltung auf den Diensthandys verteilt ist) oder ein öffentliches Zertifikat (z. B. Let's Encrypt) für einen echten Domainnamen.
+- **Variante A – HTTPS direkt mit Node:**
+  ```
+  TLS_PFX=C:\zert\auftraege.pfx TLS_PASS=… PORT=443 HTTP_REDIRECT_PORT=80 node server.js
+  ```
+  oder mit PEM-Dateien `TLS_CERT=cert.pem TLS_KEY=key.pem`. Bei `TLS_CERT` die Datei mit der **vollständigen Kette** (Zertifikat + Zwischenzertifikate) verwenden, sonst lehnen manche Handys die Verbindung ab. Ein erneuertes Zertifikat (gleicher Dateiname) wird innerhalb einer Stunde ohne Neustart übernommen; ist die neue Datei fehlerhaft, bleibt das alte aktiv.
+- **Variante B – Reverse Proxy** (holt und erneuert Let's-Encrypt-Zertifikate selbst), z. B. Caddy:
   ```
   auftraege.example.com {
       reverse_proxy localhost:3000
