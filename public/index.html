@@ -8,13 +8,13 @@
 <link rel="apple-touch-icon" href="/icon-192.png">
 <script>try{var t=localStorage.getItem('thm');if(t=='light'||t=='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
 <style>
-:root{--bg:#f5f5f6;--card:#fff;--tx:#1f1f23;--mu:#66656c;--ac:#bb005d;--act:#bb005d;--bd:#e4e3e7;--er:#c4320a;--ok:#067647;--nk:#c4320a;--g1:#5fb085;--g2:#067647;--gt:#e1e0e5;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+:root{--bg:#f5f5f6;--card:#fff;--tx:#1f1f23;--mu:#66656c;--ac:#bb005d;--act:#bb005d;--bd:#e4e3e7;--er:#c4320a;--ok:#067647;--nk:#c4320a;--g1:#5fb085;--g2:#067647;--gt:#e1e0e5;box-sizing:border-box;padding-bottom:env(safe-area-inset-bottom,0px)}
 @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141316;--card:#1e1c20;--tx:#ededf0;--mu:#a09fa6;--ac:#d1176f;--act:#f06baa;--bd:#2f2d33;--er:#f2704f;--ok:#15803d;--nk:#d0421a;--g1:#2e6e4c;--g2:#22a35a;--gt:#34323a}}
 :root[data-theme="dark"]{--bg:#141316;--card:#1e1c20;--tx:#ededf0;--mu:#a09fa6;--ac:#d1176f;--act:#f06baa;--bd:#2f2d33;--er:#f2704f;--ok:#15803d;--nk:#d0421a;--g1:#2e6e4c;--g2:#22a35a;--gt:#34323a}
 :root{color-scheme:light dark}:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark}
-html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html{scroll-padding-top:calc(var(--toph,52px) + 8px)}
 body{margin:0;background:var(--bg);color:var(--tx);font:1rem/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1440px;margin:0 auto;padding:16px max(16px,env(safe-area-inset-right)) 16px max(16px,env(safe-area-inset-left))}body[data-w="n"] main{max-width:560px}
+main{max-width:1440px;margin:0 auto;padding:8px max(16px,env(safe-area-inset-right)) 16px max(16px,env(safe-area-inset-left))}body[data-w="n"] main{max-width:560px}
 h1{font-size:1.375rem;margin:8px 0 16px}
 .bar{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:12px}
 .bar h1{margin:0}.bar button{white-space:nowrap;flex:0 0 auto}
@@ -57,7 +57,7 @@ input.dt{font:inherit;font-size:1.125rem;color:var(--tx);background:var(--card);
 .prg .pn{font-size:1.625rem;font-weight:700;line-height:1.1}.prg .pn.ok{color:var(--ok)}.prg .ps.warn .pn{color:var(--er)}.prg .sm{font-size:.75rem;margin-top:2px}
 .mkr{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}.mkb{padding:6px 12px;border-radius:20px;font-size:.875rem}.mkb.on{background:var(--ok);border-color:var(--ok);color:#fff}.mkb.ch{border-color:var(--nk);color:var(--er);font-weight:600}.card.dn{opacity:.6}
 .msg button{margin-left:8px;padding:4px 10px;font-size:.875rem}
-.top{max-width:1440px;margin:0 auto;padding:12px max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left));display:flex;align-items:center;gap:12px;box-sizing:border-box}.logo{height:28px;width:auto;display:block;flex:0 1 auto;min-width:0;object-fit:contain;object-position:left center}.dk .logo{background:#fff;padding:4px 8px;border-radius:6px}
+.top{position:sticky;top:0;z-index:10;background:var(--bg);transition:box-shadow .15s;padding:calc(12px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right),calc((100% - 1440px)/2 + 16px)) 8px max(16px,env(safe-area-inset-left),calc((100% - 1440px)/2 + 16px));display:flex;align-items:center;gap:12px;box-sizing:border-box}.logo{height:28px;width:auto;display:block;flex:0 1 auto;min-width:0;object-fit:contain;object-position:left center}.dk .logo{background:#fff;padding:4px 8px;border-radius:6px}
 .thm{margin-left:auto;flex:0 0 auto;white-space:nowrap;display:flex;align-items:center;gap:8px;padding:6px 8px;border-color:transparent;background:none;color:var(--mu);font-size:.875rem}.thm .sw{flex:0 0 auto;width:34px;height:20px;border-radius:10px;background:var(--mu);position:relative;transition:background .15s}.thm .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}.thm[aria-checked="true"] .sw{background:var(--ac)}.thm[aria-checked="true"] .sw::after{transform:translateX(14px)}
 input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px solid var(--ac);outline-offset:1px}input[type=checkbox]{accent-color:var(--ac)}
 .fzg{display:flex;flex:0 0 auto}.fzg button{padding:10px 12px;white-space:nowrap}.fzg button:first-child{border-radius:10px 0 0 10px}.fzg button:last-child{border-radius:0 10px 10px 0;margin-left:-1px}.fzg button:disabled{opacity:.4;cursor:default}.fzg.on button:not(:disabled){border-color:var(--ac);color:var(--act);position:relative}
@@ -66,7 +66,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,18rem),1fr));gap:10px}
 .ugrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,26rem),1fr));gap:10px;align-items:start;margin-bottom:10px}.ugrid>.card{margin:0}
 .pinc{max-width:28rem}
-.bar.stk{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);margin:-8px -16px 4px;padding:8px 16px}
+.bar.stk{position:sticky;top:var(--toph,52px);z-index:5;background:var(--bg);margin:-8px -16px 4px;padding:8px 16px}
 .det>*{min-width:0}
 .pcard{container-type:inline-size}
 @container (min-width:35rem){.pcard .it{display:grid;grid-template-columns:minmax(0,1fr) 16rem;gap:8px 12px;align-items:center}.pcard .it .t{margin:0}.pcard .it>:nth-child(n+3){grid-column:1/-1}}
@@ -103,10 +103,14 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .gmsg{padding:8px 10px;font-size:1.05rem;line-height:1.2}.gmsg.on{border-color:var(--ac);background:color-mix(in srgb,var(--ac) 10%,var(--card))}.gms{display:block;font-size:.75rem;color:var(--mu);margin-top:1px}
 .mdlg{border-top:6px solid var(--ac)}.mtx{font-size:1.125rem;font-weight:600;white-space:pre-wrap;overflow-wrap:break-word}.dlg p:empty{display:none}.dlg textarea{margin:8px 0 4px}
 .amsg{margin:8px 0;padding:8px 10px;border:1px solid var(--ac);border-radius:8px;font-size:.875rem}.amsg>div{margin-top:2px;white-space:pre-wrap}.amsg button{margin-top:8px;padding:6px 10px;font-size:.875rem}
+.msg.er>button{display:block;margin:10px 0 0;padding:8px 14px}.msg.er>.mu{margin-top:4px}
 .msg.pb{display:flex;gap:8px 12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.msg.pb button{margin:0;padding:8px 14px;font-size:.875rem}
+.top.sc{box-shadow:0 1px 0 var(--bd),0 4px 12px rgba(0,0,0,.06)}
 </style></head><body><header class="top" id="top"></header><main id="app"></main>
 <script>
 const app=document.getElementById('app');
+const APPVER='__APPVER__';   // setzt der Server beim Ausliefern ein; weicht die Server-Version ab, ist ein Update da
+let updVer='';
 const el=(t,p,...c)=>{const e=document.createElement(t);for(const k in p||{}){const v=p[k];if(v==null||v===false)continue;if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(k==='value')e.value=v;else e.setAttribute(k,v)}e.append(...c.flat().filter(x=>x!=null&&x!==false));return e};
 let since=0,sk='',teamList=[],ordersMap=new Map(),ersSq=new Map(),plC=null,again=false,tok='',net=true,polling=false,cacheT=null,chunks=new Map(),meta=null,ready=false,canWrite=true,err='',msg='',busy=false,arm=false,q='',ft='',openA=null,pl={},pmeta=null,pcache=new Map(),armP=false,sy=0,ers=new Map(),pend=new Map(),wq=new Map(),dtab='ue',fs='',armA=false,mf='',edi=null,edt='',edE=false,unlocked=false,pinv='',pinE=false,tH='',tM='',tE='',tD='',tV='';
 let marks=new Map(),dha='',rf='',rv='',rb='',armM=false,und=null,undT=null;
@@ -143,7 +147,11 @@ function applyThm(){
 }
 // Logo: public/logo.png (sonst logo.svg); fehlt die Datei, bleibt nur der Schalter
 const logo=el('img',{class:'logo',src:'/logo.png',alt:'Wiener Netze',onerror:()=>{if(!logo.dataset.f){logo.dataset.f='1';logo.src='/logo.svg'}else logo.remove()}});
-document.getElementById('top').append(logo,thSw);
+const topEl=document.getElementById('top');topEl.append(logo,thSw);
+// Höhe der Kopfzeile merken (für die darunter klebende Auftragszeile); beim Scrollen dezente Trennlinie
+const setTopH=()=>document.documentElement.style.setProperty('--toph',topEl.offsetHeight+'px');
+if(window.ResizeObserver)new ResizeObserver(setTopH).observe(topEl);setTopH();
+addEventListener('scroll',()=>topEl.classList.toggle('sc',scrollY>2),{passive:true});
 applyThm();
 mq.addEventListener?mq.addEventListener('change',applyThm):mq.addListener(applyThm);
 const cmp=(a,b)=>String(a).localeCompare(String(b),'de',{numeric:true});
@@ -403,6 +411,7 @@ async function poll(){
     const team=ses.role==='monteur'?(ses.team||'-'):'';
     const j=await api('GET',`/api/sync?since=${since}&team=${enc(team)}`+(ses.role==='monteur'?'&did='+did:''),undefined,20000);
     net=true;
+    if(j.ver)checkVer(j.ver);
     if(!j.same){
       if(j.full){ordersMap=new Map();ers=new Map();ersSq=new Map();marks=new Map()}
       for(const x of j.marks||[])if(x.sq>((marks.get(x.a)||{}).sq||0))marks.set(x.a,{v:x.v,at:x.at,sq:x.sq});
@@ -566,6 +575,15 @@ function teamCard(list,T,at){
   c.append(el('p',{class:'mu'},'Tippe auf ein Team, um seine Aufträge in der Übersicht zu sehen. Mit 📣 schickst du dem Team eine Nachricht aufs Handy.'));
   return c;
 }
+// ---- Update: neue Version automatisch laden, wenn gerade nichts Ungespeichertes offen ist ----
+function checkVer(v){
+  if(APPVER.startsWith('__')||v===APPVER)return;
+  const first=updVer!==v;updVer=v;let tried='';try{tried=sessionStorage.getItem('rl')||''}catch(e){}
+  const a=document.activeElement,inUse=openA||busy||document.querySelector('dialog[open]')||(ses.role==='dispo'&&unlocked)||(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+  if(tried!==v&&!inUse){try{sessionStorage.setItem('rl',v)}catch(e){}location.reload();return}   // sonst beim nächsten Abgleich erneut versuchen
+  if(first)render();
+}
+const reloadNow=()=>{try{sessionStorage.setItem('rl',updVer)}catch(e){}location.reload()};
 // ---- Nachrichten an Teams ----
 const activeMsg=team=>msgs.find(m=>m.team===team&&!m.closed&&Date.now()-m.at<pcfg.hours*3600e3);
 const nGer=n=>n===1?'1 Gerät':fmtN(n)+' Geräte';
@@ -644,7 +662,7 @@ async function pushSync(ask){
         if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(key)});
         try{localStorage.setItem('pk',key)}catch(e){}
       }
-    }catch(e){if(!e.net)pushErr='Benachrichtigungen konnten nicht eingerichtet werden ('+errTxt(e)+').'}
+    }catch(e){if(!e.net)pushErr=errTxt(e)||'unbekannter Fehler'}
   }
   try{await api('POST','/api/push/sub',{did,team,sub:sub?sub.toJSON():null});regT=team;try{team?localStorage.setItem('regteam',team):localStorage.removeItem('regteam')}catch(e){}}catch(e){}
   render();
@@ -654,7 +672,18 @@ function pushBanner(){
     if(/iPhone|iPad|iPod/.test(navigator.userAgent)&&!navigator.standalone)return el('div',{class:'msg'},'🔔 Damit dich Nachrichten vom Disponenten erreichen: App über „Teilen → Zum Home-Bildschirm“ hinzufügen, von dort öffnen und Benachrichtigungen aktivieren.');
     return window.isSecureContext===false?el('div',{class:'msg'},'🔔 Benachrichtigungen sind nur über eine sichere Verbindung (HTTPS) möglich.'):null;
   }
-  if(Notification.permission==='granted')return pushErr?el('div',{class:'msg er'},pushErr):null;
+  if(Notification.permission==='granted'){
+    if(!pushErr)return null;
+    const h=[],ua=navigator.userAgent;
+    if(navigator.brave)h.push('Brave: Einstellungen → Datenschutz und Sicherheit → „Google-Dienste für Push-Messaging verwenden“ einschalten und Brave neu starten.');
+    else if(/push service|AbortError|network/i.test(pushErr)){
+      h.push('Der Push-Dienst des Browsers (bei Chrome/Android: Google) ist nicht erreichbar. Häufig sperrt ein Firmen-WLAN oder Proxy ihn – mit mobilen Daten erneut versuchen.');
+      h.push(/Android/.test(ua)?'Handy ohne Google-Dienste (z. B. neuere Huawei)? Dann Firefox verwenden.':'Private/Inkognito-Fenster und in andere Programme eingebaute Browser können keine Push-Benachrichtigungen – in Chrome, Edge oder Firefox öffnen.');
+    }
+    return el('div',{class:'msg er'},el('b',{},'Benachrichtigungen konnten nicht eingerichtet werden.'),el('div',{class:'mu'},'Meldung des Browsers: '+pushErr),
+      h.map(x=>el('div',{class:'mu'},'• '+x)),el('div',{class:'mu'},'Nachrichten vom Disponenten erscheinen trotzdem, solange die App offen ist.'),
+      el('button',{class:'pri',onclick:()=>pushSync(true)},'Erneut versuchen'));
+  }
   if(Notification.permission==='denied')return el('div',{class:'msg'},'🔕 Benachrichtigungen sind blockiert – Nachrichten vom Disponenten siehst du nur bei geöffneter App. Freigeben in den Einstellungen von Browser bzw. Handy.');
   return el('div',{class:'msg pb'},el('span',{},'🔔 Benachrichtigungen aktivieren, damit dich Nachrichten vom Disponenten auch bei geschlossener App erreichen.'),el('button',{class:'pri',onclick:()=>pushSync(true)},'Aktivieren'));
 }
@@ -732,6 +761,7 @@ function draw(){
   applyFz();tipHide();
   document.body.dataset.w=!openA&&(!ses.role||(ses.role==='dispo'&&!unlocked))?'n':'';
   app.replaceChildren();
+  if(updVer&&!openA)app.append(el('div',{class:'msg pb'},el('span',{},'🔄 Eine neue Version der App ist da.'+(ses.role==='dispo'&&unlocked?' Danach den PIN erneut eingeben.':'')),el('button',{class:'pri',onclick:reloadNow},'Jetzt aktualisieren')));
   if(err)app.append(el('div',{class:'msg er'},err));
   if(msg&&!err)app.append(el('div',{class:'msg'},msg));
   if(und&&ses.role==='dispo')app.append(el('div',{class:'msg'},und.txt,el('button',{onclick:undoMark},'Rückgängig')));

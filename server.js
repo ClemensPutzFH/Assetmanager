@@ -217,9 +217,9 @@ async function api(req, res, url) {
   // Abgleich: nur Änderungen seit Nummer "since". team=<Name> für Monteure (nur eigene Aufträge/Ergebnisse), "-" = nur Teamliste, leer = alles (Disponent)
   if (p === '/api/sync' && m === 'GET') {
     const since = +S.get('since') || 0, team = S.get('team') || '';
-    if (since === seq) return send(req, res, 200, { seq, same: true });
+    if (since === seq) return send(req, res, 200, { seq, same: true, ver: appVer() });
     const full = since === 0 || since > seq || since < minseq, from = full ? 0 : since;
-    const out = { seq, full, teams: db.prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team').all().map(r => [r.team, r.n]),
+    const out = { seq, full, ver: appVer(), teams: db.prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team').all().map(r => [r.team, r.n]),
       meta: { upload: getMeta('upload'), pruef: getMeta('pruef') }, orders: [], ergebnis: [] };
     if (team !== '-') {
       for (const r of db.prepare('SELECT * FROM orders WHERE seq>?' + (full ? ' AND del=0' : '')).all(from)) {
@@ -348,6 +348,14 @@ async function api(req, res, url) {
   return send(req, res, 404, { error: 'Unbekannt' });
 }
 
+// ---------- Version der Oberfläche: ändert sich index.html oder sw.js, laden die Geräte neu ----------
+let verC = { k: '', v: '' };
+function appVer() {
+  const fs2 = ['index.html', 'sw.js'].map(n => path.join(PUB, n)), k = fs2.map(f => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }).join();
+  if (k !== verC.k) { const h = crypto.createHash('sha1'); for (const f of fs2) { try { h.update(fs.readFileSync(f)); } catch {} } verC = { k, v: h.digest('hex').slice(0, 12) }; }
+  return verC.v;
+}
+
 // ---------- Statische Dateien (gzip + ETag, im Speicher gehalten) ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.svg': 'image/svg+xml' };
 const sc = new Map();
@@ -356,9 +364,10 @@ function serve(req, res, url) {
   let st; try { st = fs.statSync(f); } catch { st = null; }
   if (!f.startsWith(PUB + path.sep) || !st || !st.isFile()) { res.writeHead(404); return res.end('Nicht gefunden'); }
   let e = sc.get(f);
-  if (!e || e.m !== st.mtimeMs) {
-    const buf = fs.readFileSync(f), ext = path.extname(f);
-    e = { m: st.mtimeMs, buf, type: MIME[ext] || 'application/octet-stream', etag: '"' + crypto.createHash('sha1').update(buf).digest('hex').slice(0, 16) + '"', gz: ext === '.png' ? null : zlib.gzipSync(buf) };
+  const html = path.extname(f) === '.html', ver = html ? appVer() : '';
+  if (!e || e.m !== st.mtimeMs || e.ver !== ver) {                       // HTML trägt die Versionsnummer -> bei neuer Version neu aufbauen
+    const ext = path.extname(f), raw = fs.readFileSync(f), buf = html ? Buffer.from(raw.toString('utf8').replace(/__APPVER__/g, ver)) : raw;
+    e = { m: st.mtimeMs, ver, buf, type: MIME[ext] || 'application/octet-stream', etag: '"' + crypto.createHash('sha1').update(buf).digest('hex').slice(0, 16) + '"', gz: ext === '.png' ? null : zlib.gzipSync(buf) };
     sc.set(f, e);
   }
   if (req.headers['if-none-match'] === e.etag) { res.writeHead(304, { ETag: e.etag }); return res.end(); }
