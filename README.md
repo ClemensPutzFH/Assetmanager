@@ -13,9 +13,10 @@ Dann im Browser `http://localhost:3000` öffnen.
 | `PORT` | Port des Servers | `3000` |
 | `HOST` | Adresse, auf der gelauscht wird (`127.0.0.1` = nur lokal, z. B. hinter Reverse Proxy) | `0.0.0.0` |
 | `DISPO_PIN` | PIN der Disponenten (**bitte ändern**) | `2510` |
+| `UPLOAD_PIN` | Zusätzlicher PIN für den Tab „Upload“ (Hochladen und Löschen) (**bitte ändern**) | `1025` |
 | `DATA_DIR` | Ordner für `data.db` und Sicherungen | `./data` |
 
-Beispiel: `DISPO_PIN=4711 PORT=8080 node server.js`
+Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 
 ## Daten
 - Beim ersten Start entsteht `data/data.db` (zusammen mit `data.db-wal` und `data.db-shm`, das ist normal).
@@ -43,7 +44,8 @@ Beispiel: `DISPO_PIN=4711 PORT=8080 node server.js`
 - **Nur einen Serverprozess** pro Datenbank starten.
 
 ## Sicherheit
-- Die **Disponenten-PIN wird auf dem Server geprüft** (5 Fehlversuche pro 10 Minuten und IP). Upload, Löschen und Export gehen nur mit PIN. Die Anmeldung gilt 12 Stunden und übersteht einen Neustart.
+- Die **Disponenten-PIN wird auf dem Server geprüft** (5 Fehlversuche pro 10 Minuten und IP). Export und Abhaken gehen nur mit PIN. Die Anmeldung gilt 12 Stunden und übersteht einen Neustart.
+- **Upload und Löschen** brauchen zusätzlich den **Upload-PIN**. Er wird bei jedem Öffnen des Tabs „Upload“ abgefragt, ebenfalls auf dem Server geprüft (5 Fehlversuche pro 10 Minuten) und gilt höchstens 30 Minuten.
 - **Monteure und Lesezugriffe brauchen keine Anmeldung.** Wer die Adresse kennt, kann Aufträge lesen und Ergebnisse schreiben. Für den Einsatz im Internet daher den Zugang vorschalten, z. B. Basic-Auth im Reverse Proxy oder nur über VPN/Firmennetz.
 
 ## Offline

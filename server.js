@@ -8,6 +8,7 @@ catch { console.error(`Dieser Server braucht Node.js 22.13 oder neuer (eingebaut
 const PORT = +process.env.PORT || 3000, HOST = process.env.HOST || '0.0.0.0';
 const DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const PIN = String(process.env.DISPO_PIN || '2510');           // PIN der Disponenten – per Umgebungsvariable ändern!
+const UPLOAD_PIN = String(process.env.UPLOAD_PIN || '1025');   // zusätzlicher PIN für Upload & Löschen – per Umgebungsvariable ändern!
 const PUB = path.join(__dirname, 'public');
 fs.mkdirSync(path.join(DIR, 'backups'), { recursive: true });
 
@@ -97,18 +98,21 @@ const readBody = (req, max = 30e6) => new Promise((ok, no) => {
 });
 
 // Anmeldung Disponent: PIN -> signiertes Token (12 h, übersteht Neustarts); Fehlversuche begrenzt
+// Upload-PIN: eigenes Token (Bereich "up:", 30 Min) – nötig für Upload und Löschen
 let secret = getMeta('secret'); if (!secret) { secret = crypto.randomBytes(32).toString('hex'); setMeta('secret', secret); }
 const sign = e => crypto.createHmac('sha256', secret).update(String(e)).digest('hex');
 const eq = (a, b) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); };
 const fails = new Map();
-function login(ip, pin) {
-  const f = fails.get(ip) || { n: 0, t: Date.now() };
+function login(ip, pin, want = PIN, scope = '') {
+  const k = scope + ip, f = fails.get(k) || { n: 0, t: Date.now() };
   if (Date.now() - f.t > 600e3) { f.n = 0; f.t = Date.now(); }
   if (f.n >= 5) return null;
-  if (eq(String(pin), PIN)) { fails.delete(ip); const e = Date.now() + 12 * 3600e3; return e + '.' + sign(e); }
-  f.n++; fails.set(ip, f); return null;
+  if (eq(String(pin), want)) { fails.delete(k); const e = Date.now() + (scope ? 30 * 60e3 : 12 * 3600e3); return e + '.' + sign(scope + e); }
+  f.n++; fails.set(k, f); return null;
 }
-const isDispo = req => { const [e, sig] = (req.headers.authorization || '').replace(/^Bearer /, '').split('.'); return !!(e && sig && +e > Date.now() && eq(sign(e), sig)); };
+const tokOk = (t, scope = '') => { const [e, sig] = String(t || '').split('.'); return !!(e && sig && +e > Date.now() && eq(sign(scope + e), sig)); };
+const isDispo = req => tokOk((req.headers.authorization || '').replace(/^Bearer /, ''));
+const isUpload = req => tokOk(req.headers['x-upload-token'], 'up:');
 
 // Ergebnis-Dokument prüfen und bereinigen (Whitelist)
 function cleanErg(a, d) {
@@ -174,6 +178,13 @@ async function api(req, res, url) {
   }
   // ab hier nur Disponent
   if (!isDispo(req)) return send(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
+  if (p === '/api/login-upload' && m === 'POST') {
+    const t = login(ip, (await readBody(req, 1e4)).pin, UPLOAD_PIN, 'up:');
+    return t ? send(req, res, 200, { token: t }) : send(req, res, 403, { error: 'Falscher Upload-PIN (oder zu viele Versuche – 10 Minuten warten)' });
+  }
+  // Upload und Löschen von Aufträgen/Prüflosen nur mit zusätzlichem Upload-PIN
+  if ((p === '/api/orders' || p === '/api/pruef') && (m === 'POST' || m === 'DELETE') && !isUpload(req))
+    return send(req, res, 401, { error: 'Bitte den Upload-PIN (erneut) eingeben', up: 1 });
   if (p === '/api/pruef/get' && m === 'POST') {                                    // Export: Prüflisten bestimmter Aufträge
     const ids = (await readBody(req)).ids, map = {};
     if (Array.isArray(ids)) for (const r of db.prepare('SELECT auftrag,items FROM pruef WHERE auftrag IN (SELECT value FROM json_each(?))').all(JSON.stringify(ids.map(String)))) map[r.auftrag] = JSON.parse(r.items);

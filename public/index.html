@@ -65,6 +65,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,20rem),1fr));gap:10px;margin-bottom:10px}.grid>.card{margin:0;display:flex;flex-direction:column}.grid>.card>.mkr{margin-top:auto;padding-top:8px}
 .tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,18rem),1fr));gap:10px}
 .ugrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,26rem),1fr));gap:10px;align-items:start;margin-bottom:10px}.ugrid>.card{margin:0}
+.pinc{max-width:28rem}
 .bar.stk{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);margin:-8px -16px 4px;padding:8px 16px}
 .det>*{min-width:0}
 .pcard{container-type:inline-size}
@@ -104,6 +105,7 @@ const app=document.getElementById('app');
 const el=(t,p,...c)=>{const e=document.createElement(t);for(const k in p||{}){const v=p[k];if(v==null||v===false)continue;if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(k==='value')e.value=v;else e.setAttribute(k,v)}e.append(...c.flat().filter(x=>x!=null&&x!==false));return e};
 let since=0,sk='',teamList=[],ordersMap=new Map(),ersSq=new Map(),plC=null,again=false,tok='',net=true,polling=false,cacheT=null,chunks=new Map(),meta=null,ready=false,canWrite=true,err='',msg='',busy=false,arm=false,q='',ft='',openA=null,pl={},pmeta=null,pcache=new Map(),armP=false,sy=0,ers=new Map(),pend=new Map(),wq=new Map(),dtab='ue',fs='',armA=false,mf='',edi=null,edt='',edE=false,unlocked=false,pinv='',pinE=false,tH='',tM='',tE='',tD='',tV='';
 let marks=new Map(),dha='',rf='',rv='',rb='',armM=false,und=null,undT=null;
+let upTok='',upPin='',upE=false;   // Upload-PIN: Token gilt nur, solange der Tab „Upload“ offen ist
 try{dha=localStorage.getItem('dha')||''}catch(e){}
 let ses={role:null,team:null};
 try{ses=JSON.parse(localStorage.getItem('ses'))||ses}catch(e){}
@@ -339,13 +341,14 @@ async function api(method,url,body,timeout=20000){
   const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),timeout);
   let r;
   try{
-    r=await fetch(url,{method,headers:{'Content-Type':'application/json',...(tok?{Authorization:'Bearer '+tok}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:ctl.signal});
+    r=await fetch(url,{method,headers:{'Content-Type':'application/json',...(tok?{Authorization:'Bearer '+tok}:{}),...(upTok?{'X-Upload-Token':upTok}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:ctl.signal});
   }catch(e){clearTimeout(t);const n=new Error('Keine Verbindung zum Server');n.net=true;throw n}
   clearTimeout(t);
   let j={};try{j=await r.json()}catch(e){}
   if(!r.ok){
     const e=new Error(j.error||('Fehler '+r.status));e.status=r.status;
-    if(r.status===401&&tok){tok='';unlocked=false;render()}
+    if(r.status===401&&j.up){upTok='';render()}                 // Upload-PIN fehlt/abgelaufen -> nur Upload-PIN neu abfragen
+    else if(r.status===401&&tok){tok='';unlocked=false;render()}
     throw e;
   }
   return j;
@@ -611,7 +614,7 @@ addEventListener('popstate',()=>{
   else closeA();
 });
 document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!openA||dlg.open)return;e.preventDefault();if(edi!==null){edi=null;render()}else if(armA){armA=false;render()}else setTimeout(requestBack,0)});   // verzögert: sonst schließt derselbe Esc-Druck den neuen Dialog gleich wieder
-const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;save();render();poll();prefetch()};
+const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;upTok='';upPin='';upE=false;save();render();poll();prefetch()};
 
 function render(){
   const f=document.activeElement,k=f&&f.dataset&&f.dataset.keep,pos=k?f.selectionStart:0;
@@ -714,7 +717,7 @@ function draw(){
   }
   // Disponent
   app.append(el('div',{class:'bar'},el('h1',{},'Disponent'),back),
-    el('div',{class:'tabs'},el('button',{class:dtab==='ue'?'on':null,onclick:()=>{dtab='ue';render()}},'Übersicht'),el('button',{class:dtab==='st'?'on':null,onclick:()=>{dtab='st';render()}},'Fortschritt'),el('button',{class:dtab==='up'?'on':null,onclick:()=>{dtab='up';render()}},'Upload')));
+    el('div',{class:'tabs'},el('button',{class:dtab==='ue'?'on':null,onclick:()=>{dtab='ue';upTok='';render()}},'Übersicht'),el('button',{class:dtab==='st'?'on':null,onclick:()=>{dtab='st';upTok='';render()}},'Fortschritt'),el('button',{class:dtab==='up'?'on':null,onclick:()=>{if(dtab!=='up'){dtab='up';upTok='';upPin='';upE=false}render();const n=app.querySelector('[data-keep="u"]');if(n)n.focus()}},'Upload')));
   if(dtab==='st'){
     const list=teamStats();
     if(!list.length){app.append(el('p',{class:'mu'},ready?'Noch keine Aufträge – im Tab „Upload“ hochladen.':'Lade …'));return}
@@ -722,6 +725,21 @@ function draw(){
     const bis=FRIST(),at=arbTage(bis),bisTxt=bis.toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'});
     app.append(el('div',{class:'gpage'},gesamtCard(T,at,bisTxt),teamCard(list,T,at)));
     if(meta)app.append(el('p',{class:'mu'},'Stand: '+new Date(meta.at).toLocaleString('de-AT')+' · aktualisiert sich automatisch'));
+    return;
+  }
+  if(dtab==='up'&&!upTok){
+    const chkU=async()=>{
+      const p=upPin;upPin='';
+      try{upTok=(await api('POST','/api/login-upload',{pin:p})).token;upE=false;err=''}
+      catch(e){upE=e.net?'Keine Verbindung zum Server':(e.message||'Falscher Upload-PIN.')}
+      render();
+    };
+    app.append(el('div',{class:'card pinc'},el('b',{},'Upload-PIN eingeben'),
+      el('p',{class:'mu'},'Für Hochladen und Löschen ist ein eigener PIN nötig.'),
+      el('input',{type:'password',inputmode:'numeric',autocomplete:'off',maxlength:'4','data-keep':'u',placeholder:'••••',value:upPin,
+        oninput:e=>{upPin=e.target.value.replace(/\D/g,'');if(upPin.length===4)chkU()}}),
+      upE&&el('p',{class:'mu er'},upE),
+      el('button',{class:'pri',onclick:chkU},'Weiter')));
     return;
   }
   if(dtab==='up'){
