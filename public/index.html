@@ -99,16 +99,16 @@ async function wipePl(){
   catch(e){err=errTxt(e)}
   busy=false;render();
 }
-const STL={ok:'OK',nok:'Nicht OK',teil:'In Arbeit',offen:'Offen'};
+const STL={done:'Erledigt',teil:'In Arbeit',offen:'Offen'};
 async function exportXlsx(rows){
   busy=true;err='';msg='Erstelle Excel …';render();
   try{
     const lists=new Map(Object.entries((await api('POST','/api/pruef/get',{ids:rows.map(r=>r.auftrag)},120000)).map));
-    const A=[['Auftrag','Team (Verantw. Arb. Pl.)','Techn. Platz','Auftragsart','PLZ','Straße','Kurztext','Eckstarttermin','Eckendtermin','Prüfstatus','Prüfobjekte gesamt','OK','Nicht OK','Offen','Durchgeführt am','Beginn (Uhrzeit)','Dauer (Min)','Dauer (Std)','Zeit zurückgemeldet am','Nicht OK – Prüfobjekt → Text','Hinweis']];
+    const A=[['Auftrag','Team (Verantw. Arb. Pl.)','Techn. Platz','Auftragsart','PLZ','Straße','Kurztext','Eckstarttermin','Eckendtermin','Status','Prüfergebnis','Prüfobjekte gesamt','OK','Nicht OK','Offen','Durchgeführt am','Beginn (Uhrzeit)','Dauer (Min)','Dauer (Std)','Zeit zurückgemeldet am','Nicht OK – Prüfobjekt → Text','Hinweis']];
     const P=[['Auftrag','Team','Auftrag Kurztext','Pos.','Prüfobjekt (Kurztext)','Ergebnis','Text bei Nicht OK']];
     for(const r of rows){
       const L=lists.get(r.auftrag)||[],x=stat(r),n=L.length,valid=!!(x.s&&n>0&&x.n===n&&x.s.length===n),stale=!!(x.s&&n>0&&!valid),tot=n||x.n;
-      A.push([r.auftrag,r.team,r.tp,r.art,r.plz,r.str,r.kurz,r.start,r.ende,STL[x.st],tot,x.ok,x.nx,Math.max(0,tot-x.ok-x.nx),di(dOf(x)),tf(x.von),x.min!=null?x.min:null,x.min!=null?Math.round(x.min/60*100)/100:null,x.tat?new Date(x.tat).toLocaleString('de-AT'):null,x.nok.map(z=>z.m?`${z.t} → ${z.m}`:z.t).join(' | '),stale?'Prüfliste seit der Bewertung geändert':'']);
+      A.push([r.auftrag,r.team,r.tp,r.art,r.plz,r.str,r.kurz,r.start,r.ende,STL[stale&&x.st==='done'?'teil':x.st],x.nx>0?(x.op>0?'Nicht OK (unvollständig)':'Nicht OK'):x.n>0&&!x.op?'OK':x.ok>0?'unvollständig':'',tot,x.ok,x.nx,Math.max(0,tot-x.ok-x.nx),di(dOf(x)),tf(x.von),x.min!=null?x.min:null,x.min!=null?Math.round(x.min/60*100)/100:null,x.tat?new Date(x.tat).toLocaleString('de-AT'):null,x.nok.map(z=>z.m?`${z.t} → ${z.m}`:z.t).join(' | '),stale?'Prüfliste seit der Bewertung geändert':'']);
       L.forEach((t,i)=>{
         const c=valid?x.s[i]:'-',z=valid?x.nok.find(z=>z.i===i):null;
         P.push([r.auftrag,r.team,r.kurz,i+1,t,stale?'veraltet':c==='o'?'OK':c==='x'?'Nicht OK':'Offen',z?z.m:'']);
@@ -134,12 +134,19 @@ async function showOrder(r){
 
 // Prüfergebnisse: ergebnis/<Auftrag> = {a,team,n,ok,nx,s:'o|x|-' je Prüfobjekt,nok:[Kurztexte]}
 const docOf=a=>pend.get(a)||ers.get(a);
-const stat=r=>{const d=docOf(r.auftrag);if(!d)return{st:'offen',ok:0,n:0,nx:0,nok:[]};return{...d,nok:(d.nok||[]).map(z=>typeof z==='string'?{t:z,m:''}:z),st:d.nx>0?'nok':d.n>0&&d.ok===d.n?'ok':d.ok>0?'teil':'offen'}};
-const stTag=r=>{const x=stat(r);return x.st==='offen'?null:el('span',{class:'tag st-'+x.st},x.st==='ok'?'✓ OK':x.st==='nok'?`✗ Nicht OK (${x.nx})`:`${x.ok}/${x.n}`)};
+// st: done = erledigt (alle Prüfobjekte bewertet UND Zeit vollständig), teil = begonnen, offen = nichts erfasst
+// Nicht OK (nx>0) ist davon unabhängig – ein Auftrag kann Nicht OK UND erledigt bzw. in Arbeit sein; op = noch offene Prüfobjekte
+const stat=r=>{const d=docOf(r.auftrag);if(!d)return{st:'offen',ok:0,n:0,nx:0,op:0,nok:[]};
+  const op=Math.max(0,(d.n|0)-(d.ok|0)-(d.nx|0));
+  return{...d,op,nok:(d.nok||[]).map(z=>typeof z==='string'?{t:z,m:''}:z),st:d.n>0&&!op&&zOk(d)?'done':d.ok+d.nx>0||d.min!=null?'teil':'offen'}};
+const stTag=r=>{const x=stat(r);return[
+  x.nx>0&&el('span',{class:'tag st-nok'},`✗ Nicht OK (${x.nx})`),
+  x.st==='done'?el('span',{class:'tag st-ok'},'✓ Erledigt')
+  :x.st==='teil'&&x.op>0?el('span',{class:'tag st-teil'},`◐ ${x.op} von ${x.n} offen`)
+  :x.st==='teil'&&x.n>0?el('span',{class:'tag st-teil'},'Alle geprüft'):null]};
 // Zeitrückmeldung vollständig = Datum + Beginn + Dauer
 const zOk=d=>!!(d&&d.min>=1&&dOf(d)&&/^\d{2}:\d{2}$/.test(d.von||''));
-// erledigt = alle Prüfobjekte bewertet UND Zeit vollständig zurückgemeldet
-const fin=r=>{const x=stat(r);return x.n>0&&x.ok+x.nx===x.n&&zOk(x)};
+const fin=r=>stat(r).st==='done';
 const chips=(items,cur,set)=>el('div',{class:'chips'},items.map(([k,l,n])=>el('button',{class:'chip'+(k==='nok'?' nk':'')+(cur===k?' on':''),onclick:()=>{set(k);render()}},`${l} (${n})`)));
 function setS(r,L,s,T={}){
   const nok=[...s].flatMap((c,k)=>c==='x'?[{i:k,t:L[k],m:T[k]||''}]:[]);
@@ -187,6 +194,7 @@ function timeCard(r,mon){
     el('p',{class:'mu'},has?`Durchgeführt am ${dfmt(dOf(d))||'–'}${d.von?' · ab '+d.von+' Uhr':''} · Dauer ${fmt(d.min)}`:'Noch keine Zeit zurückgemeldet.'));
   if(has&&!zOk(d))c.append(el('p',{class:'mu er'},'Zeitrückmeldung unvollständig (Beginn fehlt) – Auftrag zählt noch nicht als erledigt.'));
   else if(!has&&d&&d.n>0&&d.ok+d.nx===d.n)c.append(el('p',{class:'mu er'},'Alle Prüfobjekte bewertet – für „Erledigt“ fehlt noch die Zeitrückmeldung.'));
+  else if(has&&stat(r).op>0)c.append(el('p',{class:'mu er'},`Zeit erfasst – für „Erledigt“ ${stat(r).op===1?'fehlt noch 1 Prüfobjekt':'fehlen noch '+stat(r).op+' Prüfobjekte'}.`));
   if(!mon)return c;
   const inp=(k,v,set)=>el('input',{class:'tm',type:'text',inputmode:'numeric',maxlength:'2','data-keep':k,placeholder:'0',value:v,oninput:e=>{set(e.target.value=e.target.value.replace(/\D/g,''))}});
   const gestern=()=>{const g=new Date();g.setDate(g.getDate()-1);return g.toLocaleDateString('sv-SE')};
@@ -476,13 +484,13 @@ function draw(){
   // Übersicht: Status je Auftrag, Filter
   if(ready&&!chunks.size)app.append(el('p',{class:'mu'},'Noch keine Aufträge – im Tab „Upload" hochladen.'));
   const ts=teams();
-  const base=rowsAll().filter(r=>!ft||r.team===ft),cnt={ok:0,nok:0,teil:0,offen:0};
-  base.forEach(r=>cnt[stat(r).st]++);
-  const view=()=>base.filter(r=>!fs||stat(r).st===fs);
+  const base=rowsAll().filter(r=>!ft||r.team===ft),cnt={done:0,teil:0,offen:0,nok:0};
+  base.forEach(r=>{const x=stat(r);cnt[x.st]++;if(x.nx>0)cnt.nok++});
+  const view=()=>base.filter(r=>!fs||(fs==='nok'?stat(r).nx>0:stat(r).st===fs));
   const tn=new Map();rowsAll().forEach(r=>{if(stat(r).nx>0)tn.set(r.team,(tn.get(r.team)||0)+1)});
   const sel=el('select',{onchange:e=>{ft=e.target.value;render()}},el('option',{value:''},'Alle Teams'),ts.map(([t,n])=>el('option',{value:t,...(t===ft?{selected:'selected'}:{})},`${t} (${n})`+(tn.get(t)?` · ⚠ ${tn.get(t)} Nicht OK`:''))));
   app.append(el('div',{class:'tools'},el('span',{class:'mu'},'Team'),sel));
-  app.append(chips([['','Alle',base.length],['nok','Nicht OK',cnt.nok],['ok','OK',cnt.ok],['teil','In Arbeit',cnt.teil],['offen','Offen',cnt.offen]],fs,k=>{fs=k}));
+  app.append(chips([['','Alle',base.length],['nok','Nicht OK',cnt.nok],['done','Erledigt',cnt.done],['teil','In Arbeit',cnt.teil],['offen','Offen',cnt.offen]],fs,k=>{fs=k}));
   app.append(el('button',{class:'dl',disabled:busy||!view().length?'disabled':null,onclick:()=>exportXlsx(view())},`⬇ Excel exportieren (${view().length} Aufträge${ft||fs?', gefiltert':''})`));
   const box=el('div',{});
   app.append(search(v=>{q=v;box.replaceChildren(list(view(),true))}),box);
