@@ -1,0 +1,9 @@
+{
+  "name": "auftraege-nach-team",
+  "version": "1.0.0",
+  "description": "Aufträge, Prüfobjekte und Rückmeldungen für Monteure und Disponenten – Daten in SQLite",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=22.13" },
+  "license": "UNLICENSED"
+}
