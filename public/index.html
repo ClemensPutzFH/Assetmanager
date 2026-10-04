@@ -48,7 +48,7 @@ button.dl{display:block;width:100%;margin-bottom:12px}
 input.tm{font:inherit;font-size:20px;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px;width:72px;text-align:center;box-sizing:border-box}
 .zt{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.qk{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.qk button{padding:8px 12px;border-radius:20px;font-size:14px}
 input.dt{font:inherit;font-size:18px;color:var(--tx);color-scheme:light dark;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:9px 10px;box-sizing:border-box;flex:1;min-width:150px}
-.flt{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;margin-bottom:12px}.flt select{width:100%;min-width:0}.flt .rg{grid-column:1/-1;display:flex;gap:8px;align-items:center}.flt .rg .dt{min-width:0;font-size:16px}
+.flt{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;margin-bottom:12px}.flt select{width:100%;min-width:0}.flt .rg{grid-column:1/-1;display:flex;gap:8px;align-items:center}.flt .rg .dt{min-width:0;font-size:16px}.flt .rs{grid-column:1/-1;color:var(--er)}
 .mkr{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}.mkb{padding:6px 12px;border-radius:20px;font-size:14px}.mkb.on{background:var(--ok);border-color:var(--ok);color:#fff}.mkb.ch{border-color:var(--nk);color:var(--nk);font-weight:600}.card.dn{opacity:.6}
 .msg button{margin-left:8px;padding:4px 10px;font-size:14px}
 </style></head><body><main id="app"></main>
@@ -533,14 +533,16 @@ function draw(){
   base.forEach(r=>{const x=stat(r);cnt[x.st]++;if(x.nx>0)cnt.nok++});
   const view=()=>base.filter(fsOk);
   const tn=new Map();rowsAll().forEach(r=>{if(stat(r).nx>0)tn.set(r.team,(tn.get(r.team)||0)+1)});
-  const sel=el('select',{onchange:e=>{ft=e.target.value;render()}},el('option',{value:''},'Alle Teams'),ts.map(([t,n])=>el('option',{value:t,...(t===ft?{selected:'selected'}:{})},`${t} (${n})`+(tn.get(t)?` · ⚠ ${tn.get(t)} Nicht OK`:''))));
+  const sel=el('select',{onchange:e=>{ft=e.target.value;armM=false;render()}},el('option',{value:''},'Alle Teams'),ts.map(([t,n])=>el('option',{value:t,...(t===ft?{selected:'selected'}:{})},`${t} (${n})`+(tn.get(t)?` · ⚠ ${tn.get(t)} Nicht OK`:''))));
   const opt=(v,l,c)=>el('option',{value:v,...(v===c?{selected:'selected'}:{})},l);
   app.append(el('div',{class:'flt'},
     el('span',{class:'mu'},'Team'),sel,
-    el('span',{class:'mu'},'Rückgemeldet'),el('select',{onchange:e=>{rf=e.target.value;armM=false;render()}},opt('','Beliebig',rf),opt('h','Heute',rf),opt('g','Gestern',rf),opt('7','Letzte 7 Tage',rf),opt('m','Dieser Monat',rf),opt('z','Zeitraum …',rf)),
+    ft&&el('button',{class:'rs',onclick:()=>{ft='';armM=false;render()}},'✕ Teamfilter aufheben'),
+    el('span',{class:'mu'},'Rückgemeldet'),el('select',{onchange:e=>{rf=e.target.value;armM=false;render()}},opt('','Kein Filter',rf),opt('h','Heute',rf),opt('g','Gestern',rf),opt('7','Letzte 7 Tage',rf),opt('m','Dieser Monat',rf),opt('z','Zeitraum …',rf)),
     rf==='z'&&el('div',{class:'rg'},
       el('input',{class:'dt',type:'date','data-nr':'1',max:today(),value:rv,onchange:e=>{rv=e.target.value;armM=false;render()}}),el('span',{},'–'),
-      el('input',{class:'dt',type:'date','data-nr':'1',max:today(),value:rb,onchange:e=>{rb=e.target.value;armM=false;render()}}))));
+      el('input',{class:'dt',type:'date','data-nr':'1',max:today(),value:rb,onchange:e=>{rb=e.target.value;armM=false;render()}})),
+    rf&&el('button',{class:'rs',onclick:()=>{rf='';rv='';rb='';armM=false;render()}},'✕ Zeitfilter aufheben')));
   if(rf==='z'&&rv&&rb&&rv>rb)app.append(el('p',{class:'mu er'},'„Von“ liegt nach „Bis“ – es kann nichts gefunden werden.'));
   app.append(chips([['','Alle',base.length],['nok','Nicht OK',cnt.nok],['done','Erledigt',cnt.done],['teil','In Arbeit',cnt.teil],['offen','Offen',cnt.offen]],fs,k=>{fs=k}));
   const flt=!!(ft||fs||dha||rf||q.trim());
