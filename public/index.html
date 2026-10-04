@@ -80,6 +80,8 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
   .srow{display:flex;gap:8px 16px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.srow>*{margin-bottom:0}.srow .tools{flex:1 1 20rem}
 }
 @media(hover:hover){.card.cl{transition:border-color .12s}.card.cl:hover{border-color:var(--ac)}button:not(:disabled):hover{filter:brightness(.96)}.dk button:not(:disabled):hover{filter:brightness(1.2)}}
+.dlg{border:1px solid var(--bd);border-radius:14px;padding:0;background:var(--card);color:var(--tx);width:min(calc(100vw - 32px),26rem);max-width:none;box-shadow:0 10px 40px rgba(0,0,0,.3)}.dlg::backdrop{background:rgba(0,0,0,.5)}
+.dlg-b{padding:18px}.dlg-t{font-size:1.125rem;font-weight:700;margin-bottom:6px}.dlg p{margin:8px 0}.dlg ul{margin:6px 0 10px;padding-left:1.2em}.dlg li{margin:4px 0;color:var(--er);font-weight:600}.dlg .ob{flex-wrap:wrap;margin-top:14px}.dlg .ob button{flex:1 1 10rem;padding:12px 10px}
 </style></head><body><header class="top" id="top"></header><main id="app"></main>
 <script>
 const app=document.getElementById('app');
@@ -184,7 +186,7 @@ async function exportXlsx(rows){
   busy=false;render();
 }
 async function showOrder(r){
-  openA=r;armA=false;edi=null;pl={st:'load'};const d0=docOf(r.auftrag);tH=d0&&d0.min!=null?String(Math.floor(d0.min/60)):'';tM=d0&&d0.min!=null?String(d0.min%60):'';tE='';tD=d0&&d0.min!=null?(dOf(d0)||today()):today();tV=d0&&d0.min!=null&&d0.von?d0.von:'';render();
+  openA=r;armA=false;edi=null;pl={st:'load'};const d0=docOf(r.auftrag);tH=d0&&d0.min!=null?String(Math.floor(d0.min/60)):'';tM=d0&&d0.min!=null?String(d0.min%60):'';tE='';tD=d0&&d0.min!=null?(dOf(d0)||today()):today();tV=d0&&d0.min!=null&&d0.von?d0.von:'';t0=tSnap();render();
   try{
     let L=pcache.get(r.auftrag);
     if(!L){L=(await api('GET','/api/pruef?a='+encodeURIComponent(r.auftrag))).list;pcache.set(r.auftrag,L)}
@@ -235,6 +237,7 @@ const di=v=>/^\d{4}-\d{2}-\d{2}$/.test(v||'')?Math.round(Date.UTC(+v.slice(0,4),
 const tf=v=>/^\d{2}:\d{2}$/.test(v||'')?(+v.slice(0,2)*60+ +v.slice(3,5))/1440:null;
 const dOf=d=>d.dat||(d.tat?new Date(d.tat).toLocaleDateString('sv-SE'):'');
 function setTime(r,L,min,dat,von){
+  t0=tSnap();
   const d=docOf(r.auftrag),n=L.length,ok=!!(d&&d.s&&d.n===n&&d.s.length===n);
   const o={...(ok?d:{a:r.auftrag,team:r.team,n,ok:0,nx:0,s:'-'.repeat(n),nok:[]})};
   delete o.min;delete o.tat;delete o.dat;delete o.von;
@@ -252,7 +255,7 @@ function saveTime(r,L){
 function delTime(r,L){tH='';tM='';tE='';tV='';tD=today();setTime(r,L,null)}
 function timeCard(r,mon){
   const d=docOf(r.auftrag),L=pl.st==='ok'?pl.list:null,has=!!(d&&d.min!=null);
-  const c=el('div',{class:'card'},el('b',{},'Zeit'),
+  const c=el('div',{class:'card','data-zeit':'1'},el('b',{},'Zeit'),
     el('p',{class:'mu'},has?`Durchgeführt am ${dfmt(dOf(d))||'–'}${d.von?' · ab '+d.von+' Uhr':''} · Dauer ${fmt(d.min)}`:'Noch keine Zeit zurückgemeldet.'));
   if(has&&!zOk(d))c.append(el('p',{class:'mu er'},'Zeitrückmeldung unvollständig (Beginn fehlt) – Auftrag zählt noch nicht als erledigt.'));
   else if(!has&&d&&d.n>0&&d.ok+d.nx===d.n)c.append(el('p',{class:'mu er'},'Alle Prüfobjekte bewertet – für „Erledigt“ fehlt noch die Zeitrückmeldung.'));
@@ -438,7 +441,7 @@ const rRange=()=>rf==='h'?[today(),today()]:rf==='g'?[addD(-1),addD(-1)]:rf==='7
 const rmD=r=>{const d=docOf(r.auftrag);return d&&d.min!=null&&d.tat?new Date(d.tat).toLocaleDateString('sv-SE'):''};
 const inR=(r,R)=>{const x=rmD(r);return!!x&&(!R[0]||x>=R[0])&&(!R[1]||x<=R[1])};
 const matchQ=r=>{const t=q.trim().toLowerCase();return!t||[r.auftrag,r.kurz,r.str,r.plz,r.tp].join(' ').toLowerCase().includes(t)};
-const card=(r,showTeam,click=true)=>{const dsp=ses.role==='dispo',d=docOf(r.auftrag);return el('div',{class:'card'+(click?' cl':'')+(dsp&&click&&mk(r.auftrag)===1?' dn':''),onclick:click?()=>{sy=scrollY;showOrder(r);scrollTo(0,0)}:null},
+const card=(r,showTeam,click=true)=>{const dsp=ses.role==='dispo',d=docOf(r.auftrag);return el('div',{class:'card'+(click?' cl':'')+(dsp&&click&&mk(r.auftrag)===1?' dn':''),onclick:click?()=>{sy=scrollY;if(!(history.state&&history.state.a))history.pushState({a:r.auftrag},'');showOrder(r);scrollTo(0,0)}:null},
   el('div',{class:'row'},el('b',{},r.auftrag),showTeam&&el('span',{class:'tag'},r.team),r.art&&el('span',{class:'tag'},r.art),stTag(r),zTag(r),click&&el('span',{class:'chev'},'Prüfobjekte ›')),
   el('div',{class:'kt'},r.kurz||'–'),
   (r.str||r.plz)&&el('div',{class:'mu'},[r.plz,r.str].filter(Boolean).join(' ')),
@@ -481,8 +484,54 @@ function list(rows,showTeam){
   return box;
 }
 const search=(onIn,extra)=>el('div',{class:'tools'},extra,el('input',{type:'search','data-keep':'s',placeholder:'Suchen (Auftrag, Kurztext, Straße …)',value:q,oninput:e=>onIn(e.target.value)}));
-const closeA=()=>{openA=null;armA=false;edi=null;render();scrollTo(0,sy)};
-document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!openA)return;if(edi!==null){edi=null;render()}else if(armA){armA=false;render()}else closeA()});
+const closeA=()=>{openA=null;armA=false;edi=null;render();scrollTo(0,sy);if(history.state&&history.state.a)history.back()};
+// Monteur verlässt einen angefangenen, aber unvollständigen Auftrag (oder hat ungespeicherte Eingaben) -> nachfragen
+const tSnap=()=>[tH,tM,tD,tV].join('|');
+let t0='';
+function leaveInfo(){
+  const r=openA;if(!r||ses.role!=='monteur')return null;
+  const d=docOf(r.auftrag),L=pl.st==='ok'?pl.list:null,it=[];let uns=false;
+  if(d&&((d.ok|0)+(d.nx|0)>0||d.min!=null)){            // nur wenn schon etwas erfasst wurde (reines Ansehen -> kein Hinweis)
+    const n=L?L.length:(d.n|0),valid=!L||!!(d.s&&d.n===n&&d.s.length===n);
+    if(!valid)it.push(['Die Prüfliste wurde geändert – bitte neu prüfen','.pcard .it']);
+    else{const op=Math.max(0,n-(d.ok|0)-(d.nx|0));if(op>0)it.push([op===1?'1 Prüfobjekt ist noch offen':`${op} Prüfobjekte sind noch offen`,'.pcard [data-op]'])}
+    if(!zOk(d))it.push([d.min!=null?'Bei der Zeit fehlt die Beginn-Uhrzeit':'Die Zeitrückmeldung fehlt','[data-zeit]']);
+  }
+  if(t0&&tSnap()!==t0&&((d&&d.min!=null)||tH||tM||tV)){uns=true;it.unshift(['Die eingegebene Zeit ist noch nicht gespeichert','[data-zeit]'])}
+  if(edi!==null&&L){const m=edt.trim();if(m&&m!==(cur(r.auftrag,L).T[edi]||'')){uns=true;it.unshift(['Der Nicht-OK-Text ist noch nicht gespeichert','[data-keep="e"]'])}}
+  return it.length?{it,uns}:null;
+}
+const dlg=el('dialog',{class:'dlg'});document.body.append(dlg);
+let dlgSel=null;
+dlg.addEventListener('click',e=>{if(e.target===dlg)dlg.close()});   // Tipp neben das Fenster = bleiben
+dlg.addEventListener('close',()=>{
+  if(dlg.returnValue==='go'){closeA();return}
+  const t=dlgSel&&app.querySelector(dlgSel);if(t)t.scrollIntoView({behavior:'smooth',block:'center'});   // zur fehlenden Stelle springen
+});
+function askLeave(info){
+  dlgSel=info.it[0][1];
+  if(typeof dlg.showModal!=='function'){if(confirm('Noch nicht alles ausgefüllt:\n– '+info.it.map(x=>x[0]).join('\n– ')+'\n\nTrotzdem zurück zur Liste?'))closeA();return}
+  dlg.returnValue='';
+  dlg.replaceChildren(el('div',{class:'dlg-b',role:'alertdialog','aria-labelledby':'dlgt'},
+    el('div',{class:'dlg-t',id:'dlgt'},'Noch nicht alles ausgefüllt'),
+    el('p',{},'Bei diesem Auftrag fehlt noch:'),
+    el('ul',{},info.it.map(([t])=>el('li',{},t))),
+    el('p',{class:'mu'},info.uns?'Nicht gespeicherte Eingaben gehen verloren, wenn du jetzt zurückgehst.':'Deine bisherigen Eingaben sind gespeichert.'),
+    el('div',{class:'ob'},
+      el('button',{class:'sv',onclick:()=>dlg.close('stay')},'Weiter ausfüllen'),
+      el('button',{onclick:()=>dlg.close('go')},'Trotzdem zur Liste'))));
+  dlg.showModal();dlg.querySelector('.sv').focus();
+}
+function requestBack(){const i=leaveInfo();if(i)askLeave(i);else closeA()}
+try{history.scrollRestoration='manual'}catch(e){}
+if(history.state&&history.state.a)history.replaceState(null,'');
+addEventListener('popstate',()=>{
+  if(!openA)return;
+  const i=dlg.open?null:leaveInfo();
+  if(dlg.open||i){history.pushState({a:openA.auftrag},'');if(i)askLeave(i)}   // Zurück-Taste/-Geste: erst nachfragen
+  else closeA();
+});
+document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!openA||dlg.open)return;e.preventDefault();if(edi!==null){edi=null;render()}else if(armA){armA=false;render()}else setTimeout(requestBack,0)});   // verzögert: sonst schließt derselbe Esc-Druck den neuen Dialog gleich wieder
 const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;save();render();poll();prefetch()};
 
 function render(){
@@ -503,7 +552,7 @@ function draw(){
   if(openA){
     const r=openA,mon=ses.role==='monteur';
     const det=el('div',{class:'det'},el('div',{},card(r,!mon,false),timeCard(r,mon)));
-    app.append(el('div',{class:'bar stk'},el('h1',{},'Auftrag '+r.auftrag),el('button',{onclick:closeA},'← Zurück')),det);
+    app.append(el('div',{class:'bar stk'},el('h1',{},'Auftrag '+r.auftrag),el('button',{onclick:requestBack},'← Zurück')),det);
     const pb=el('div',{class:'card pcard'},el('b',{},'Prüfobjekte'+(pl.st==='ok'?` (${pl.list.length})`:'')));
     if(pl.st==='load')pb.append(el('p',{class:'mu'},'Lade …'));
     else if(pl.st==='err')pb.append(el('p',{class:'mu er'},'Fehler beim Laden: '+pl.m));
@@ -526,7 +575,7 @@ function draw(){
         const c=s[i],m=txt(i);
         const nb=c==='x'?el('div',{class:'nokbox'},el('b',{},'Nicht OK: '),m||'–'):null;
         if(!mon){pb.append(el('div',{class:'li'},el('span',{class:'mk'},c==='o'?'✓':c==='x'?'✗':'○'),t,nb));return}
-        pb.append(el('div',{class:'it'},el('div',{class:'t'},t),
+        pb.append(el('div',{class:'it','data-op':c==='-'?'1':null},el('div',{class:'t'},t),
           el('div',{class:'ob'},
             el('button',{class:'ok'+(c==='o'?' on':''),onclick:()=>markOk(r,L,i)},'OK'),
             el('button',{class:'nk'+(c==='x'?' on':''),onclick:()=>openEd(i,m)},'Nicht OK')),
