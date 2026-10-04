@@ -104,6 +104,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .mdlg{border-top:6px solid var(--ac)}.mtx{font-size:1.125rem;font-weight:600;white-space:pre-wrap;overflow-wrap:break-word}.dlg p:empty{display:none}.dlg textarea{margin:8px 0 4px}
 .amsg{margin:8px 0;padding:8px 10px;border:1px solid var(--ac);border-radius:8px;font-size:.875rem}.amsg>div{margin-top:2px;white-space:pre-wrap}.amsg button{margin-top:8px;padding:6px 10px;font-size:.875rem}
 .msg.er>button{display:block;margin:10px 0 0;padding:8px 14px}.msg.er>.mu{margin-top:4px}
+.msg.dx{position:relative;padding-right:44px}.msg.dx>.x{position:absolute;top:4px;right:4px;margin:0;padding:6px 10px;background:none;border:0;color:var(--mu);font-size:1rem;line-height:1}
 .msg.pb{display:flex;gap:8px 12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.msg.pb button{margin:0;padding:8px 14px;font-size:.875rem}
 .top.sc{box-shadow:0 1px 0 var(--bd),0 4px 12px rgba(0,0,0,.06)}
 </style></head><body><header class="top" id="top"></header><main id="app"></main>
@@ -608,7 +609,7 @@ function msgDialog(t){
     el('p',{class:'mu'},d[0]?`${nGer(d[0])} angemeldet, davon ${fmtN(d[1])} mit Benachrichtigungen.`:'Noch kein Gerät dieses Teams angemeldet.'),
     d[0]>d[1]&&el('p',{class:'mu er'},d[1]?`${nGer(d[0]-d[1])} ohne Benachrichtigungen – dort erscheint die Nachricht erst beim Öffnen der App.`:'Kein Gerät hat Benachrichtigungen aktiviert – die Nachricht erscheint erst beim Öffnen der App.'),
     am&&el('div',{class:'amsg'},el('b',{},'Offene Nachricht von '+dts(am.at)),el('div',{},am.text),el('div',{class:'mu'},msgStat(am,t.team)),
-      el('button',{class:'er',onclick:async()=>{try{await api('POST','/api/msg/close',{id:am.id});sdlg.close();msg='Erinnerung an '+t.team+' beendet.';poll();render()}catch(e){er.textContent=errTxt(e)}}},'Erinnerung beenden')),
+      el('button',{class:'er',onclick:async()=>{try{await api('POST','/api/msg/close',{id:am.id});sdlg.close();msg='';poll();render()}catch(e){er.textContent=errTxt(e)}}},'Erinnerung beenden')),
     ta,
     el('p',{class:'mu'},`Die Monteure bekommen eine Benachrichtigung, die ${pcfg.nag===1?'jede Minute':'alle '+pcfg.nag+' Minuten'} wiederkommt, bis sie auf „Bestätigen“ tippen (längstens ${pcfg.hours} Stunden).`+(am?' Eine neue Nachricht ersetzt die offene.':'')),
     er,
@@ -667,7 +668,17 @@ async function pushSync(ask){
   try{await api('POST','/api/push/sub',{did,team,sub:sub?sub.toJSON():null});regT=team;try{team?localStorage.setItem('regteam',team):localStorage.removeItem('regteam')}catch(e){}}catch(e){}
   render();
 }
+// Hinweise zu Benachrichtigungen lassen sich wegklicken; sie kommen erst mit der nächsten neuen Nachricht vom Disponenten wieder
+let pbHide=-1;try{const v=localStorage.getItem('pbhide');if(v!=null)pbHide=+v}catch(e){}
+const maxMsgId=()=>msgs.reduce((a,m)=>m.team===ses.team?Math.max(a,m.id|0):a,0);
 function pushBanner(){
+  const n=pushBanner0();
+  if(!n||(pbHide>=0&&maxMsgId()<=pbHide))return null;
+  n.classList.add('dx');
+  n.append(el('button',{class:'x',title:'Ausblenden','aria-label':'Hinweis ausblenden',onclick:()=>{pbHide=maxMsgId();try{localStorage.setItem('pbhide',pbHide)}catch(e){}render()}},'✕'));
+  return n;
+}
+function pushBanner0(){
   if(!pushOk()){
     if(/iPhone|iPad|iPod/.test(navigator.userAgent)&&!navigator.standalone)return el('div',{class:'msg'},'🔔 Damit dich Nachrichten vom Disponenten erreichen: App über „Teilen → Zum Home-Bildschirm“ hinzufügen, von dort öffnen und Benachrichtigungen aktivieren.');
     return window.isSecureContext===false?el('div',{class:'msg'},'🔔 Benachrichtigungen sind nur über eine sichere Verbindung (HTTPS) möglich.'):null;
