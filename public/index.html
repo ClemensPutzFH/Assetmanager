@@ -395,7 +395,7 @@ const card=(r,showTeam,click=true)=>{const dsp=ses.role==='dispo',d=docOf(r.auft
 function list(rows,showTeam){
   const f=rows.filter(matchQ).sort((a,b)=>cmp(a.auftrag,b.auftrag));
   const box=el('div',{});
-  box.append(el('p',{class:'mu'},`${f.length} Aufträge`),...f.slice(0,300).map(r=>card(r,showTeam)));
+  box.append(el('p',{class:'mu'},f.length===1?'1 Auftrag':`${f.length} Aufträge`),...f.slice(0,300).map(r=>card(r,showTeam)));
   if(f.length>300)box.append(el('p',{class:'mu'},'Nur die ersten 300 angezeigt – Suche nutzen.'));
   return box;
 }
@@ -552,8 +552,9 @@ function draw(){
   app.append(search(v=>{q=v;armM=false;render()}),
     el('div',{class:'chips ab'},el('span',{class:'mu'},'Abgehakte:'),
       [['','Anzeigen'],['hide',`Ausblenden (${nOn})`],['only',`Nur abgehakte (${nAny})`]].map(([k,l])=>el('button',{class:'chip'+(dha===k?' on':''),onclick:()=>setDha(k)},l))),
-    dha==='hide'&&nOn>0&&el('p',{class:'mu'},`${nOn} abgehakte ${nOn===1?'Auftrag ist':'Aufträge sind'} ausgeblendet.`),
     list(view(),true));
+  // Hinweis nur wenn zutreffend – app.append() würde false/null sonst als Text anzeigen
+  if(dha==='hide'&&nOn>0)app.lastChild.before(el('p',{class:'mu'},nOn===1?'1 abgehakter Auftrag ist ausgeblendet.':`${nOn} abgehakte Aufträge sind ausgeblendet.`));
 }
 
 loadOb();
