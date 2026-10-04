@@ -600,8 +600,7 @@ function msgDialog(t){
   sb.onclick=async()=>{
     const text=ta.value.trim();if(!text||sb.disabled)return;
     sb.disabled=true;sb.textContent='Sende …';er.textContent='';
-    try{const r=await api('POST','/api/msg',{team:t.team,text},30000);sdlg.close();err='';
-      msg=`📣 Nachricht an ${t.team} gesendet – `+(r.pushed?`Benachrichtigung an ${nGer(r.pushed)} zugestellt.`:'kein Gerät mit Benachrichtigungen erreicht, sie erscheint beim Öffnen der App.');poll();render()}
+    try{await api('POST','/api/msg',{team:t.team,text},30000);sdlg.close();err='';poll();render()}
     catch(e){er.textContent=e.net?'Keine Verbindung zum Server':errTxt(e);sb.disabled=false;sb.textContent=am?'Neu senden':'Senden'}
   };
   sdlg.replaceChildren(el('div',{class:'dlg-b'},
