@@ -374,7 +374,7 @@ async function setMark(ids,v,undo=true){
 function undoMark(){const u=und;und=null;clearTimeout(undT);if(u)setMark(u.prev.filter(([,x])=>!!x!==!!u.v).map(([a])=>a),!u.v,false)}
 const mkRow=r=>{const x=mk(r.auftrag),m=marks.get(r.auftrag);
   return el('div',{class:'mkr'},el('button',{class:'mkb'+(x===1?' on':x===2?' ch':''),onclick:e=>{e.stopPropagation();setMark([r.auftrag],x!==1)}},x===1?'☑ Abgehakt':x===2?'⚠ Danach geändert – neu abhaken':'☐ Abhaken'),
-    x>0&&el('span',{class:'mu'},'am '+dts(m.at)))};
+    x>0&&el('span',{class:'mu'},(x===2?'abgehakt am ':'am ')+dts(m.at)))};
 // Rückmeldezeitpunkt = wann die Zeit zurückgemeldet wurde (tat); Filterzeitraum als [von,bis] (JJJJ-MM-TT, leer = offen)
 const addD=n=>{const g=new Date();g.setDate(g.getDate()+n);return g.toLocaleDateString('sv-SE')};
 const rRange=()=>rf==='h'?[today(),today()]:rf==='g'?[addD(-1),addD(-1)]:rf==='7'?[addD(-6),today()]:rf==='m'?[today().slice(0,8)+'01',today()]:rf==='z'?[rv,rb]:null;
@@ -427,7 +427,9 @@ function draw(){
       const txt=i=>{const z=valid&&(d.nok||[]).find(z=>z&&z.i===i);return z&&z.m||''};
       pb.append(el('p',{class:'mu'},`${ok} OK · ${nx} Nicht OK · ${n-ok-nx} offen`));
       if(d&&!valid)pb.append(el('p',{class:'mu er'},'Die Prüfliste hat sich seit der letzten Bewertung geändert – bitte neu prüfen.'));
-      if(mon)pb.append(el('button',{class:'allok',onclick:()=>{if(nx>0&&!armA){armA=true;render();return}armA=false;edi=null;setS(r,L,'o'.repeat(n))}},armA&&nx>0?`Wirklich? ${nx}× Nicht OK werden überschrieben`:'✓ Alles OK'));
+      // „Alles OK“ setzt nur offene Prüfobjekte auf OK – Nicht OK (samt Text) bleibt erhalten
+      const op=n-ok-nx;
+      if(mon&&op>0)pb.append(el('button',{class:'allok',onclick:()=>{armA=false;edi=null;const c=cur(r.auftrag,L);setS(r,L,c.s.replace(/-/g,'o'),c.T)}},ok+nx>0?`✓ Alle offenen OK (${op})`:'✓ Alles OK'));
       L.forEach((t,i)=>{
         const c=s[i],m=txt(i);
         const nb=c==='x'?el('div',{class:'nokbox'},el('b',{},'Nicht OK: '),m||'–'):null;
