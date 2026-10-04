@@ -49,6 +49,10 @@ input.tm{font:inherit;font-size:20px;color:var(--tx);background:var(--card);bord
 .zt{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.qk{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.qk button{padding:8px 12px;border-radius:20px;font-size:14px}
 input.dt{font:inherit;font-size:18px;color:var(--tx);color-scheme:light dark;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:9px 10px;box-sizing:border-box;flex:1;min-width:150px}
 .flt{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;margin-bottom:12px}.flt select{width:100%;min-width:0}.flt .rg{grid-column:1/-1;display:flex;gap:8px;align-items:center}.flt .rg .dt{min-width:0;font-size:16px}.flt .rs{grid-column:1/-1;color:var(--er)}
+.prg{display:flex;gap:12px;align-items:stretch}.prg .pb{flex:1;min-width:0}.prg .pt{display:flex;align-items:baseline;gap:6px;white-space:nowrap}.prg .pp{font-size:26px;font-weight:700;line-height:1.1}
+.pbar{height:14px;border-radius:7px;background:var(--bd);overflow:hidden;margin:6px 0}.pbar .pd{height:100%;background:var(--ok);border-radius:7px 0 0 7px}
+.prg .ps{flex:0 0 auto;width:96px;text-align:center;border-left:1px solid var(--bd);padding-left:12px;display:flex;flex-direction:column;justify-content:center}
+.prg .pn{font-size:26px;font-weight:700;line-height:1.1}.prg .pn.ok{color:var(--ok)}.prg .ps.warn .pn{color:var(--er)}.prg .sm{font-size:12px;margin-top:2px}
 .mkr{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}.mkb{padding:6px 12px;border-radius:20px;font-size:14px}.mkb.on{background:var(--ok);border-color:var(--ok);color:#fff}.mkb.ch{border-color:var(--nk);color:var(--nk);font-weight:600}.card.dn{opacity:.6}
 .msg button{margin-left:8px;padding:4px 10px;font-size:14px}
 </style></head><body><main id="app"></main>
@@ -392,6 +396,31 @@ const card=(r,showTeam,click=true)=>{const dsp=ses.role==='dispo',d=docOf(r.auft
   click&&showTeam&&stat(r).nx>0&&el('div',{class:'nokbox'},el('b',{},'Nicht OK:'),...stat(r).nok.map(x=>el('div',{class:'nk1'},'• '+x.t,x.m&&el('div',{class:'mu'},'→ '+x.m)))),
   dsp&&mkRow(r))};
 
+// ---- Fortschritt + Wochenpensum bis Jahresende (Monteur-Teamansicht) ----
+// Arbeitstage = Mo–Fr ohne gesetzliche Feiertage in Österreich, ab heute (inkl.) bis zur Frist
+const FRIST=()=>new Date(new Date().getFullYear(),11,31);   // Frist: 31.12. des laufenden Jahres
+const ostern=y=>{const a=y%19,b=Math.floor(y/100),c=y%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),n=h+l-7*m+114;return new Date(y,Math.floor(n/31)-1,n%31+1)};
+const feiertage=y=>{const o=ostern(y),p=t=>{const x=new Date(o);x.setDate(x.getDate()+t);return x.toLocaleDateString('sv-SE')};
+  return new Set(['01-01','01-06','05-01','08-15','10-26','11-01','12-08','12-25','12-26'].map(x=>y+'-'+x).concat([p(1),p(39),p(50),p(60)]))};   // + Ostermontag, Christi Himmelfahrt, Pfingstmontag, Fronleichnam
+function arbTage(bis){
+  const t=new Date(),d=new Date(t.getFullYear(),t.getMonth(),t.getDate()),f=feiertage(d.getFullYear());let n=0;
+  for(;d<=bis;d.setDate(d.getDate()+1)){const w=d.getDay();if(w>0&&w<6&&!f.has(d.toLocaleDateString('sv-SE')))n++}
+  return n;
+}
+function fortschritt(n,done){
+  const op=n-done,p=done===n?100:Math.min(99,Math.round(done/n*100)),bis=FRIST(),at=arbTage(bis);
+  const pens=op&&at?Math.ceil(op/(at/5)):0;                      // mindestens so viele Aufträge pro Arbeitswoche (5 Arbeitstage)
+  const bisTxt=bis.toLocaleDateString('de-AT',{day:'2-digit',month:'2-digit'});
+  return el('div',{class:'card prg'},
+    el('div',{class:'pb'},
+      el('div',{class:'pt'},el('span',{class:'pp'},`${p} %`),el('span',{class:'mu'},'erledigt')),
+      el('div',{class:'pbar',role:'progressbar','aria-valuemin':'0','aria-valuemax':'100','aria-valuenow':String(p)},el('div',{class:'pd',style:`width:${done/n*100}%`})),
+      el('div',{class:'mu'},op?`${done} von ${n} · ${op} offen (${100-p} %)`:`Alle ${n} Aufträge erledigt`)),
+    el('div',{class:'ps'+(op&&!at?' warn':'')},
+      !op?[el('div',{class:'pn ok'},'✓'),el('div',{class:'mu'},'Ziel erreicht')]
+      :!at?[el('div',{class:'pn'},String(op)),el('div',{class:'mu'},`offen – Frist ${bisTxt} vorbei`)]
+      :[el('div',{class:'pn'},'≥ '+pens),el('div',{class:'mu'},'Prüfungen / Woche'),el('div',{class:'mu sm'},`bis ${bisTxt} · ${at} Arbeitstage`)]));
+}
 function list(rows,showTeam){
   const f=rows.filter(matchQ).sort((a,b)=>cmp(a.auftrag,b.auftrag));
   const box=el('div',{});
@@ -490,6 +519,7 @@ function draw(){
     app.append(el('div',{class:'bar'},el('h1',{},ses.team),el('div',{class:'row'},el('button',{onclick:()=>go('monteur')},'Team wechseln'),back)));
     const view=()=>rows.filter(r=>!mf||(mf==='open'?!fin(r):mf==='done'?fin(r):stat(r).nx>0));
     const nD=rows.filter(fin).length,nN=rows.filter(r=>stat(r).nx>0).length;
+    if(rows.length)app.append(fortschritt(rows.length,nD));
     app.append(chips([['','Alle',rows.length],['open','Offen',rows.length-nD],['done','Erledigt',nD],['nok','Nicht OK',nN]],mf,k=>{mf=k}));
     const box=el('div',{});
     app.append(search(v=>{q=v;box.replaceChildren(list(view(),false))}),box);
