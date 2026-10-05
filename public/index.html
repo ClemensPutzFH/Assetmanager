@@ -1108,6 +1108,7 @@
           grid-template-columns: minmax(0, 24rem) minmax(0, 1fr);
           gap: 16px;
           align-items: start;
+          margin-bottom: 16px; /* Abstand zur Karte darunter (Gaswarngerät); die Karten im Raster haben keinen eigenen */
         }
         .gpage > .card {
           margin: 0;
@@ -1135,6 +1136,8 @@
       /* ---- Gaswarngerät (Bestätigung je Team) ---- */
       .gasl {
         margin: 4px 0 8px;
+      }
+      .gasl.ok {
         color: var(--ok);
         font-weight: 600;
       }
@@ -2379,26 +2382,16 @@
       // Prüft die Eingaben der Zeitkarte (Datum nicht leer/zukünftig, Beginn, Dauer 1 Min – 24 Std) und speichert sie
       function validateAndStoreTime(order, items) {
         const minutes = (parseInt(timeHours || '0', 10) || 0) * 60 + (parseInt(timeMinutes || '0', 10) || 0);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(timeDate)) {
-          timeError = 'Bitte ein Datum wählen.';
+        const fail = message => {
+          timeError = message;
+          playErrorSound();
           render();
-          return;
-        }
-        if (timeDate > today()) {
-          timeError = 'Das Datum liegt in der Zukunft.';
-          render();
-          return;
-        }
-        if (!/^\d{2}:\d{2}$/.test(timeStart || '')) {
-          timeError = 'Bitte die Beginn-Uhrzeit angeben.';
-          render();
-          return;
-        }
-        if (minutes < 1 || minutes > 1440) {
-          timeError = 'Bitte eine Dauer zwischen 1 Minute und 24 Stunden eingeben.';
-          render();
-          return;
-        }
+        };
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(timeDate)) return fail('Bitte ein Datum wählen.');
+        if (timeDate > today()) return fail('Das Datum liegt in der Zukunft.');
+        if (!/^\d{2}:\d{2}$/.test(timeStart || '')) return fail('Bitte die Beginn-Uhrzeit angeben.');
+        if (minutes < 1 || minutes > 1440)
+          return fail('Bitte eine Dauer zwischen 1 Minute und 24 Stunden eingeben.');
         timeError = '';
         storeTime(order, items, minutes, timeDate, timeStart);
       }
@@ -2633,6 +2626,7 @@
         const text = editText.trim();
         if (!text) {
           editTextMissing = true;
+          playErrorSound();
           render();
           return;
         }
@@ -2765,6 +2759,50 @@
         toastEl.classList.add('on');
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => toastEl.classList.remove('on'), 10000);
+      }
+      // ---- Fehlerton (nur Monteur) ----
+      // Ein kurzer, tiefer Doppelton, wenn etwas fehlt oder schiefgeht (fehlende Zeitangabe, leerer Nicht-OK-Text, Auftrag
+      // nicht vollständig ausgefüllt, Fehlermeldung oben). Der Klang wird im Browser erzeugt (Web Audio, keine Datei, geht auch
+      // offline). Browser erlauben Ton erst nach der ersten Bedienung: darum wird der Ton bei Klick/Tipp/Taste freigeschaltet.
+      // Ist das Gerät stummgeschaltet, bleibt er stumm. errorSoundAt: Zeitpunkt des letzten Tons (nie öfter als alle 700 ms).
+      let audioCtx = null,
+        errorSoundAt = 0;
+      function unlockAudio() {
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!audioCtx && AudioCtx) audioCtx = new AudioCtx();
+          if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+        } catch (e) {}
+      }
+      for (const eventName of ['click', 'keydown', 'touchend']) addEventListener(eventName, unlockAudio, true);
+      function playErrorSound() {
+        if (session.role !== 'monteur' || !audioCtx || audioCtx.state !== 'running') return;
+        if (Date.now() - errorSoundAt < 700) return;
+        errorSoundAt = Date.now();
+        try {
+          const t0 = audioCtx.currentTime + 0.02,
+            master = audioCtx.createGain();
+          master.gain.value = 0.22;
+          master.connect(audioCtx.destination);
+          // zwei fallende Töne (G4, D4): [Frequenz in Hz, Beginn in s]
+          for (const [freq, start] of [
+            [392, 0],
+            [294, 0.17]
+          ]) {
+            const osc = audioCtx.createOscillator(),
+              env = audioCtx.createGain(),
+              at = t0 + start;
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            env.gain.setValueAtTime(0.0001, at);
+            env.gain.exponentialRampToValueAtTime(1, at + 0.02);
+            env.gain.exponentialRampToValueAtTime(0.0001, at + 0.3);
+            osc.connect(env);
+            env.connect(master);
+            osc.start(at);
+            osc.stop(at + 0.32);
+          }
+        } catch (e) {}
       }
       // ---- Server-Zugriff ----
       /**
@@ -3223,6 +3261,8 @@
               'card' +
               (clickable ? ' cl' : '') +
               (isDispo && clickable && markState(order.auftrag) === 1 ? ' dn' : ''),
+            // Anker für render(): hält die Liste an derselben Stelle, wenn oben etwas dazukommt oder wegfällt (siehe viewportAnchors)
+            'data-k': clickable ? 'o' + order.auftrag : null,
             onclick: clickable
               ? () => {
                   listScrollY = scrollY;
@@ -3692,7 +3732,7 @@
           perWeek = weeklyQuota(remaining, workingDays);
         return el(
           'div',
-          { class: 'card' },
+          { class: 'card', 'data-k': 'tc' },
           el('b', {}, 'Gesamt · alle Teams'),
           el(
             'div',
@@ -3746,7 +3786,7 @@
         );
         const panel = el(
           'div',
-          { class: 'card' },
+          { class: 'card', 'data-k': 'tp' },
           el(
             'div',
             { class: 'ghead' },
@@ -4335,7 +4375,7 @@
         };
         return el(
           'div',
-          { class: 'card' },
+          { class: 'card', 'data-k': 'gc' },
           el('b', {}, 'Gaswarngerät – Bestätigung je Team'),
           el(
             'div',
@@ -4740,6 +4780,7 @@
       });
       // Zeigt die Warnung (ohne <dialog>-Unterstützung per confirm()); „Weiter ausfüllen“ springt zur ersten fehlenden Stelle
       function askBeforeLeaving(info) {
+        playErrorSound();
         leaveDialogTarget = info.it[0][1];
         if (typeof leaveDialog.showModal !== 'function') {
           if (
@@ -4972,6 +5013,8 @@
       }
       // ---- Ansichten: draw() wählt je Zustand genau eine aus ----
 
+      // errorMsgSounded: Fehlermeldung, für die schon der Fehlerton gespielt wurde
+      let errorMsgSounded = '';
       // Meldungen oben: Update-Hinweis, Fehler, Info, Rückgängig (Dispo), Offline-Hinweise
       function drawStatusBanners() {
         if (newVersion && !openOrder)
@@ -4988,6 +5031,11 @@
               el('button', { class: 'pri', onclick: reloadApp }, 'Jetzt aktualisieren')
             )
           );
+        // neue Fehlermeldung: Fehlerton (nicht bei jedem Neuzeichnen derselben Meldung)
+        if (errorMsg !== errorMsgSounded) {
+          errorMsgSounded = errorMsg;
+          if (errorMsg) playErrorSound();
+        }
         if (errorMsg) app.append(el('div', { class: 'msg er' }, errorMsg));
         if (infoMsg && !errorMsg) app.append(el('div', { class: 'msg' }, infoMsg));
         if (undoInfo && session.role === 'dispo')
@@ -5362,9 +5410,17 @@
         );
         const banner = pushBanner();
         if (banner) app.append(banner);
+        // Zeile steht immer da (auch ohne Bestätigung), damit die Liste nicht springt, wenn die Bestätigung eintrifft
         const gasAt = gasConfirmedAt(session.team);
-        if (gasAt)
-          app.append(el('p', { class: 'mu gasl' }, `✓ Gaswarngerät heute um ${timeText(gasAt)} Uhr bestätigt`));
+        app.append(
+          el(
+            'p',
+            { class: 'mu gasl' + (gasAt ? ' ok' : '') },
+            gasAt
+              ? `✓ Gaswarngerät heute um ${timeText(gasAt)} Uhr bestätigt`
+              : 'Gaswarngerät heute noch nicht bestätigt'
+          )
+        );
         app.append(
           rows.length
             ? el('div', { class: 'mtop' }, progressCard(rows.length, doneCount), controls)
