@@ -12,7 +12,7 @@
 @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141316;--card:#1e1c20;--tx:#ededf0;--mu:#a09fa6;--ac:#d1176f;--act:#f06baa;--bd:#2f2d33;--er:#f2704f;--ok:#15803d;--nk:#d0421a;--g1:#2e6e4c;--g2:#22a35a;--gt:#34323a}}
 :root[data-theme="dark"]{--bg:#141316;--card:#1e1c20;--tx:#ededf0;--mu:#a09fa6;--ac:#d1176f;--act:#f06baa;--bd:#2f2d33;--er:#f2704f;--ok:#15803d;--nk:#d0421a;--g1:#2e6e4c;--g2:#22a35a;--gt:#34323a}
 :root{color-scheme:light dark}:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark}
-html{scroll-padding-top:calc(var(--toph,52px) + 8px)}
+html{scroll-padding-top:calc(var(--toph,52px) + 8px);overflow-anchor:none}
 body{margin:0;background:var(--bg);color:var(--tx);font:1rem/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:1440px;margin:0 auto;padding:8px max(16px,env(safe-area-inset-right)) 16px max(16px,env(safe-area-inset-left))}body[data-w="n"] main{max-width:560px}
 h1{font-size:1.375rem;margin:8px 0 16px}
@@ -296,7 +296,7 @@ function saveTime(r,L){
 function delTime(r,L){tH='';tM='';tE='';tV='';tD=today();setTime(r,L,null)}
 function timeCard(r,mon){
   const d=docOf(r.auftrag),L=pl.st==='ok'?pl.list:null,has=!!(d&&d.min!=null);
-  const c=el('div',{class:'card','data-zeit':'1'},el('b',{},'Zeit'),
+  const c=el('div',{class:'card','data-zeit':'1','data-k':'zc'},el('b',{},'Zeit'),
     el('p',{class:'mu'},has?`Durchgeführt am ${dfmt(dOf(d))||'–'}${d.von?' · ab '+d.von+' Uhr':''} · Dauer ${fmt(d.min)}`:'Noch keine Zeit zurückgemeldet.'));
   if(has&&!zOk(d))c.append(el('p',{class:'mu er'},'Zeitrückmeldung unvollständig (Beginn fehlt) – Auftrag zählt noch nicht als erledigt.'));
   else if(!has&&d&&d.n>0&&d.ok+d.nx===d.n)c.append(el('p',{class:'mu er'},'Alle Prüfobjekte bewertet – für „Erledigt“ fehlt noch die Zeitrückmeldung.'));
@@ -305,16 +305,16 @@ function timeCard(r,mon){
   const inp=(k,v,set)=>el('input',{class:'tm',type:'text',inputmode:'numeric',maxlength:'2','data-keep':k,placeholder:'0',value:v,oninput:e=>{set(e.target.value=e.target.value.replace(/\D/g,''))}});
   const gestern=()=>{const g=new Date();g.setDate(g.getDate()-1);return g.toLocaleDateString('sv-SE')};
   c.append(el('div',{class:'mu'},'Durchgeführt am'),
-    el('div',{class:'zt'},el('input',{class:'dt',type:'date',max:today(),'data-nr':'1',value:tD,oninput:e=>{tD=e.target.value},onchange:e=>{tD=e.target.value}}),
+    el('div',{class:'zt','data-k':'zd'},el('input',{class:'dt',type:'date',max:today(),'data-nr':'1',value:tD,oninput:e=>{tD=e.target.value},onchange:e=>{tD=e.target.value}}),
       el('button',{onclick:()=>{tD=today();tE='';render()}},'Heute'),el('button',{onclick:()=>{tD=gestern();tE='';render()}},'Gestern')),
     el('div',{class:'mu'},'Beginn (Uhrzeit)'),
-    el('div',{class:'zt'},el('input',{class:'dt',type:'time','data-nr':'1',value:tV,oninput:e=>{tV=e.target.value},onchange:e=>{tV=e.target.value}}),
+    el('div',{class:'zt','data-k':'zv'},el('input',{class:'dt',type:'time','data-nr':'1',value:tV,oninput:e=>{tV=e.target.value},onchange:e=>{tV=e.target.value}}),
       el('button',{onclick:()=>{tV=new Date().toTimeString().slice(0,5);tE='';render()}},'Jetzt'),tV&&el('button',{onclick:()=>{tV='';render()}},'✕')),
     el('div',{class:'mu'},'Dauer'),
-    el('div',{class:'qk'},[15,30,60,90,120,180].map(m=>el('button',{onclick:()=>{tH=String(Math.floor(m/60));tM=String(m%60);tE='';render()}},fmt(m)))),
-    el('div',{class:'zt'},inp('h',tH,v=>{tH=v}),el('span',{},'Std'),inp('m',tM,v=>{tM=v}),el('span',{},'Min')),
+    el('div',{class:'qk','data-k':'zq'},[15,30,60,90,120,180].map(m=>el('button',{onclick:()=>{tH=String(Math.floor(m/60));tM=String(m%60);tE='';render()}},fmt(m)))),
+    el('div',{class:'zt','data-k':'zh'},inp('h',tH,v=>{tH=v}),el('span',{},'Std'),inp('m',tM,v=>{tM=v}),el('span',{},'Min')),
     tE&&el('p',{class:'mu er'},tE),
-    el('div',{class:'ob'},el('button',{class:'sv',disabled:L?null:'disabled',onclick:()=>saveTime(r,L)},has?'Zeit ändern':'Zeit speichern'),has&&el('button',{class:'er',onclick:()=>delTime(r,L)},'Löschen')));
+    el('div',{class:'ob','data-k':'zb'},el('button',{class:'sv',disabled:L?null:'disabled',onclick:()=>saveTime(r,L)},has?'Zeit ändern':'Zeit speichern'),has&&el('button',{class:'er',onclick:()=>delTime(r,L)},'Löschen')));
   return c;
 }
 const put=(s,i,c)=>s.slice(0,i)+c+s.slice(i+1);
@@ -778,10 +778,31 @@ addEventListener('popstate',()=>{
 document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!openA||dlg.open)return;e.preventDefault();if(edi!==null){edi=null;render()}else if(armA){armA=false;render()}else setTimeout(requestBack,0)});   // verzögert: sonst schließt derselbe Esc-Druck den neuen Dialog gleich wieder
 const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;upTok='';upPin='';upE=false;save();render();poll();prefetch();pushSync(false)};
 
+// Ansicht beim Neuzeichnen festhalten: Elemente mit data-k bleiben an derselben Bildschirmstelle – zuerst der angetippte
+// Bereich, sonst der nächstgelegene sichtbare. Das Scroll-Anchoring des Browsers ist aus (overflow-anchor:none): es springt,
+// wenn der gerade angetippte (fokussierte) Button beim Neuzeichnen ersetzt wird.
+let tapK=null;
+document.addEventListener('click',e=>{
+  const t=e.target instanceof Element?e.target:e.target.parentElement,n=t&&t.closest('[data-k]');
+  tapK=n?n.dataset.k:null;setTimeout(()=>{tapK=null});
+  // iPhone: Tipp auf einen Button nimmt dem Eingabefeld den Fokus nicht -> sonst holt render() das Feld zurück (Tastatur, Sprung)
+  const a=document.activeElement;
+  if(openA&&t&&t.closest('button')&&a&&a.dataset&&a.dataset.keep&&app.contains(a))a.blur();
+},true);
+function anchors(){
+  const L=app.querySelectorAll('[data-k]');if(!L.length)return[];
+  const bar=app.querySelector('.bar.stk'),hb=(bar||topEl).getBoundingClientRect().bottom,vis=[];
+  let ref=null;
+  for(const n of L){const r=n.getBoundingClientRect();if(n.dataset.k===tapK)ref=r.top;if(r.bottom>hb&&r.top<innerHeight)vis.push([n.dataset.k,r.top])}
+  if(ref!=null)vis.sort((a,b)=>(a[0]!==tapK)-(b[0]!==tapK)||Math.abs(a[1]-ref)-Math.abs(b[1]-ref));
+  else vis.sort((a,b)=>(a[1]<hb)-(b[1]<hb));                  // ohne Tipp: oberstes ganz sichtbares Element zuerst
+  return vis;
+}
 function render(){
-  const f=document.activeElement,k=f&&f.dataset&&f.dataset.keep,pos=k?f.selectionStart:0;
+  const f=document.activeElement,k=f&&f.dataset&&f.dataset.keep,pos=k?f.selectionStart:0,an=anchors();
   draw();
-  if(k){const n=app.querySelector('[data-keep="'+k+'"]');if(n){n.focus();try{n.setSelectionRange(pos,pos)}catch(e){}}}
+  for(const [key,top] of an){const n=app.querySelector('[data-k="'+key+'"]');if(n){const d=n.getBoundingClientRect().top-top;if(Math.abs(d)>=1)scrollBy(0,d);break}}
+  if(k){const n=app.querySelector('[data-keep="'+k+'"]');if(n){n.focus({preventScroll:true});try{n.setSelectionRange(pos,pos)}catch(e){}}}
 }
 function draw(){
   applyFz();tipHide();
@@ -796,9 +817,10 @@ function draw(){
 
   if(openA){
     const r=openA,mon=ses.role==='monteur';
-    const det=el('div',{class:'det'},el('div',{},card(r,!mon,false),timeCard(r,mon)));
+    const oc=card(r,!mon,false);oc.dataset.k='oc';
+    const det=el('div',{class:'det'},el('div',{},oc,timeCard(r,mon)));
     app.append(el('div',{class:'bar stk'},el('h1',{},'Auftrag '+r.auftrag),el('button',{onclick:requestBack},'← Zurück')),det);
-    const pb=el('div',{class:'card pcard'},el('b',{},'Prüfobjekte'+(pl.st==='ok'?` (${pl.list.length})`:'')));
+    const pb=el('div',{class:'card pcard','data-k':'pc'},el('b',{},'Prüfobjekte'+(pl.st==='ok'?` (${pl.list.length})`:'')));
     if(pl.st==='load')pb.append(el('p',{class:'mu'},'Lade …'));
     else if(pl.st==='err')pb.append(el('p',{class:'mu er'},'Fehler beim Laden: '+pl.m));
     else if(!pl.list.length)pb.append(el('p',{class:'mu'},pmeta?'Zu diesem Auftrag gibt es keine Prüfobjekte.':'Es wurden noch keine Prüflose hochgeladen.'));
@@ -806,21 +828,21 @@ function draw(){
       const L=pl.list,n=L.length,d=docOf(r.auftrag),valid=!!(d&&d.s&&d.n===n&&d.s.length===n);
       const s=valid?d.s:'-'.repeat(n),nx=valid?d.nx:0,ok=valid?d.ok:0;
       const txt=i=>{const z=valid&&(d.nok||[]).find(z=>z&&z.i===i);return z&&z.m||''};
-      pb.append(el('p',{class:'mu'},`${ok} OK · ${nx} Nicht OK · ${n-ok-nx} offen`));
+      pb.append(el('p',{class:'mu','data-k':'ps'},`${ok} OK · ${nx} Nicht OK · ${n-ok-nx} offen`));
       if(d&&!valid)pb.append(el('p',{class:'mu er'},'Die Prüfliste hat sich seit der letzten Bewertung geändert – bitte neu prüfen.'));
       // „Alles OK“ setzt nur offene Prüfobjekte auf OK – Nicht OK (samt Text) bleibt erhalten
       const op=n-ok-nx;
       // immer zweite Bestätigung; Klicks kurz nach dem ersten zählen nicht (versehentlicher Doppel-Tipp)
-      if(mon&&op>0)pb.append(!armA?el('button',{class:'allok',onclick:()=>{armA=Date.now();edi=null;render()}},ok+nx>0?`✓ Alle offenen OK (${op})`:'✓ Alles OK')
-        :el('div',{class:'cfm'},el('b',{},op===n?`Wirklich alle ${n} Prüfobjekte OK?`:`Wirklich alle ${op} restlichen Prüfobjekte OK?`),
+      if(mon&&op>0)pb.append(!armA?el('button',{class:'allok','data-k':'aok',onclick:()=>{armA=Date.now();edi=null;render()}},ok+nx>0?`✓ Alle offenen OK (${op})`:'✓ Alles OK')
+        :el('div',{class:'cfm','data-k':'aok'},el('b',{},op===n?`Wirklich alle ${n} Prüfobjekte OK?`:`Wirklich alle ${op} restlichen Prüfobjekte OK?`),
           nx>0&&el('div',{class:'mu'},`${nx}× Nicht OK bleibt erhalten.`),
           el('div',{class:'ob'},el('button',{class:'yes',onclick:()=>{if(Date.now()-armA<600)return;armA=false;const c=cur(r.auftrag,L);setS(r,L,c.s.replace(/-/g,'o'),c.T)}},'Ja, alle OK'),
             el('button',{onclick:()=>{armA=false;render()}},'Abbrechen'))));
       L.forEach((t,i)=>{
         const c=s[i],m=txt(i);
         const nb=c==='x'?el('div',{class:'nokbox'},el('b',{},'Nicht OK: '),m||'–'):null;
-        if(!mon){pb.append(el('div',{class:'li'},el('span',{class:'mk'},c==='o'?'✓':c==='x'?'✗':'○'),t,nb));return}
-        pb.append(el('div',{class:'it','data-op':c==='-'?'1':null},el('div',{class:'t'},t),
+        if(!mon){pb.append(el('div',{class:'li','data-k':'i'+i},el('span',{class:'mk'},c==='o'?'✓':c==='x'?'✗':'○'),t,nb));return}
+        pb.append(el('div',{class:'it','data-k':'i'+i,'data-op':c==='-'?'1':null},el('div',{class:'t'},t),
           el('div',{class:'ob'},
             el('button',{class:'ok'+(c==='o'?' on':''),onclick:()=>markOk(r,L,i)},'OK'),
             el('button',{class:'nk'+(c==='x'?' on':''),onclick:()=>openEd(i,m)},'Nicht OK')),
