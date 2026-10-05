@@ -14,6 +14,7 @@
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
  *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
+ *   gas       tägliche Bestätigung des Gaswarngeräts je Team (Tag, Team, Uhrzeit, Gerät) – wird nur angefügt, nie geändert
  *
  * ZUGRIFFSSTUFEN
  *   offen            Anmeldung, Abgleich, Prüfobjekte lesen, Ergebnis speichern, Push-Anmeldung, Bestätigen
@@ -21,7 +22,7 @@
  *   Upload/Löschen   zusätzlich Header „X-Upload-Token“ (Token nach Upload-PIN-Eingabe, 30 min)
  *
  * EINSTELLUNGEN (Umgebungsvariablen)
- *   PORT, HOST · DATA_DIR · DISPO_PIN, UPLOAD_PIN (unbedingt ändern!) · NAG_MIN, MSG_HOURS · PUSH_CONTACT, PUSH_HOSTS ·
+ *   PORT, HOST · DATA_DIR · TIMEZONE (bestimmt, wann für die Gaswarngerät-Bestätigung ein neuer Tag beginnt) · DISPO_PIN, UPLOAD_PIN (unbedingt ändern!) · NAG_MIN, MSG_HOURS · PUSH_CONTACT, PUSH_HOSTS ·
  *   TRUST_PROXY=1 (hinter Proxy: echte Client-IP) · DB_JOURNAL=DELETE · TLS_CERT + TLS_KEY oder TLS_PFX (+ TLS_PASS) ·
  *   HTTP_REDIRECT_PORT
  * ================================================================================================= */
@@ -48,6 +49,16 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DISPO_PIN = String(process.env.DISPO_PIN || '2510'); // PIN der Disponenten – per Umgebungsvariable ändern!
 const UPLOAD_PIN = String(process.env.UPLOAD_PIN || '1025'); // zusätzlicher PIN für Upload & Löschen – per Umgebungsvariable ändern!
 const PUBLIC_DIR = path.join(__dirname, 'public');
+// Zeitzone, nach der „heute“ für die Gaswarngerät-Bestätigung gilt (um Mitternacht beginnt ein neuer Tag)
+const TIMEZONE = process.env.TIMEZONE || 'Europe/Vienna';
+const dayFormat = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+// Kalendertag (JJJJ-MM-TT) eines Zeitpunkts in der Zeitzone des Betriebs
+const dayOf = t => dayFormat.format(t);
 const NAG_INTERVAL_MIN = Math.max(1, +process.env.NAG_MIN || 5); // Push-Erinnerung alle X Minuten wiederholen, bis bestätigt
 const MESSAGE_HOURS = Math.max(1, +process.env.MSG_HOURS || 12); // spätestens nach X Stunden hört die Erinnerung auf
 const PUSH_CONTACT = process.env.PUSH_CONTACT || 'mailto:admin@example.com'; // Kontakt für die Push-Dienste (VAPID "sub")
@@ -89,6 +100,10 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS dev(did TEXT PRIMARY KEY, team TEXT, sub TEXT, seen INTEGER, role TEXT, name TEXT, ua TEXT, first INTEGER, kick INTEGER NOT NULL DEFAULT 0, kick_at INTEGER, loc_lat REAL, loc_lon REAL, loc_acc REAL, loc_at INTEGER, loc_err TEXT);
 CREATE TABLE IF NOT EXISTS msg(id INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, closed INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS mack(id INTEGER NOT NULL, did TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(id, did));
+-- Gaswarngerät: ein Team bestätigt es vor der Arbeit jeden Tag. at = Zeitpunkt der Bestätigung am Gerät, rec = Eingang beim Server
+-- (weicht ab, wenn ohne Netz bestätigt wurde), did = bestätigendes Gerät. Je Tag und Team zählt die erste Bestätigung.
+CREATE TABLE IF NOT EXISTS gas(day TEXT NOT NULL, team TEXT NOT NULL, at INTEGER NOT NULL, rec INTEGER NOT NULL, did TEXT, seq INTEGER NOT NULL, PRIMARY KEY(day, team));
+CREATE INDEX IF NOT EXISTS gas_seq ON gas(seq);
 `);
 // Ältere Datenbanken haben in `dev` noch nicht alle Spalten: beim Start ergänzen. Bisherige Geräte mit Team waren Monteure.
 {
@@ -120,7 +135,7 @@ const sql = {
   getMeta: db.prepare('SELECT v FROM meta WHERE k=?'),
   setMeta: db.prepare('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v'),
   maxSeq: db.prepare(
-    'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg)'
+    'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas)'
   ),
   upMark: db.prepare(
     'INSERT INTO dmark(auftrag,v,at,seq) VALUES(?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET v=excluded.v, at=excluded.at, seq=excluded.seq'
@@ -177,6 +192,20 @@ const sql = {
   ack: db.prepare('INSERT OR IGNORE INTO mack(id,did,at) VALUES(?,?,?)'),
   nagDevs: db.prepare(
     'SELECT did, sub FROM dev WHERE team=? AND sub IS NOT NULL AND did NOT IN (SELECT did FROM mack WHERE id=?)'
+  ),
+  hasTeam: db.prepare('SELECT 1 FROM orders WHERE team=? LIMIT 1'),
+  getGas: db.prepare('SELECT day, team, at, rec, seq FROM gas WHERE day=? AND team=?'),
+  addGas: db.prepare('INSERT OR IGNORE INTO gas(day,team,at,rec,did,seq) VALUES(?,?,?,?,?,?)'),
+  // Bestätigungen seit Änderungsnummer ab (mit Spitzname des Geräts); für Monteure nur die des eigenen Teams
+  gasSince: db.prepare(
+    'SELECT g.day d, g.team t, g.at, g.rec, g.seq sq, v.name n FROM gas g LEFT JOIN dev v ON v.did=g.did WHERE g.seq>? AND g.day>=? ORDER BY g.day, g.team'
+  ),
+  gasSinceTeam: db.prepare(
+    'SELECT day d, team t, at, rec, seq sq FROM gas WHERE seq>? AND day>=? AND team=? ORDER BY day'
+  ),
+  // gesamtes Protokoll für den CSV-Export
+  gasAll: db.prepare(
+    'SELECT g.day, g.team, g.at, g.rec, v.name, substr(g.did, -4) did FROM gas g LEFT JOIN dev v ON v.did=g.did ORDER BY g.day DESC, g.team'
   ),
   msgState: db.prepare(
     'SELECT closed, at, (SELECT 1 FROM mack a WHERE a.id=msg.id AND a.did=?) ack FROM msg WHERE id=?'
@@ -623,6 +652,7 @@ async function handleApi(req, res, url) {
         seq: changeSeq,
         same: true,
         ver: appVersion(),
+        gday: dayOf(Date.now()),
         ...(kicked ? { kicked: true } : {}),
         ...locateField()
       });
@@ -632,6 +662,7 @@ async function handleApi(req, res, url) {
       seq: changeSeq,
       full,
       ver: appVersion(),
+      gday: dayOf(Date.now()),
       ...(kicked ? { kicked: true } : {}),
       ...locateField(),
       teams: db
@@ -683,6 +714,9 @@ async function handleApi(req, res, url) {
         );
         out.cfg = { nag: NAG_INTERVAL_MIN, hours: MESSAGE_HOURS };
       }
+      // Gaswarngerät-Bestätigungen der letzten 60 Tage: Monteur nur die des eigenen Teams, Disponent alle
+      const gasFrom = dayOf(Date.now() - 60 * 864e5);
+      out.gas = team ? sql.gasSinceTeam.all(from, gasFrom, team) : sql.gasSince.all(from, gasFrom);
       if (!team)
         out.marks = db
           .prepare('SELECT auftrag,v,at,seq FROM dmark WHERE seq>?' + (full ? ' AND v=1' : ''))
@@ -835,8 +869,39 @@ async function handleApi(req, res, url) {
       open: !!(r && !r.closed && !r.ack && r.at > Date.now() - MESSAGE_HOURS * 3600e3)
     });
   }
+  // Monteur: Gaswarngerät des Teams für heute bestätigen. Body: { did, team, at }. `at` = Zeitpunkt, zu dem am Gerät
+  // bestätigt wurde (relevant, wenn ohne Netz bestätigt und erst später gesendet wird); unplausible Zeiten (mehr als
+  // 24 h alt oder in der Zukunft) werden durch die Serverzeit ersetzt. Je Tag und Team zählt die erste Bestätigung;
+  // eine weitere (anderes Gerät, Doppel-Tipp) ändert nichts und bekommt die bestehende zurück.
+  if (pathname === '/api/gas' && method === 'POST') {
+    const body = await readBody(req, 1e4),
+      did = validDeviceId(body.did),
+      team = clipString(body.team, 100);
+    if (!did || !team || !sql.hasTeam.get(team))
+      return sendJson(req, res, 400, { error: 'Ungültiges Team oder Gerät' });
+    const now = Date.now();
+    let at = Number(body.at);
+    if (!(at >= now - 24 * 3600e3 && at <= now + 5 * 60e3)) at = now;
+    at = Math.min(at, now);
+    const day = dayOf(at);
+    let added = false;
+    transaction(() => {
+      if (sql.getGas.get(day, team)) return;
+      changeSeq++;
+      added = sql.addGas.run(day, team, at, now, did, changeSeq).changes > 0;
+    });
+    if (added) notifyClients();
+    const row = sql.getGas.get(day, team);
+    return sendJson(req, res, 200, {
+      ok: true,
+      dup: !added,
+      row: { d: row.day, t: row.team, at: row.at, rec: row.rec, sq: row.seq }
+    });
+  }
   // ab hier nur Disponent
   if (!isDispo(req)) return sendJson(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
+  // gesamtes Protokoll der Gaswarngerät-Bestätigungen (für den Export; die Abgleich-Antwort enthält nur die letzten 60 Tage)
+  if (pathname === '/api/gas' && method === 'GET') return sendJson(req, res, 200, { rows: sql.gasAll.all() });
   if (pathname === '/api/msg' && method === 'POST') {
     // Nachricht an ein Team (ersetzt eine noch offene)
     const body = await readBody(req, 1e4),

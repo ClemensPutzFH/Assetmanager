@@ -1132,6 +1132,55 @@
       .mdlg {
         border-top: 6px solid var(--ac);
       }
+      /* ---- Gaswarngerät (Bestätigung je Team) ---- */
+      .gasl {
+        margin: 4px 0 8px;
+        color: var(--ok);
+        font-weight: 600;
+      }
+      .gasnav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin: 8px 0;
+      }
+      .gasnav input[type='date'] {
+        font: inherit;
+        color: var(--tx);
+        background: var(--card);
+        border: 1px solid var(--bd);
+        border-radius: 10px;
+        padding: 9px 12px;
+      }
+      .gasg {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+        gap: 8px;
+        margin: 8px 0;
+      }
+      .gast {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 8px 10px;
+        border: 1px solid var(--bd);
+        border-radius: 8px;
+        font-size: 0.875rem;
+      }
+      .gast.ok span {
+        color: var(--ok);
+      }
+      .gast.no {
+        border-color: var(--er);
+      }
+      .gast.no span {
+        color: var(--er);
+        font-weight: 600;
+      }
+      .gast.ok span .mu {
+        color: var(--mu);
+      }
       .mtx {
         font-size: 1.125rem;
         font-weight: 600;
@@ -1399,8 +1448,8 @@
        * Aufträge nach Team – Oberfläche (eine Datei, ohne Framework und ohne Build-Schritt)
        *
        * ROLLEN
-       *   Monteur   wählt sein Team, sieht dessen Aufträge, bewertet die Prüfobjekte (OK / Nicht OK mit Text) und
-       *             meldet die Zeit zurück. Ein Auftrag gilt als „erledigt“, wenn alle Prüfobjekte bewertet sind UND
+       *   Monteur   bestätigt täglich vor der Arbeit das Gaswarngerät (Fenster, siehe showGasCheck), wählt sein Team, sieht
+       *             dessen Aufträge, bewertet die Prüfobjekte (OK / Nicht OK mit Text) und meldet die Zeit zurück. Ein Auftrag gilt als „erledigt“, wenn alle Prüfobjekte bewertet sind UND
        *             die Zeit vollständig ist (Datum + Beginn + Dauer).
        *   Disponent PIN-geschützt: Übersicht (Filter, Excel-Export, Abhaken), Fortschritt aller Teams (+ Nachricht ans
        *             Team), Upload (eigener PIN), Vergleich (Aufträge-Excel gegen Export) und Geräte (wer ist wo
@@ -1583,6 +1632,20 @@
         ackQueue = JSON.parse(localStorage.getItem('ackq') || '[]');
         registeredTeam = localStorage.getItem('regteam');
         registeredRole = localStorage.getItem('regrole');
+      } catch (e) {}
+      // ---- Gaswarngerät (tägliche Bestätigung je Team) ----
+      // gasRows: „Tag|Team“ -> { d, t, at, rec, n, sq } (Bestätigungen vom Server, Monteur: nur eigenes Team) ·
+      // gasDay: heutiger Tag laut Server · gasReady: der erste Abgleich ist durch (vorher kein Dialog, sonst blitzt er kurz auf) ·
+      // gasQueue: [{ team, at }] Bestätigungen, die noch nicht beim Server sind (ohne Netz bestätigt, im Gerät gesichert)
+      let gasRows = new Map(),
+        gasDay = '',
+        gasReady = false,
+        gasSending = false,
+        gasQueue = [],
+        // gasViewDay: Tag, den der Disponent im Protokoll ansieht ('' = heute)
+        gasViewDay = '';
+      try {
+        gasQueue = JSON.parse(localStorage.getItem('gasq') || '[]');
       } catch (e) {}
       if (!/^[a-f0-9]{32}$/.test(deviceId)) {
         deviceId = [...crypto.getRandomValues(new Uint8Array(16))]
@@ -2831,6 +2894,8 @@
         checklistMeta = null;
         messages = [];
         devices = {};
+        gasRows = new Map();
+        gasReady = false;
         rebuildOrdersByTeam();
         const cached = await idb.get('st:' + key);
         if (cached) {
@@ -2843,7 +2908,9 @@
           teamList = cached.teams || [];
           uploadMeta = cached.meta || null;
           checklistMeta = cached.pmeta || null;
-          syncSeq = cached.since || 0;
+          // Zwischenspeicher aus einer Version ohne Gaswarngerät: komplett neu laden, damit die Bestätigungen kommen
+          syncSeq = cached.gas ? cached.since || 0 : 0;
+          for (const g of cached.gas || []) gasRows.set(g.d + '|' + g.t, g);
           messages = cached.msgs || [];
           devices = cached.devs || {};
           if (cached.pcfg) pushConfig = cached.pcfg;
@@ -2867,7 +2934,8 @@
             marks: Object.fromEntries(marks),
             msgs: messages,
             devs: devices,
-            pcfg: pushConfig
+            pcfg: pushConfig,
+            gas: [...gasRows.values()]
           })
           .catch(() => {});
       }
@@ -2902,6 +2970,7 @@
           );
           serverReachable = true;
           if (response.ver) checkAppVersion(response.ver);
+          if (response.gday) gasDay = response.gday;
           // der Disponent hat dieses Gerät ausgeloggt
           if (response.kicked) forcedLogout();
           // der Disponent hat die Geräteübersicht offen und fragt Standorte ab (locate = Nummer der Abfragerunde)
@@ -2917,7 +2986,9 @@
               results = new Map();
               resultSeq = new Map();
               marks = new Map();
+              gasRows = new Map();
             }
+            for (const g of response.gas || []) mergeGas(g);
             for (const x of response.marks || [])
               if (x.sq > ((marks.get(x.a) || {}).sq || 0)) marks.set(x.a, { v: x.v, at: x.at, sq: x.sq });
             for (const r of response.orders || []) {
@@ -2961,9 +3032,16 @@
           if (outboxOffline && !outbox.size) outboxOffline = false;
           if (outbox.size) sendAllPending();
           if (ackQueue.length) sendAcks();
+          if (gasQueue.length) sendGas();
+          gasReady = true;
+          showGasCheck();
           showUnreadMessage();
         } catch (e) {
-          if (e.net) serverReachable = false;
+          gasReady = true;
+          if (e.net) {
+            serverReachable = false;
+            showGasCheck();
+          }
           else if (!/^Nicht angemeldet/.test(e.message || '')) errorMsg = errorMessageOf(e);
         }
         isPolling = false;
@@ -4054,6 +4132,7 @@
       };
       // Zeigt die erste offene Nachricht im Fenster (nach jedem Abgleich aufgerufen); ohne offene Nachricht Fenster schließen
       function showUnreadMessage() {
+        if (gasDialog.open) return; // erst das Gaswarngerät bestätigen, danach kommen die Nachrichten
         const message = unreadMessages()[0];
         if (!message) {
           if (readDialog.open) {
@@ -4122,6 +4201,230 @@
             localStorage.setItem('ackq', JSON.stringify(ackQueue));
           } catch (e) {}
         }
+      }
+      // ---- Gaswarngerät: tägliche Bestätigung je Team ----
+      /**
+       * Bevor ein Team arbeitet, muss es jeden Tag bestätigen, dass das Gaswarngerät ordnungsgemäß funktioniert. Solange das
+       * Team heute nicht bestätigt hat, liegt ein Fenster über der App (nur „Bestätigen“ schließt es). Der Server hält
+       * Tag, Team, Uhrzeit und Gerät fest (Tabelle gas); je Tag und Team zählt die erste Bestätigung, die anderen Geräte
+       * des Teams sehen sie beim Abgleich. Ohne Netz wird sofort bestätigt und später gesendet (gasQueue, mit der echten Uhrzeit).
+       * Der Disponent sieht im Tab „Fortschritt“ je Team die Uhrzeit oder „nicht bestätigt“ und kann das Protokoll als CSV laden.
+       */
+      // heutiger Tag (JJJJ-MM-TT): laut Server, solange er erreichbar ist, sonst nach der Geräteuhr
+      const gasToday = () => (serverReachable && gasDay) || today();
+      // Bestätigung des Servers für Team und Tag (heute, wenn kein Tag angegeben) oder null
+      const gasRecord = (team, day = gasToday()) => gasRows.get(day + '|' + team) || null;
+      // Bestätigung vom Server übernehmen (ältere Stände nie über neuere schreiben)
+      function mergeGas(g) {
+        const key = g.d + '|' + g.t,
+          old = gasRows.get(key);
+        if (!old || g.sq >= old.sq) gasRows.set(key, g);
+      }
+      // Zeitpunkt der Bestätigung des Teams heute (Server oder noch ungesendet im Gerät) oder 0
+      function gasConfirmedAt(team) {
+        const record = gasRecord(team);
+        if (record) return record.at;
+        const queued = gasQueue.find(
+          x => x.team === team && new Date(x.at).toLocaleDateString('sv-SE') === today()
+        );
+        return queued ? queued.at : 0;
+      }
+      const saveGasQueue = () => {
+        try {
+          localStorage.setItem('gasq', JSON.stringify(gasQueue));
+        } catch (e) {}
+      };
+      const timeText = t => new Date(t).toLocaleTimeString('de-AT', { hour: '2-digit', minute: '2-digit' });
+      // Muss dieses Gerät jetzt die Bestätigung abfragen? (Monteur mit Team, erster Abgleich durch, heute noch nicht bestätigt)
+      const gasNeeded = () =>
+        session.role === 'monteur' && !!session.team && gasReady && !gasConfirmedAt(session.team);
+      const gasDialog = el('dialog', { class: 'dlg mdlg' });
+      document.body.append(gasDialog);
+      gasDialog.addEventListener('cancel', e => e.preventDefault());
+      // schließt der Browser das Fenster trotzdem, wird es wieder geöffnet
+      gasDialog.addEventListener('close', () => {
+        if (gasNeeded()) setTimeout(showGasCheck, 400);
+      });
+      // Zeigt das Fenster, solange das Team heute nicht bestätigt hat (nach jedem Abgleich aufgerufen); sonst schließt es
+      function showGasCheck() {
+        if (!gasNeeded()) {
+          if (gasDialog.open) gasDialog.close();
+          return;
+        }
+        if (gasDialog.open) return;
+        gasDialog.replaceChildren(
+          el(
+            'div',
+            { class: 'dlg-b', role: 'alertdialog', 'aria-labelledby': 'gdt' },
+            el('div', { class: 'dlg-t', id: 'gdt' }, '⚠ Gaswarngerät prüfen'),
+            el('p', { class: 'mtx' }, 'Funktioniert das Gaswarngerät ordnungsgemäß?'),
+            el(
+              'p',
+              { class: 'mu' },
+              `Bitte vor Arbeitsbeginn prüfen und für das Team „${session.team}“ bestätigen. Die Bestätigung wird mit Datum und Uhrzeit festgehalten. Funktioniert das Gerät nicht: nicht arbeiten und den Disponenten informieren.`
+            ),
+            el(
+              'div',
+              { class: 'ob' },
+              el('button', { class: 'sv', onclick: confirmGas }, '✓ Funktioniert ordnungsgemäß'),
+              el(
+                'button',
+                {
+                  onclick: () => {
+                    gasDialog.close();
+                    switchRole('monteur');
+                  }
+                },
+                'Team wechseln'
+              )
+            )
+          )
+        );
+        try {
+          gasDialog.showModal();
+          gasDialog.querySelector('.sv').focus();
+        } catch (e) {}
+      }
+      // „Funktioniert ordnungsgemäß“: hält Team und Uhrzeit im Gerät fest (gilt sofort), meldet sie dem Server
+      function confirmGas() {
+        if (!session.team || gasConfirmedAt(session.team)) return;
+        gasQueue.push({ team: session.team, at: Date.now() });
+        saveGasQueue();
+        gasDialog.close();
+        sendGas();
+        render();
+        showUnreadMessage();
+      }
+      // Sendet gemerkte Bestätigungen (ohne Netz bleiben sie liegen und gehen später automatisch raus)
+      async function sendGas() {
+        if (gasSending) return;
+        gasSending = true;
+        try {
+          for (const item of [...gasQueue]) {
+            try {
+              mergeGas((await api('POST', '/api/gas', { did: deviceId, team: item.team, at: item.at })).row);
+            } catch (e) {
+              if (e.status !== 400) break; // kein Netz oder Serverfehler: später erneut (400 = ungültig, verwerfen)
+            }
+            gasQueue = gasQueue.filter(x => x !== item);
+            saveGasQueue();
+          }
+        } finally {
+          gasSending = false;
+        }
+        clearTimeout(cacheSaveTimer);
+        cacheSaveTimer = setTimeout(saveCache, 1500);
+        render();
+      }
+      // Disponent: Karte „Gaswarngerät“ im Tab „Fortschritt“ – je Team die Uhrzeit der Bestätigung für den gewählten Tag
+      function gasCard() {
+        const todayDay = gasToday(),
+          day = gasViewDay || todayDay,
+          teams = new Set(teamCounts().map(([t]) => t));
+        for (const g of gasRows.values()) if (g.d === day) teams.add(g.t); // auch Teams, die inzwischen keine Aufträge mehr haben
+        const rows = [...teams]
+            .map(t => [t, gasRecord(t, day)])
+            .sort((a, b) => !b[1] - !a[1] || naturalCompare(a[0], b[0])),
+          confirmed = rows.filter(r => r[1]).length;
+        const shiftDay = n => {
+          const d = new Date(day + 'T12:00:00');
+          d.setDate(d.getDate() + n);
+          gasViewDay = d.toLocaleDateString('sv-SE');
+          if (gasViewDay >= todayDay) gasViewDay = '';
+          render();
+        };
+        return el(
+          'div',
+          { class: 'card' },
+          el('b', {}, 'Gaswarngerät – Bestätigung je Team'),
+          el(
+            'div',
+            { class: 'gasnav' },
+            el('button', { 'aria-label': 'Vorheriger Tag', onclick: () => shiftDay(-1) }, '‹'),
+            el('input', {
+              type: 'date',
+              value: day,
+              max: todayDay,
+              'aria-label': 'Tag',
+              onchange: e => {
+                gasViewDay = !e.target.value || e.target.value >= todayDay ? '' : e.target.value;
+                render();
+              }
+            }),
+            el(
+              'button',
+              {
+                'aria-label': 'Nächster Tag',
+                disabled: day >= todayDay ? 'disabled' : null,
+                onclick: () => shiftDay(1)
+              },
+              '›'
+            ),
+            el('span', { class: 'mu' }, `${confirmed} von ${rows.length} Teams bestätigt`)
+          ),
+          rows.length
+            ? el(
+                'div',
+                { class: 'gasg' },
+                rows.map(([team, record]) =>
+                  el(
+                    'div',
+                    { class: 'gast' + (record ? ' ok' : ' no') },
+                    el('b', {}, team),
+                    record
+                      ? el(
+                          'span',
+                          {},
+                          '✓ ' + timeText(record.at) + ' Uhr',
+                          record.n && el('span', { class: 'mu' }, ' · ' + record.n)
+                        )
+                      : el('span', {}, '⚠ nicht bestätigt')
+                  )
+                )
+              )
+            : el('p', { class: 'mu' }, 'Noch keine Teams.'),
+          el(
+            'p',
+            { class: 'mu' },
+            'Jedes Team bestätigt vor der Arbeit einmal pro Tag, dass das Gaswarngerät ordnungsgemäß funktioniert. Angezeigt wird die erste Bestätigung des Tages.'
+          ),
+          el('button', { onclick: exportGasLog }, '⬇ Gesamtes Protokoll (CSV)')
+        );
+      }
+      // Lädt das ganze Protokoll vom Server und speichert es als CSV (Semikolon, mit BOM: öffnet sich in Excel richtig)
+      async function exportGasLog() {
+        errorMsg = '';
+        try {
+          const rows = (await api('GET', '/api/gas')).rows;
+          // Zellen, die mit = + - @ beginnen, würde Excel als Formel lesen
+          const cell = v => '"' + String(v ?? '').replace(/^([=+\-@])/, "'$1").replace(/"/g, '""') + '"';
+          const lines = [['Datum', 'Team', 'Bestätigt um', 'Gerät', 'Beim Server eingegangen um']].concat(
+            rows.map(r => [
+              r.day.split('-').reverse().join('.'),
+              r.team,
+              new Date(r.at).toLocaleTimeString('de-AT'),
+              (r.name ? r.name + ' ' : '') + '(…' + (r.did || '') + ')',
+              Math.abs(r.rec - r.at) > 120e3 ? new Date(r.rec).toLocaleString('de-AT') : ''
+            ])
+          );
+          const url = URL.createObjectURL(
+            new Blob(['﻿' + lines.map(l => l.map(cell).join(';')).join('\r\n')], {
+              type: 'text/csv;charset=utf-8'
+            })
+          );
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'Gaswarngeraet_Protokoll_' + today() + '.csv';
+          document.body.append(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+          infoMsg = `Protokoll exportiert: ${rows.length} Bestätigungen`;
+        } catch (e) {
+          infoMsg = '';
+          errorMsg = e.net ? 'Keine Verbindung – Protokoll konnte nicht geladen werden' : errorMessageOf(e);
+        }
+        render();
       }
       // ---- Push-Benachrichtigungen (Monteur) ----
       // Push-Abo: Gerät + Team beim Server melden; ask=true nur nach Tipp auf „Aktivieren“ (der Browser verlangt das)
@@ -5059,6 +5362,9 @@
         );
         const banner = pushBanner();
         if (banner) app.append(banner);
+        const gasAt = gasConfirmedAt(session.team);
+        if (gasAt)
+          app.append(el('p', { class: 'mu gasl' }, `✓ Gaswarngerät heute um ${timeText(gasAt)} Uhr bestätigt`));
         app.append(
           rows.length
             ? el('div', { class: 'mtop' }, progressCard(rows.length, doneCount), controls)
@@ -5098,7 +5404,8 @@
             { class: 'gpage' },
             totalCard(totals, workingDays, deadlineText),
             teamProgressCard(stats, totals, workingDays)
-          )
+          ),
+          gasCard()
         );
         if (uploadMeta)
           app.append(

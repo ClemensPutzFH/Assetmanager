@@ -15,6 +15,7 @@ Dann im Browser `http://localhost:3000` öffnen.
 | `DISPO_PIN` | PIN der Disponenten (**bitte ändern**) | `2510` |
 | `UPLOAD_PIN` | Zusätzlicher PIN für den Tab „Upload“ (Hochladen und Löschen) (**bitte ändern**) | `1025` |
 | `DATA_DIR` | Ordner für `data.db` und Sicherungen | `./data` |
+| `TIMEZONE` | Zeitzone, nach der ein Tag für die Gaswarngerät-Bestätigung beginnt und endet | `Europe/Vienna` |
 | `NAG_MIN` | Push-Erinnerung alle X Minuten wiederholen, bis das Gerät bestätigt | `5` |
 | `MSG_HOURS` | Nach so vielen Stunden hört eine Erinnerung von selbst auf | `12` |
 | `PUSH_CONTACT` | Kontakt für die Push-Dienste (`mailto:…` oder `https://…`), am besten eine echte Adresse der IT | `mailto:admin@example.com` |
@@ -27,7 +28,7 @@ Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 
 ## Daten
 - Beim ersten Start entsteht `data/data.db` (zusammen mit `data.db-wal` und `data.db-shm`, das ist normal).
-- Öffnen und auswerten kann man sie mit jedem SQLite-Programm (z. B. DB Browser for SQLite, oder `sqlite3 data/data.db`). Tabellen: `orders`, `pruef`, `ergebnis` (Ergebnis als JSON in `doc`), `dmark` (vom Disponenten abgehakte Aufträge, `v`=1 abgehakt, `at`=Zeitpunkt), `dev` (Geräte), `meta`.
+- Öffnen und auswerten kann man sie mit jedem SQLite-Programm (z. B. DB Browser for SQLite, oder `sqlite3 data/data.db`). Tabellen: `orders`, `pruef`, `ergebnis` (Ergebnis als JSON in `doc`), `dmark` (vom Disponenten abgehakte Aufträge, `v`=1 abgehakt, `at`=Zeitpunkt), `dev` (Geräte), `gas` (Gaswarngerät-Bestätigungen: `day`, `team`, `at` = Uhrzeit der Bestätigung, `rec` = Eingang beim Server, `did` = Gerät), `meta`.
 - Jede Eingabe ist beim Bestätigen fest auf der Platte (`synchronous=FULL`), auch bei Stromausfall.
 - Pro Tag entsteht eine Sicherung in `data/backups/` (`data-JJJJ-MM-TT.db`, die letzten 30 bleiben). Sie ist eine vollständige, direkt nutzbare Datenbankdatei.
 - Umzug/Sicherung von Hand: Server stoppen und `data.db` kopieren (oder Sicherung aus `backups/` verwenden). Die Sicherungen enthalten auch den Schlüssel für die Anmeldung, bitte nicht öffentlich ablegen.
@@ -87,6 +88,14 @@ Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zus
 - Ausloggen: Der Server meldet das Gerät **sofort ab** (Rolle und Team weg, Standort gelöscht, keine Benachrichtigungen mehr). Bei geöffneter App kehrt das Gerät gleich zum Startbildschirm zurück, sonst beim nächsten Öffnen (bis dahin steht „⏳ Gerät noch nicht informiert“ an der Karte). Bei Disponenten wird die Anmeldung zusätzlich auf dem Server ungültig – ein weiterer Zugriff mit dem alten Token ist nicht mehr möglich. Monteure haben keine eigene Anmeldung (die Teamwahl kann jederzeit neu getroffen werden), sie können sich also nach dem Ausloggen wieder anmelden.
 - **Standort der Monteur-Geräte:** Er wird nur abgefragt, solange der Tab „Geräte“ offen ist (sonst nie). Dann melden Monteur-Geräte, die gerade geöffnet sind, ihren Standort (höchstens einmal pro Minute; „Standorte jetzt aktualisieren“ löst sofort eine neue Runde aus). Der Browser fragt den Monteur beim ersten Mal um Erlaubnis, und löst der Disponent die Abfrage aus, während die App auf dem Gerät läuft, erscheint kurz der Hinweis „Der Disponent hat deinen Standort abgefragt.“ (beim Start der App nicht). Gespeichert wird nur der jeweils letzte Standort (kein Verlauf); beim Abmelden wird er gelöscht. In der Gerätekarte erscheint er als Link zu OpenStreetMap. Standort per Browser funktioniert nur über HTTPS (oder localhost). Hinweis: Standortabfragen bei Mitarbeitenden sind datenschutz- und mitbestimmungsrelevant (DSGVO, ggf. Betriebsrat) – bitte vorab klären.
 - Ältere Datenbanken werden beim Start automatisch um die neuen Spalten ergänzt.
+
+## Gaswarngerät (tägliche Bestätigung)
+- Bevor ein Team arbeitet, muss es **jeden Tag** bestätigen, dass das Gaswarngerät ordnungsgemäß funktioniert. Solange das Team heute noch nicht bestätigt hat, liegt auf allen seinen Geräten ein Fenster über der App, das sich nur mit **„✓ Funktioniert ordnungsgemäß“** schließen lässt (einziger Ausweg: „Team wechseln“). Das Fenster erscheint auch nach Mitternacht wieder.
+- Bestätigt wird **je Team**: Bestätigt ein Gerät des Teams, ist es für alle Geräte des Teams erledigt (die erste Bestätigung des Tages zählt). Die Teamliste zeigt „✓ Gaswarngerät heute um HH:MM Uhr bestätigt“.
+- **Dokumentation:** Der Server speichert Tag, Team, Uhrzeit, das bestätigende Gerät (Tabelle `gas`) und den Zeitpunkt, zu dem die Bestätigung beim Server ankam. Es wird nur angefügt, nie geändert oder gelöscht. Ohne Netz gilt die Bestätigung sofort und wird später mit der **echten Uhrzeit** nachgesendet (Zeiten, die mehr als 24 Stunden zurückliegen oder in der Zukunft liegen, ersetzt der Server durch die eigene Uhrzeit).
+- **Disponent:** Im Tab **Fortschritt** zeigt die Karte „Gaswarngerät“ je Team die Uhrzeit der Bestätigung oder „nicht bestätigt“ (nicht bestätigte zuerst); mit ‹ › oder dem Datumsfeld lassen sich frühere Tage ansehen (letzte 60 Tage). **„Gesamtes Protokoll (CSV)“** lädt alle Bestätigungen seit Beginn (Semikolon-getrennt, öffnet sich in Excel).
+- Was „ein Tag“ ist, bestimmt `TIMEZONE` (Standard `Europe/Vienna`): Um Mitternacht in dieser Zeitzone beginnt der neue Tag.
+- Das Protokoll hält nur fest, **dass** bestätigt wurde, nicht **wer** (die App kennt keine Personen, nur Team und Gerät – der Spitzname des Geräts steht mit im Protokoll). Wenn das für eine Nachweispflicht nicht reicht, braucht es eine namentliche Anmeldung der Monteure.
 
 ## Offline
 Die Oberfläche startet auch ohne Netz (nach dem ersten Öffnen mit Netz). Eingaben der Monteure werden im Gerät gesichert und automatisch gesendet, sobald der Server wieder erreichbar ist. Den letzten Stand der Aufträge und die Prüfobjekte des eigenen Teams merkt sich das Gerät in IndexedDB.
