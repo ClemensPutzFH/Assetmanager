@@ -37,7 +37,7 @@ label.ck{display:block;margin:10px 0;font-size:.875rem;color:var(--mu)}
 .tag.st-ok{background:var(--ok);border-color:var(--ok);color:#fff}.tag.st-nok{background:var(--nk);border-color:var(--nk);color:#fff}.tag.st-teil{border-color:var(--ac);color:var(--act)}.tag.st-zf{background:rgba(196,50,10,.14);border-color:var(--nk);color:var(--er);font-weight:700}
 .nokbox{margin-top:8px;padding:8px 10px;border-radius:8px;border:1px solid var(--nk);font-size:.875rem}.nokbox b{color:var(--er)}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.chip{padding:6px 12px;border-radius:20px;font-size:.875rem}.chip.on{background:var(--ac);border-color:var(--ac);color:#fff}.chip.nk.on{background:var(--nk);border-color:var(--nk)}.chips.ab{align-items:center}
-.it{padding:10px 0;border-top:1px solid var(--bd)}.it .t{margin-bottom:8px;word-break:break-word}.ob{display:flex;gap:8px}.ob button{flex:1;padding:12px 8px}
+.it{padding:10px 0;border-top:1px solid var(--bd)}.it .t{margin-bottom:8px;word-break:break-word}.it .t .orig{font-size:.75rem;color:var(--mu);opacity:.8;margin-top:2px}.ob{display:flex;gap:8px}.ob button{flex:1;padding:12px 8px}
 .ob button.ok.on{background:var(--ok);border-color:var(--ok);color:#fff}.ob button.nk.on{background:var(--nk);border-color:var(--nk);color:#fff}
 button.allok{display:block;width:100%;background:var(--ok);border-color:var(--ok);color:#fff;padding:14px;font-size:1.0625rem;margin:10px 0}
 .cfm{margin:10px 0;padding:12px;border:2px solid var(--ok);border-radius:10px}.cfm .ob{margin-top:10px}.cfm button{padding:14px 8px;font-size:1rem}.cfm button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -199,6 +199,21 @@ async function wipePl(){
   try{await api('DELETE','/api/pruef');pcache.clear();await poll();msg='Alle Prüfobjekte gelöscht'}
   catch(e){err=errTxt(e)}
   busy=false;render();
+}
+// Monteur-Ansicht: Kurztext eines Prüfobjekts als lesbarer Satz (Dispo/Export zeigen den Originaltext).
+// Nicht erkannte Texte bleiben unverändert.
+const HL={VL:'Verteilleitung',AL:'Abzweigleitung'},HF={VL:'Vorlauf',RL:'Rücklauf'},HC={KH:'Kugelhahn',E:'Entleerung','Ü':'Überlauf'},SCH=/^[A-Z]{3}\d{3}$/;
+function hum(t){
+  const w=String(t).trim().split(/\s+/),sc=x=>SCH.test(x)?'Schacht '+x:x;
+  // „VL 1210 Am Spitz DN125 RL“ / „AL UHM001 1210 Am Spitz 8 VL“
+  if(HL[w[0]]&&HF[w[w.length-1]]&&w.length>2)return `${HL[w[0]]} ${w.slice(1,-1).map(sc).join(' ')} – ${HF[w[w.length-1]]}`;
+  // „KH RL AL 1210 Am Spitz 8 SHM911“ (Bauteil, Vor-/Rücklauf, Leitungsart, Ort, Schacht)
+  const c=HC[w[0].toUpperCase()],f=HF[w[1]],l=HL[w[2]];
+  if(c&&f&&l&&w.length>3){
+    const s=SCH.test(w[w.length-1])?w.pop():'',o=w.slice(3).join(' ');
+    return `${c} am ${f} der ${l}${o?' '+o:''}${s?' im Schacht '+s:''}`;
+  }
+  return t;
 }
 const STL={done:'Erledigt',teil:'In Arbeit',offen:'Offen'};
 async function exportXlsx(rows){
@@ -842,7 +857,7 @@ function draw(){
         const c=s[i],m=txt(i);
         const nb=c==='x'?el('div',{class:'nokbox'},el('b',{},'Nicht OK: '),m||'–'):null;
         if(!mon){pb.append(el('div',{class:'li','data-k':'i'+i},el('span',{class:'mk'},c==='o'?'✓':c==='x'?'✗':'○'),t,nb));return}
-        pb.append(el('div',{class:'it','data-k':'i'+i,'data-op':c==='-'?'1':null},el('div',{class:'t'},t),
+        pb.append(el('div',{class:'it','data-k':'i'+i,'data-op':c==='-'?'1':null},el('div',{class:'t'},hum(t),hum(t)!==t&&el('div',{class:'orig'},t)),
           el('div',{class:'ob'},
             el('button',{class:'ok'+(c==='o'?' on':''),onclick:()=>markOk(r,L,i)},'OK'),
             el('button',{class:'nk'+(c==='x'?' on':''),onclick:()=>openEd(i,m)},'Nicht OK')),
