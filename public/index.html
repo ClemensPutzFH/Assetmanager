@@ -114,7 +114,7 @@ const app=document.getElementById('app');
 const APPVER='__APPVER__';   // setzt der Server beim Ausliefern ein; weicht die Server-Version ab, ist ein Update da
 let updVer='';
 const el=(t,p,...c)=>{const e=document.createElement(t);for(const k in p||{}){const v=p[k];if(v==null||v===false)continue;if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(k==='value')e.value=v;else e.setAttribute(k,v)}e.append(...c.flat().filter(x=>x!=null&&x!==false));return e};
-let since=0,sk='',teamList=[],ordersMap=new Map(),ersSq=new Map(),plC=null,again=false,tok='',net=true,polling=false,cacheT=null,chunks=new Map(),meta=null,ready=false,canWrite=true,err='',msg='',busy=false,arm=false,q='',ft='',openA=null,pl={},pmeta=null,pcache=new Map(),armP=false,sy=0,ers=new Map(),pend=new Map(),wq=new Map(),dtab='ue',fs='',armA=false,mf='',edi=null,edt='',edE=false,unlocked=false,pinv='',pinE=false,tH='',tM='',tE='',tD='',tV='';
+let since=0,sk='',teamList=[],ordersMap=new Map(),ersSq=new Map(),plC=null,again=false,tok='',net=true,polling=false,cacheT=null,chunks=new Map(),meta=null,ready=false,canWrite=true,err='',msg='',busy=false,arm=false,q='',ft='',openA=null,pl={},pmeta=null,pcache=new Map(),armP=false,sy=0,ers=new Map(),pend=new Map(),wq=new Map(),dtab='ue',fs='',armA=false,mf='open',edi=null,edt='',edE=false,unlocked=false,pinv='',pinE=false,tH='',tM='',tE='',tD='',tV='';
 let marks=new Map(),dha='',rf='',rv='',rb='',armM=false,und=null,undT=null;
 let upTok='',upPin='',upE=false;
 // Nachrichten/Push: msgs (Monteur: offene seines Teams; Disponent: letzte 24 h), devs = Geräte je Team [alle, mit Push]
@@ -842,7 +842,7 @@ addEventListener('popstate',()=>{
   else closeA();
 });
 document.addEventListener('keydown',e=>{if(e.key!=='Escape'||!openA||dlg.open)return;e.preventDefault();if(edi!==null){edi=null;render()}else if(armA){armA=false;render()}else setTimeout(requestBack,0)});   // verzögert: sonst schließt derselbe Esc-Druck den neuen Dialog gleich wieder
-const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;upTok='';upPin='';upE=false;save();render();poll();prefetch();pushSync(false)};
+const go=(role,team)=>{ses={role,team:team||null};q='';ft='';mf='open';rf='';rv='';rb='';armM=false;und=null;openA=null;edi=null;unlocked=false;tok='';pinv='';pinE=false;upTok='';upPin='';upE=false;save();render();poll();prefetch();pushSync(false)};
 
 // Ansicht beim Neuzeichnen festhalten: Elemente mit data-k bleiben an derselben Bildschirmstelle – zuerst der angetippte
 // Bereich, sonst der nächstgelegene sichtbare. Das Scroll-Anchoring des Browsers ist aus (overflow-anchor:none): es springt,
