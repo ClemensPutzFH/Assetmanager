@@ -32,6 +32,13 @@ Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 - Pro Tag entsteht eine Sicherung in `data/backups/` (`data-JJJJ-MM-TT.db`, die letzten 30 bleiben). Sie ist eine vollständige, direkt nutzbare Datenbankdatei.
 - Umzug/Sicherung von Hand: Server stoppen und `data.db` kopieren (oder Sicherung aus `backups/` verwenden). Die Sicherungen enthalten auch den Schlüssel für die Anmeldung, bitte nicht öffentlich ablegen.
 
+## Code-Überblick
+Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zustandsvariablen sind kommentiert.
+- `server.js` – Server: API unter `/api/`, SQLite, Push, statische Dateien. Der Kopfkommentar listet Tabellen, Zugriffsstufen und Umgebungsvariablen.
+- `public/index.html` – die gesamte Oberfläche (Stile + Skript in einer Datei, ohne Framework/Build). Das Skript ist in Abschnitte gegliedert (Zustand, Upload, Ergebnisse/Status, Zeitrückmeldung, Outbox, Abgleich, Vergleich, Fortschritt, Nachrichten, Zeichnen …). `render()` zeichnet alles aus dem Zustand neu; `draw()` wählt dafür eine der Ansichten `drawOrderDetail`, `drawMonteurList`, `drawDispo` usw.
+- `public/worker.js` – Excel lesen/schreiben im Hintergrund (Aufträge, Prüflose, Vergleich, Export).
+- `public/sw.js` – Service Worker: Offline-Start und Push-Benachrichtigungen.
+
 ## Wie die Geräte abgleichen
 - Der Server vergibt bei jeder Änderung eine fortlaufende Nummer. Geräte holen nur Änderungen seit ihrer letzten Nummer, nach einer Eingabe also wenige hundert Byte.
 - Monteure bekommen nur Aufträge und Ergebnisse ihres Teams, Disponenten alles. Die Haken des Disponenten (abgehakte Aufträge) gehen nur an die Disponentenansicht.
