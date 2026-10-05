@@ -34,6 +34,22 @@ function pruef(buf) {
   }
   return { by };
 }
+// Vergleich: Aufträge-Excel (ohne Spalte „Abgehakt am“) bzw. Export dieser App (mit „Abgehakt am“); bei Export zählt nur das Blatt mit dieser Spalte
+function cmp(buf) {
+  const sh = []; let hasStatus = false;
+  for (const rows of sheets(buf)) {
+    const hi = rows.slice(0, 10).findIndex(r => r.some(c => norm(c) === 'auftrag'));
+    if (hi < 0) continue;
+    const h = rows[hi], ix = n => h.findIndex(c => norm(c) === n);
+    const ia = ix('auftrag'), is = ix('abgehaktam'), it = h.findIndex(c => norm(c).endsWith('verantwarbpl')), ik = ix('kurztext');
+    if (is >= 0) hasStatus = true;
+    const s = k => String(k ?? '').replace(/\s+/g, ' ').trim();
+    sh.push({ st: is >= 0, rows: rows.slice(hi + 1).map(r => ({ auftrag: an(r[ia]), team: it < 0 ? '' : s(r[it]), kurz: ik < 0 ? '' : s(r[ik]), hak: is < 0 ? '' : s(r[is]) })).filter(o => o.auftrag) });
+  }
+  const out = new Map();
+  for (const x of sh) if (x.st === hasStatus) for (const o of x.rows) out.set(o.auftrag, o);
+  return { rows: [...out.values()], hasStatus };
+}
 function xlsx(A, P, dc, tc) {
   const mk = (aoa, dc = -1, tc = -1) => {
     const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -51,7 +67,7 @@ function xlsx(A, P, dc, tc) {
 onmessage = e => {
   const { type, buf, A, P, dc, tc } = e.data;
   try {
-    const res = type === 'orders' ? orders(buf) : type === 'pruef' ? pruef(buf) : xlsx(A, P, dc, tc);
+    const res = type === 'orders' ? orders(buf) : type === 'pruef' ? pruef(buf) : type === 'cmp' ? cmp(buf) : xlsx(A, P, dc, tc);
     const tr = res instanceof ArrayBuffer ? [res] : res && res.buffer instanceof ArrayBuffer ? [res.buffer] : [];
     postMessage({ res }, tr);
   } catch (err) { postMessage({ error: 'Excel-Datei konnte nicht verarbeitet werden: ' + (err.message || err) }); }

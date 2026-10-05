@@ -42,7 +42,7 @@ label.ck{display:block;margin:10px 0;font-size:.875rem;color:var(--mu)}
 button.allok{display:block;width:100%;background:var(--ok);border-color:var(--ok);color:#fff;padding:14px;font-size:1.0625rem;margin:10px 0}
 .cfm{margin:10px 0;padding:12px;border:2px solid var(--ok);border-radius:10px}.cfm .ob{margin-top:10px}.cfm button{padding:14px 8px;font-size:1rem}.cfm button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
 .mk{display:inline-block;width:1.4em}
-.tabs{display:flex;gap:8px;margin-bottom:12px}.tabs button{flex:1;padding:10px 6px}.tabs button.on{background:var(--ac);border-color:var(--ac);color:#fff}
+.tabs{display:flex;gap:6px;margin-bottom:12px}.tabs button{flex:1;min-width:0;padding:10px 2px;font-size:.9375rem}.tabs button.on{background:var(--ac);border-color:var(--ac);color:#fff}
 .tools select{flex:1;min-width:0}textarea{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px;width:100%;box-sizing:border-box;margin:8px 0}
 .ed{margin-top:8px}.ob button.sv{background:var(--ac);border-color:var(--ac);color:#fff}.nk1{margin-top:4px}.it .nokbox{margin-top:8px}
 input[type=password]{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 14px;font-size:1.375rem;letter-spacing:.4em;width:100%;box-sizing:border-box;margin:10px 0}
@@ -75,7 +75,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
   .mtop{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:16px;align-items:center;margin-bottom:12px}.mtop>.card{margin:0}.mtop .ctl>:last-child{margin-bottom:0}
 }
 @media(min-width:700px){
-  .tabs{max-width:28rem}
+  .tabs{max-width:36rem}
   .flt{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}.flt select{width:auto;min-width:14rem;max-width:24rem}.flt>.mu:not(:first-child){margin-left:12px}.flt .rg .dt{flex:0 0 11rem}
   .acts{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.acts button.dl{width:auto;margin:0}
   .srow{display:flex;gap:8px 16px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.srow>*{margin-bottom:0}.srow .tools{flex:1 1 20rem}
@@ -108,7 +108,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .msg.pb{display:flex;gap:8px 12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.msg.pb button{margin:0;padding:8px 14px;font-size:.875rem}
 .top.sc{box-shadow:0 1px 0 var(--bd),0 4px 12px rgba(0,0,0,.06)}
 .toast{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translate(-50%,16px);width:max-content;max-width:min(calc(100vw - 32px),32rem);background:var(--tx);color:var(--bg);padding:12px 16px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:.9375rem;line-height:1.35;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:30;cursor:pointer}.toast.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
-.made{position:fixed;right:max(8px,env(safe-area-inset-right));bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:4;font-size:11px;line-height:1.2;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:3px 9px;box-shadow:0 1px 6px rgba(0,0,0,.18);pointer-events:none;user-select:none}</style></head><body><header class="top" id="top"></header><main id="app"></main><div class="made">made by Clemens with ❤️</div>
+.fpick{display:inline-block;font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 14px;cursor:pointer}.fpick input{display:none}.fnm{margin:8px 0 0;word-break:break-all}.vgbtn{display:block;width:100%;margin:0 0 12px;padding:12px}.vgbtn:disabled{opacity:.5;cursor:default}.vgsum.bad{border-color:var(--er)}.vgsum.bad>b{color:var(--er)}.vgsum.good{border-color:var(--ok)}.vgsum.good>b{color:var(--ok)}.vgt tbody tr{cursor:default}.vgt td.wr{white-space:normal;min-width:12rem}.vgt td.vk{white-space:normal;min-width:11rem}.vgt tr.vg-fehlt td.vk,.vgt tr.vg-noch td.vk{color:var(--er);font-weight:600}.vgt tr.vg-fehlt,.vgt tr.vg-noch{background:color-mix(in srgb,var(--er) 8%,var(--card))}.vgt tr.vg-ok td.vk{color:var(--mu)}.made{position:fixed;right:max(8px,env(safe-area-inset-right));bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:4;font-size:11px;line-height:1.2;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:3px 9px;box-shadow:0 1px 6px rgba(0,0,0,.18);pointer-events:none;user-select:none}</style></head><body><header class="top" id="top"></header><main id="app"></main><div class="made">made by Clemens with ❤️</div>
 <script>
 const app=document.getElementById('app');
 const APPVER='__APPVER__';   // setzt der Server beim Ausliefern ein; weicht die Server-Version ab, ist ein Update da
@@ -555,6 +555,57 @@ function list(rows,showTeam){
   if(f.length>300)box.append(el('p',{class:'mu'},'Nur die ersten 300 angezeigt – Suche nutzen.'));
   return box;
 }
+// ---- Vergleich (Disponent): Aufträge-Excel (Original) gegen den Export dieser App ----
+// Nur zwei Regeln, „erledigt“ = vom Disponenten abgehakt (Spalte „Abgehakt am“ im Export):
+// nicht abgehakt -> muss in der Excel stehen · abgehakt -> darf nicht mehr in der Excel stehen. Alles andere ist egal.
+let vgA=[],vgB=[],vgR=null,vgF='',vgBusy=false;
+const VGK={fehlt:'Nicht abgehakt – fehlt in der Excel',noch:'Abgehakt – steht noch in der Excel',ok:'Stimmt überein'};
+async function vgRun(){
+  vgBusy=true;err='';vgR=null;render();
+  try{
+    const read=async fl=>{const m=new Map();let hk=false;for(const f of fl){const buf=await f.arrayBuffer();const r=await work({type:'cmp',buf},[buf]);hk=hk||r.hasStatus;for(const o of r.rows)m.set(o.auftrag,o)}return{m,hk}};
+    const a=await read(vgA),b=await read(vgB);
+    if(a.hk)throw new Error('Die Datei bei „Aufträge-Excel“ hat eine Spalte „Abgehakt am“ und sieht wie der Export aus – bitte die beiden Dateien tauschen.');
+    if(!b.hk)throw new Error('Die Datei bei „Export“ hat keine Spalte „Abgehakt am“ – bitte den aktuellen Excel-Export aus der Übersicht verwenden.');
+    if(!a.m.size)throw new Error('In der Aufträge-Excel wurden keine Aufträge gefunden (Spalte „Auftrag“ nötig).');
+    if(!b.m.size)throw new Error('Im Export wurden keine Aufträge gefunden.');
+    const rows=[];
+    for(const o of b.m.values()){
+      const x=a.m.get(o.auftrag),hak=!!o.hak;
+      rows.push({k:!hak&&!x?'fehlt':hak&&x?'noch':'ok',a:o.auftrag,team:o.team||(x&&x.team)||'',kurz:o.kurz||(x&&x.kurz)||'',hak:o.hak,ex:!!x});
+    }
+    rows.sort((p,q)=>cmp(p.a,q.a));
+    const cnt={fehlt:0,noch:0,ok:0};rows.forEach(r=>cnt[r.k]++);
+    vgR={rows,cnt,nA:a.m.size,nB:b.m.size,nH:rows.filter(r=>r.hak).length};
+    vgF=cnt.fehlt+cnt.noch?'':'ok';
+  }catch(e){err=errTxt(e)}
+  vgBusy=false;render();
+}
+function vergleich(){
+  const pick=(lbl,hint,get,set,multi)=>{
+    const inp=el('input',{type:'file',accept:'.xlsx,.xls',multiple:multi?'multiple':null,onchange:e=>{set([...e.target.files]);vgR=null;err='';render()}});
+    const fl=get();
+    return el('div',{class:'card'},el('b',{},lbl),el('p',{class:'mu'},hint),
+      el('label',{class:'fpick'},fl.length?'Andere Datei wählen':'Datei wählen',inp),
+      fl.length>0&&el('p',{class:'mu fnm'},'✓ '+fl.map(f=>f.name).join(', ')));
+  };
+  app.append(el('div',{class:'ugrid'},
+    pick('1. Aufträge-Excel','Die Datei, die sonst als Aufträge hochgeladen wird (Spalte „Auftrag“).',()=>vgA,v=>{vgA=v},true),
+    pick('2. Export aus dieser App','Der Excel-Export aus der Übersicht („⬇ Excel exportieren“) mit der Spalte „Abgehakt am“.',()=>vgB,v=>{vgB=v})));
+  app.append(el('button',{class:'pri vgbtn',disabled:vgBusy||!vgA.length||!vgB.length?'disabled':null,onclick:vgRun},vgBusy?'Vergleiche …':'Vergleichen'));
+  if(!vgR){app.append(el('p',{class:'mu'},'Geprüft wird nur: Nicht abgehakte Aufträge müssen in der Aufträge-Excel stehen, abgehakte Aufträge dürfen dort nicht mehr stehen. Alles andere (Status, Prüfergebnis, Aufträge nur in der Excel) wird ignoriert. Die Dateien werden nur hier im Browser gelesen und nicht hochgeladen.'));return}
+  const R=vgR,c=R.cnt,bad=c.fehlt+c.noch;
+  app.append(el('div',{class:'card vgsum '+(bad?'bad':'good')},
+    el('b',{},bad?`⚠ ${bad} ${bad===1?'Abweichung':'Abweichungen'} gefunden`:'✓ Keine Abweichungen'),
+    el('p',{class:'mu'},`Export: ${R.nB} Aufträge (${R.nH} abgehakt, ${R.nB-R.nH} nicht abgehakt) · Aufträge-Excel: ${R.nA} Aufträge`)));
+  app.append(chips([['','Abweichungen',bad],['fehlt','Nicht abgehakt, fehlt in Excel',c.fehlt],['noch','Abgehakt, noch in Excel',c.noch],['ok','Stimmt überein',c.ok],['all','Alle',R.rows.length]],vgF,k=>{vgF=k}));
+  const f=R.rows.filter(r=>vgF==='all'||(vgF===''?r.k!=='ok':r.k===vgF));
+  if(!f.length){app.append(el('p',{class:'mu'},'Keine Einträge.'));return}
+  const tb=el('tbody',{},f.slice(0,500).map(r=>el('tr',{class:'vg-'+r.k},el('td',{},r.a),el('td',{class:'vk'},VGK[r.k]),el('td',{},r.team||'–'),el('td',{class:'wr'},r.kurz||'–'),el('td',{},r.hak||'nicht abgehakt'),el('td',{},r.ex?'ja':'nein'))));
+  app.append(el('p',{class:'mu'},f.length===1?'1 Eintrag':`${f.length} Einträge`),
+    el('div',{class:'gtw card'},el('table',{class:'gt vgt'},el('thead',{},el('tr',{},['Auftrag','Bewertung','Team','Kurztext','Abgehakt am','In Excel'].map(h=>el('th',{},h)))),tb)));
+  if(f.length>500)app.append(el('p',{class:'mu'},'Nur die ersten 500 angezeigt – Filter nutzen.'));
+}
 // ---- Fortschritt aller Teams (Disponent): Gesamt + je Team, live aus denselben Daten wie die Übersicht ----
 let gsort='n',gtab=false;try{gsort=localStorage.getItem('gsort')==='p'?'p':'n'}catch(e){}
 const pct=(a,n)=>!n?0:a===n?100:Math.min(99,Math.round(a/n*100));     // 100 % nur wenn wirklich alles erledigt
@@ -918,7 +969,8 @@ function draw(){
   }
   // Disponent
   app.append(el('div',{class:'bar'},el('h1',{},'Disponent'),back),
-    el('div',{class:'tabs'},el('button',{class:dtab==='ue'?'on':null,onclick:()=>{dtab='ue';upTok='';render()}},'Übersicht'),el('button',{class:dtab==='st'?'on':null,onclick:()=>{dtab='st';upTok='';render()}},'Fortschritt'),el('button',{class:dtab==='up'?'on':null,onclick:()=>{if(dtab!=='up'){dtab='up';upTok='';upPin='';upE=false}render();const n=app.querySelector('[data-keep="u"]');if(n)n.focus()}},'Upload')));
+    el('div',{class:'tabs'},el('button',{class:dtab==='ue'?'on':null,onclick:()=>{dtab='ue';upTok='';render()}},'Übersicht'),el('button',{class:dtab==='st'?'on':null,onclick:()=>{dtab='st';upTok='';render()}},'Fortschritt'),el('button',{class:dtab==='up'?'on':null,onclick:()=>{if(dtab!=='up'){dtab='up';upTok='';upPin='';upE=false}render();const n=app.querySelector('[data-keep="u"]');if(n)n.focus()}},'Upload'),el('button',{class:dtab==='vg'?'on':null,onclick:()=>{dtab='vg';upTok='';render()}},'Vergleich')));
+  if(dtab==='vg'){vergleich();return}
   if(dtab==='st'){
     const list=teamStats();
     if(!list.length){app.append(el('p',{class:'mu'},ready?'Noch keine Aufträge – im Tab „Upload“ hochladen.':'Lade …'));return}
