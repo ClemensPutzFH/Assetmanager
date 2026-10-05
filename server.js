@@ -12,7 +12,8 @@
  *   orders    Aufträge (del = 1: gelöscht/verschoben, bleibt als Markierung, damit Geräte es erfahren)
  *   pruef     Prüfobjekt-Liste je Auftrag (JSON)       ergebnis  Bewertung/Zeit je Auftrag (JSON, Format siehe index.html)
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
- *   dev       Geräte der Monteure (Team, Push-Abo)     msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
+ *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung)
+ *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
  *
  * ZUGRIFFSSTUFEN
  *   offen            Anmeldung, Abgleich, Prüfobjekte lesen, Ergebnis speichern, Push-Anmeldung, Bestätigen
@@ -84,11 +85,31 @@ CREATE INDEX IF NOT EXISTS ergebnis_seq ON ergebnis(seq, team);
 CREATE TABLE IF NOT EXISTS dmark(auftrag TEXT PRIMARY KEY, v INTEGER NOT NULL, at INTEGER, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS dmark_seq ON dmark(seq);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
--- Geräte der Monteure (Team + Push-Abo), Nachrichten des Disponenten und Bestätigungen je Gerät
-CREATE TABLE IF NOT EXISTS dev(did TEXT PRIMARY KEY, team TEXT, sub TEXT, seen INTEGER);
+-- Geräte (Rolle/Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung durch den Disponenten), Nachrichten des Disponenten und Bestätigungen je Gerät
+CREATE TABLE IF NOT EXISTS dev(did TEXT PRIMARY KEY, team TEXT, sub TEXT, seen INTEGER, role TEXT, name TEXT, ua TEXT, first INTEGER, kick INTEGER NOT NULL DEFAULT 0, kick_at INTEGER);
 CREATE TABLE IF NOT EXISTS msg(id INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, closed INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS mack(id INTEGER NOT NULL, did TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(id, did));
 `);
+// Ältere Datenbanken haben in `dev` noch nicht alle Spalten: beim Start ergänzen. Bisherige Geräte mit Team waren Monteure.
+{
+  const have = new Set(
+    db
+      .prepare('PRAGMA table_info(dev)')
+      .all()
+      .map(c => c.name)
+  );
+  const added = {
+    role: 'TEXT',
+    name: 'TEXT',
+    ua: 'TEXT',
+    first: 'INTEGER',
+    kick: 'INTEGER NOT NULL DEFAULT 0',
+    kick_at: 'INTEGER'
+  };
+  for (const [column, type] of Object.entries(added))
+    if (!have.has(column)) db.exec(`ALTER TABLE dev ADD COLUMN ${column} ${type}`);
+  if (!have.has('role')) db.exec("UPDATE dev SET role='monteur' WHERE team IS NOT NULL");
+}
 // Vorbereitete SQL-Anweisungen (einmal kompiliert, vielfach genutzt). up… = einfügen/aktualisieren, tomb… = als gelöscht markieren
 const sql = {
   getMeta: db.prepare('SELECT v FROM meta WHERE k=?'),
@@ -116,11 +137,20 @@ const sql = {
   ),
   wipePruef: db.prepare("UPDATE pruef SET items='[]', seq=? WHERE items<>'[]'"),
   getErg: db.prepare('SELECT doc, seq FROM ergebnis WHERE auftrag=?'),
-  getDev: db.prepare('SELECT team, sub FROM dev WHERE did=?'),
+  getDev: db.prepare('SELECT role, team, sub, kick FROM dev WHERE did=?'),
   seenDev: db.prepare('UPDATE dev SET seen=? WHERE did=?'),
+  // „zuletzt aktiv“ nur dann schreiben, wenn der letzte Eintrag älter als eine Minute ist (nicht bei jedem Abgleich)
+  touchDev: db.prepare('UPDATE dev SET seen=? WHERE did=? AND (seen IS NULL OR seen<?)'),
+  getKick: db.prepare('SELECT kick, kick_at FROM dev WHERE did=?'),
+  // meldet das Gerät an/um/ab (Rolle, Team, Push-Abo) und hebt eine angeforderte Abmeldung auf; Spitzname bleibt erhalten
   upDev: db.prepare(
-    'INSERT INTO dev(did,team,sub,seen) VALUES(?,?,?,?) ON CONFLICT(did) DO UPDATE SET team=excluded.team, sub=excluded.sub, seen=excluded.seen'
+    'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick) VALUES(?,?,?,?,?,?,?,0) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0'
   ),
+  listDevs: db.prepare(
+    'SELECT did, name, role, team, sub IS NOT NULL AS push, seen, first, ua, kick FROM dev WHERE seen>? ORDER BY seen DESC'
+  ),
+  nameDev: db.prepare('UPDATE dev SET name=? WHERE did=?'),
+  kickDev: db.prepare('UPDATE dev SET kick=1, kick_at=? WHERE did=?'),
   dupSub: db.prepare('UPDATE dev SET sub=NULL WHERE sub=? AND did<>?'),
   dropSub: db.prepare('UPDATE dev SET sub=NULL WHERE did=?'),
   resub: db.prepare("UPDATE dev SET sub=? WHERE json_extract(sub,'$.endpoint')=?"),
@@ -249,6 +279,8 @@ setInterval(() => {
 // ---------- Hilfsfunktionen ----------
 // Text auf höchstens n Zeichen kürzen (aus null/undefined wird ein leerer Text) – begrenzt Eingaben
 const clipString = (v, n = 300) => String(v ?? '').slice(0, n);
+// gültige Geräte-ID (32 Hex-Zeichen) oder '' – die ID erzeugt die App einmalig je Gerät
+const validDeviceId = v => (/^[a-f0-9]{32}$/.test(String(v ?? '')) ? String(v) : '');
 // versteht der Client gzip?
 const acceptsGzip = req => /\bgzip\b/.test(req.headers['accept-encoding'] || '');
 // Antwort als JSON; ab 1 KB gzip-komprimiert, falls der Client das kann
@@ -308,11 +340,15 @@ const safeEqual = (a, b) => {
 };
 // Fehlversuche je IP (und Bereich): nach 5 Fehlversuchen 10 Minuten gesperrt
 const loginFailures = new Map();
+// Gültigkeit der Anmelde-Tokens: Disponent 12 Stunden, Upload (scope 'up:') 30 Minuten
+const DISPO_TOKEN_MS = 12 * 3600e3,
+  UPLOAD_TOKEN_MS = 30 * 60e3;
 /**
- * Prüft die PIN und gibt ein Token „<Ablaufzeit>.<Signatur>“ zurück (null bei falscher PIN oder Sperre).
- * Dispo: 12 Stunden gültig; Upload (scope 'up:'): 30 Minuten.
+ * Prüft die PIN und gibt ein Token zurück (null bei falscher PIN oder Sperre):
+ * „<Ablaufzeit>.<Geräte-ID>.<Signatur>“, ohne Geräte-ID (ältere Apps) „<Ablaufzeit>.<Signatur>“.
+ * Mit Geräte-ID kann der Disponent das Gerät später abmelden, dann wird das Token ungültig (siehe tokenValid).
  */
-function login(ip, pin, want = DISPO_PIN, scope = '') {
+function login(ip, pin, want = DISPO_PIN, scope = '', did = '') {
   const key = scope + ip,
     failure = loginFailures.get(key) || { n: 0, t: Date.now() };
   if (Date.now() - failure.t > 600e3) {
@@ -322,17 +358,31 @@ function login(ip, pin, want = DISPO_PIN, scope = '') {
   if (failure.n >= 5) return null;
   if (safeEqual(String(pin), want)) {
     loginFailures.delete(key);
-    const expiresAt = Date.now() + (scope ? 30 * 60e3 : 12 * 3600e3);
-    return expiresAt + '.' + sign(scope + expiresAt);
+    const expiresAt = Date.now() + (scope ? UPLOAD_TOKEN_MS : DISPO_TOKEN_MS);
+    return did
+      ? `${expiresAt}.${did}.${sign(scope + expiresAt + '.' + did)}`
+      : expiresAt + '.' + sign(scope + expiresAt);
   }
   failure.n++;
   loginFailures.set(key, failure);
   return null;
 }
-// Token gültig? (Signatur stimmt, Ablaufzeit nicht überschritten, richtiger Bereich)
+// Gerät ab? Das hat der Disponent mit „Ausloggen“ angefordert (kick_at = Zeitpunkt)
+const deviceKickedAt = did => {
+  const k = sql.getKick.get(did);
+  return (k && k.kick_at) || 0;
+};
+// Token gültig? (Signatur stimmt, Ablaufzeit nicht überschritten, richtiger Bereich, nicht durch eine Abmeldung des Geräts
+// entwertet: Tokens, die vor der Abmeldung ausgestellt wurden, gelten nicht mehr)
 const tokenValid = (t, scope = '') => {
-  const [e, sig] = String(t || '').split('.');
-  return !!(e && sig && +e > Date.now() && safeEqual(sign(scope + e), sig));
+  const parts = String(t || '').split('.');
+  if (parts.length !== 2 && parts.length !== 3) return false;
+  const e = parts[0],
+    sig = parts[parts.length - 1],
+    did = parts.length === 3 ? parts[1] : '';
+  if (!(e && sig && +e > Date.now() && safeEqual(sign(scope + e + (did ? '.' + did : '')), sig)))
+    return false;
+  return !did || deviceKickedAt(did) <= +e - (scope ? UPLOAD_TOKEN_MS : DISPO_TOKEN_MS);
 };
 // Anfrage mit gültigem Disponenten-Token?
 const isDispo = req => tokenValid((req.headers.authorization || '').replace(/^Bearer /, ''));
@@ -522,9 +572,10 @@ async function handleApi(req, res, url) {
     req.on('close', () => sseClients.delete(res));
     return;
   }
-  // Disponent: PIN -> Token
+  // Disponent: PIN (+ Geräte-ID) -> Token
   if (pathname === '/api/login' && method === 'POST') {
-    const t = login(ip, (await readBody(req, 1e4)).pin);
+    const body = await readBody(req, 1e4),
+      t = login(ip, body.pin, DISPO_PIN, '', validDeviceId(body.did));
     return t
       ? sendJson(req, res, 200, { token: t })
       : sendJson(req, res, 403, { error: 'Falscher PIN (oder zu viele Versuche – 10 Minuten warten)' });
@@ -532,15 +583,31 @@ async function handleApi(req, res, url) {
   // Abgleich: nur Änderungen seit Nummer "since". team=<Name> für Monteure (nur eigene Aufträge/Ergebnisse), "-" = nur Teamliste, leer = alles (Disponent)
   if (pathname === '/api/sync' && method === 'GET') {
     const since = +params.get('since') || 0,
-      team = params.get('team') || '';
+      team = params.get('team') || '',
+      did = validDeviceId(params.get('did'));
+    // Gerät bekannt? Dann „zuletzt aktiv“ festhalten und melden, ob der Disponent es abgemeldet hat (kicked)
+    let kicked = false;
+    if (did) {
+      const k = sql.getKick.get(did);
+      if (k) {
+        kicked = !!k.kick;
+        sql.touchDev.run(Date.now(), did, Date.now() - 60e3);
+      }
+    }
     if (since === changeSeq)
-      return sendJson(req, res, 200, { seq: changeSeq, same: true, ver: appVersion() });
+      return sendJson(req, res, 200, {
+        seq: changeSeq,
+        same: true,
+        ver: appVersion(),
+        ...(kicked ? { kicked: true } : {})
+      });
     const full = since === 0 || since > changeSeq || since < minSeq,
       from = full ? 0 : since;
     const out = {
       seq: changeSeq,
       full,
       ver: appVersion(),
+      ...(kicked ? { kicked: true } : {}),
       teams: db
         .prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team')
         .all()
@@ -648,9 +715,11 @@ async function handleApi(req, res, url) {
   if (pathname === '/api/push/key' && method === 'GET') return sendJson(req, res, 200, { key: vapid.pub });
   if (pathname === '/api/push/sub' && method === 'POST') {
     const body = await readBody(req, 1e4),
-      did = clipString(body.did, 64),
-      team = body.team == null || body.team === '' ? null : clipString(body.team, 100);
-    if (!/^[a-f0-9]{32}$/.test(did)) return sendJson(req, res, 400, { error: 'Ungültige Geräte-ID' });
+      did = validDeviceId(body.did),
+      team = body.team == null || body.team === '' ? null : clipString(body.team, 100),
+      // Rolle des Geräts: 'monteur' | 'dispo' | null (abgemeldet); ältere Apps melden nur das Team -> Monteur
+      role = body.role === 'dispo' || body.role === 'monteur' ? body.role : team ? 'monteur' : null;
+    if (!did) return sendJson(req, res, 400, { error: 'Ungültige Geräte-ID' });
     let sub = null;
     if (body.sub) {
       const ep = clipString(body.sub.endpoint, 1000),
@@ -668,15 +737,16 @@ async function handleApi(req, res, url) {
     }
     const old = sql.getDev.get(did),
       now = Date.now();
-    if (old && old.team === team && old.sub === sub) {
+    if (old && old.role === role && old.team === team && old.sub === sub && !old.kick) {
       sql.seenDev.run(now, did);
       return sendJson(req, res, 200, { ok: true });
     }
-    if (!old && team === null) return sendJson(req, res, 200, { ok: true });
+    // unbekanntes Gerät ohne Rolle: nichts zu merken
+    if (!old && role === null && team === null) return sendJson(req, res, 200, { ok: true });
     transaction(() => {
       changeSeq++;
       if (sub) sql.dupSub.run(sub, did);
-      sql.upDev.run(did, team, sub, now);
+      sql.upDev.run(did, role, team, sub, now, clipString(req.headers['user-agent'], 200), now);
     });
     notifyClients();
     return sendJson(req, res, 200, { ok: true });
@@ -745,8 +815,47 @@ async function handleApi(req, res, url) {
     notifyClients();
     return sendJson(req, res, 200, { ok: true });
   }
+  // Geräteübersicht: alle Geräte, die in den letzten 30 Tagen aktiv waren (jüngste zuerst); `now` = Serverzeit für „vor … Min“
+  if (pathname === '/api/devices' && method === 'GET') {
+    const devices = sql.listDevs.all(Date.now() - 30 * 864e5).map(r => ({
+      did: r.did,
+      name: r.name,
+      role: r.role,
+      team: r.team,
+      push: !!r.push,
+      seen: r.seen,
+      first: r.first,
+      ua: r.ua,
+      kick: !!r.kick
+    }));
+    return sendJson(req, res, 200, { devices, now: Date.now() });
+  }
+  // Spitzname eines Geräts setzen (leer = Spitzname entfernen)
+  if (pathname === '/api/devices/name' && method === 'POST') {
+    const body = await readBody(req, 1e4),
+      did = validDeviceId(body.did),
+      name = clipString(body.name, 40).trim();
+    if (!did) return sendJson(req, res, 400, { error: 'Ungültige Geräte-ID' });
+    sql.nameDev.run(name || null, did);
+    return sendJson(req, res, 200, { ok: true });
+  }
+  // Gerät ausloggen: das Gerät kehrt beim nächsten Abgleich zum Startbildschirm zurück (sync meldet `kicked`), und seine
+  // bisher ausgestellten Disponenten-/Upload-Tokens werden sofort ungültig (siehe tokenValid)
+  if (pathname === '/api/devices/logout' && method === 'POST') {
+    const did = validDeviceId((await readBody(req, 1e4)).did);
+    let found = false;
+    if (did)
+      transaction(() => {
+        found = sql.kickDev.run(Date.now(), did).changes > 0;
+        if (found) changeSeq++; // neue Änderungsnummer -> alle Geräte gleichen sofort ab, das betroffene erfährt es so gleich
+      });
+    if (!found) return sendJson(req, res, 404, { error: 'Gerät nicht gefunden' });
+    notifyClients();
+    return sendJson(req, res, 200, { ok: true });
+  }
   if (pathname === '/api/login-upload' && method === 'POST') {
-    const t = login(ip, (await readBody(req, 1e4)).pin, UPLOAD_PIN, 'up:');
+    const body = await readBody(req, 1e4),
+      t = login(ip, body.pin, UPLOAD_PIN, 'up:', validDeviceId(body.did));
     return t
       ? sendJson(req, res, 200, { token: t })
       : sendJson(req, res, 403, {

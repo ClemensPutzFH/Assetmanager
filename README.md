@@ -27,7 +27,7 @@ Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 
 ## Daten
 - Beim ersten Start entsteht `data/data.db` (zusammen mit `data.db-wal` und `data.db-shm`, das ist normal).
-- Öffnen und auswerten kann man sie mit jedem SQLite-Programm (z. B. DB Browser for SQLite, oder `sqlite3 data/data.db`). Tabellen: `orders`, `pruef`, `ergebnis` (Ergebnis als JSON in `doc`), `dmark` (vom Disponenten abgehakte Aufträge, `v`=1 abgehakt, `at`=Zeitpunkt), `meta`.
+- Öffnen und auswerten kann man sie mit jedem SQLite-Programm (z. B. DB Browser for SQLite, oder `sqlite3 data/data.db`). Tabellen: `orders`, `pruef`, `ergebnis` (Ergebnis als JSON in `doc`), `dmark` (vom Disponenten abgehakte Aufträge, `v`=1 abgehakt, `at`=Zeitpunkt), `dev` (Geräte), `meta`.
 - Jede Eingabe ist beim Bestätigen fest auf der Platte (`synchronous=FULL`), auch bei Stromausfall.
 - Pro Tag entsteht eine Sicherung in `data/backups/` (`data-JJJJ-MM-TT.db`, die letzten 30 bleiben). Sie ist eine vollständige, direkt nutzbare Datenbankdatei.
 - Umzug/Sicherung von Hand: Server stoppen und `data.db` kopieren (oder Sicherung aus `backups/` verwenden). Die Sicherungen enthalten auch den Schlüssel für die Anmeldung, bitte nicht öffentlich ablegen.
@@ -80,6 +80,12 @@ Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zus
   - **iPhone/iPad:** nur ab iOS 16.4 und nur, wenn die App über „Teilen → Zum Home-Bildschirm“ installiert und von dort geöffnet wird.
   - Energiesparfunktionen mancher Android-Handys können Benachrichtigungen verzögern; ggf. Akku-Optimierung für den Browser ausschalten.
 - Die Schlüssel für die Push-Dienste (VAPID) entstehen beim ersten Start und liegen in `data.db`. Geht die Datei verloren, melden sich die Geräte beim nächsten Öffnen der App automatisch neu an.
+
+## Geräte (wer ist wo angemeldet)
+- Jedes Gerät hat eine zufällige Kennung (im Browser gespeichert). Der Server merkt sich dazu: Rolle (Monteur mit Team / Disponent / abgemeldet), Spitzname, zuletzt aktiv, Browser/System und ob Benachrichtigungen an sind (Tabelle `dev`). Ein Disponent zählt erst nach der PIN-Eingabe als angemeldet, nach dem Neuladen der Seite wieder als abgemeldet.
+- Im Dispo-Tab **Geräte** sieht man alle Geräte der letzten 30 Tage, kann ihnen einen **Spitznamen** geben (z. B. „Handy Max“) und sie **ausloggen**.
+- Ausloggen: Das Gerät kehrt sofort (sonst beim nächsten Abgleich) zum Startbildschirm zurück. Bei Disponenten wird die Anmeldung zusätzlich auf dem Server ungültig – ein weiterer Zugriff mit dem alten Token ist nicht mehr möglich. Monteure haben keine eigene Anmeldung (die Teamwahl kann jederzeit neu getroffen werden), sie können sich also nach dem Ausloggen wieder anmelden.
+- Ältere Datenbanken werden beim Start automatisch um die neuen Spalten ergänzt.
 
 ## Offline
 Die Oberfläche startet auch ohne Netz (nach dem ersten Öffnen mit Netz). Eingaben der Monteure werden im Gerät gesichert und automatisch gesendet, sobald der Server wieder erreichbar ist. Den letzten Stand der Aufträge und die Prüfobjekte des eigenen Teams merkt sich das Gerät in IndexedDB.

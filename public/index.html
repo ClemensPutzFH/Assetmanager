@@ -362,7 +362,7 @@
         flex: 1;
         min-width: 0;
         padding: 10px 2px;
-        font-size: 0.9375rem;
+        font-size: 0.875rem;
       }
       .tabs button.on {
         background: var(--ac);
@@ -1291,6 +1291,38 @@
       .vgt tr.vg-ok td.vk {
         color: var(--mu);
       }
+      /* ---- Geräteübersicht (Disponent): .dv = Gerätekarte, .dv-dot = Punkt „online“ ---- */
+      .dv.off {
+        opacity: 0.75;
+      }
+      .dv-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--mu);
+        margin-right: 6px;
+        vertical-align: 1px;
+      }
+      .dv-dot.on {
+        background: var(--ok);
+      }
+      .dv-actions {
+        margin-top: auto;
+        padding-top: 10px;
+        flex-wrap: wrap;
+      }
+      input.dv-name {
+        font: inherit;
+        color: var(--tx);
+        background: var(--card);
+        border: 1px solid var(--bd);
+        border-radius: 10px;
+        padding: 10px 12px;
+        width: 100%;
+        box-sizing: border-box;
+        margin: 8px 0;
+      }
       /* ---- Signatur unten rechts: immer sichtbar, Größe unabhängig von der Schriftgröße (px statt rem) ---- */
       .made {
         position: fixed;
@@ -1323,7 +1355,8 @@
        *             meldet die Zeit zurück. Ein Auftrag gilt als „erledigt“, wenn alle Prüfobjekte bewertet sind UND
        *             die Zeit vollständig ist (Datum + Beginn + Dauer).
        *   Disponent PIN-geschützt: Übersicht (Filter, Excel-Export, Abhaken), Fortschritt aller Teams (+ Nachricht ans
-       *             Team), Upload (eigener PIN) und Vergleich (Aufträge-Excel gegen Export).
+       *             Team), Upload (eigener PIN), Vergleich (Aufträge-Excel gegen Export) und Geräte (wer ist wo
+       *             angemeldet, Spitznamen, Geräte ausloggen).
        *
        * DATENFLUSS
        *   Server (SQLite) <-> poll(): holt nur Änderungen seit der Änderungsnummer `syncSeq`; der Server meldet Änderungen
@@ -1349,7 +1382,7 @@
        * ABSCHNITTE (der Reihe nach)
        *   Zustand · Gerät/Schriftgröße/Theme · Upload · Prüfobjekt-Texte · Excel-Export · Ergebnisse & Status ·
        *   Zeitrückmeldung · Prüfobjekte bewerten · Outbox · Server-Zugriff & Cache · Abgleich (poll) · Abhaken ·
-       *   Filter & Karten · Fortschritt/Frist · Vergleich · Fortschritt aller Teams · Update · Nachrichten & Push ·
+       *   Filter & Karten · Fortschritt/Frist · Vergleich · Fortschritt aller Teams · Geräteübersicht · Update · Nachrichten & Push ·
        *   Tooltip & Suche · Verlassen-Warnung · Zeichnen (draw …) · Start
        * ================================================================================================= */
       // Wurzelelement der Seite (<main id="app">); draw() baut hier alles hinein
@@ -1475,20 +1508,33 @@
       let uploadToken = '',
         uploadPinInput = '',
         uploadPinError = false;
+      // ---- Geräteübersicht (Disponent) ----
+      // deviceList: Geräte vom Server (null = noch nicht geladen) · deviceListOffset: Serveruhr minus Geräteuhr (für „vor … Min“) ·
+      // deviceListError: Ladefehler · deviceRenameId / deviceRenameText: Gerät, dessen Spitzname gerade bearbeitet wird ·
+      // deviceLogoutArmed: Gerät, bei dem „Ausloggen“ einmal angetippt wurde (zweiter Tipp bestätigt)
+      let deviceList = null,
+        deviceListOffset = 0,
+        deviceListError = '',
+        deviceRenameId = null,
+        deviceRenameText = '',
+        deviceLogoutArmed = null;
       // Nachrichten/Push – messages: Monteur: offene Nachrichten seines Teams; Disponent: die der letzten 24 h; devices: Team -> [Geräte gesamt, davon mit Push]
       let messages = [],
         devices = {},
         // pushConfig: { nag, hours } vom Server (Erinnerungsabstand in Minuten, Gültigkeit in Stunden)
         pushConfig = { nag: 5, hours: 12 },
         pushError = '',
-        // deviceId: zufällige Geräte-ID (im Gerät gespeichert), ackQueue: noch nicht gemeldete Bestätigungen, registeredTeam: beim Server gemeldetes Team
+        // deviceId: zufällige Geräte-ID (im Gerät gespeichert; der Server kennt das Gerät darüber), ackQueue: noch nicht gemeldete Bestätigungen
         deviceId = '',
         ackQueue = [],
-        registeredTeam = null;
+        // registeredTeam / registeredRole: Team und Rolle ('monteur' | 'dispo'), die der Server von diesem Gerät kennt
+        registeredTeam = null,
+        registeredRole = null;
       try {
         deviceId = localStorage.getItem('did') || '';
         ackQueue = JSON.parse(localStorage.getItem('ackq') || '[]');
         registeredTeam = localStorage.getItem('regteam');
+        registeredRole = localStorage.getItem('regrole');
       } catch (e) {}
       if (!/^[a-f0-9]{32}$/.test(deviceId)) {
         deviceId = [...crypto.getRandomValues(new Uint8Array(16))]
@@ -2732,13 +2778,14 @@
           const team = session.role === 'monteur' ? session.team || '-' : '';
           const response = await api(
             'GET',
-            `/api/sync?since=${syncSeq}&team=${urlEncode(team)}` +
-              (session.role === 'monteur' ? '&did=' + deviceId : ''),
+            `/api/sync?since=${syncSeq}&team=${urlEncode(team)}&did=${deviceId}`,
             undefined,
             20000
           );
           serverReachable = true;
           if (response.ver) checkAppVersion(response.ver);
+          // der Disponent hat dieses Gerät ausgeloggt
+          if (response.kicked) forcedLogout();
           if (!response.same) {
             if (response.full) {
               ordersMap = new Map();
@@ -3957,12 +4004,20 @@
         return Uint8Array.from(atob(s + '='.repeat((4 - (s.length % 4)) % 4)), c => c.charCodeAt(0));
       };
       /**
-       * Meldet Gerät, Team und (wenn erlaubt) das Push-Abo beim Server (POST /api/push/sub). Mit ask = true wird die
-       * Berechtigung abgefragt. Gibt es neue Server-Schlüssel, wird neu abonniert. Fehler landen in pushError (Banner).
+       * Meldet Gerät, Rolle (Monteur/Disponent/abgemeldet), Team und (wenn erlaubt) das Push-Abo beim Server
+       * (POST /api/push/sub) – so merkt sich der Server, welches Gerät wo angemeldet ist (Geräteübersicht). Mit
+       * ask = true wird die Berechtigung abgefragt. Gibt es neue Server-Schlüssel, wird neu abonniert. Fehler landen in pushError (Banner).
        */
       async function pushSync(ask) {
-        const team = session.role === 'monteur' && session.team ? session.team : null;
-        if (!team && !registeredTeam) return;
+        const team = session.role === 'monteur' && session.team ? session.team : null,
+          // Der Disponent zählt erst als angemeldet, wenn die PIN eingegeben wurde (nach dem Neuladen also wieder abgemeldet)
+          role =
+            session.role === 'monteur'
+              ? 'monteur'
+              : session.role === 'dispo' && dispoUnlocked
+                ? 'dispo'
+                : null;
+        if (!team && !role && !registeredTeam && !registeredRole) return;
         let sub = null;
         pushError = '';
         if (team && pushSupported()) {
@@ -3998,10 +4053,12 @@
           }
         }
         try {
-          await api('POST', '/api/push/sub', { did: deviceId, team, sub: sub ? sub.toJSON() : null });
+          await api('POST', '/api/push/sub', { did: deviceId, role, team, sub: sub ? sub.toJSON() : null });
           registeredTeam = team;
+          registeredRole = role;
           try {
             team ? localStorage.setItem('regteam', team) : localStorage.removeItem('regteam');
+            role ? localStorage.setItem('regrole', role) : localStorage.removeItem('regrole');
           } catch (e) {}
         } catch (e) {}
         render();
@@ -4345,6 +4402,9 @@
         uploadToken = '';
         uploadPinInput = '';
         uploadPinError = false;
+        deviceList = null;
+        deviceRenameId = null;
+        deviceLogoutArmed = null;
         saveSession();
         render();
         poll();
@@ -4352,6 +4412,16 @@
         pushSync(false);
       };
 
+      /**
+       * Der Disponent hat dieses Gerät in der Geräteübersicht ausgeloggt (der Server meldet das beim Abgleich): zurück zum
+       * Startbildschirm. switchRole(null) setzt Anmeldung und Eingaben zurück und meldet dem Server „abgemeldet“ – damit ist
+       * die Abmeldung erledigt. Danach kann man sich wieder anmelden.
+       */
+      function forcedLogout() {
+        switchRole(null);
+        infoMsg = 'Dieses Gerät wurde vom Disponenten abgemeldet.';
+        render();
+      }
       // ---- Zeichnen ----
       // Ansicht beim Neuzeichnen festhalten: Elemente mit data-k bleiben an derselben Bildschirmstelle – zuerst der angetippte
       // Bereich, sonst der nächstgelegene sichtbare. Das Scroll-Anchoring des Browsers ist aus (overflow-anchor:none): es springt,
@@ -4699,9 +4769,10 @@
           const pin = pinInput;
           pinInput = '';
           try {
-            dispoToken = (await api('POST', '/api/login', { pin: pin })).token;
+            dispoToken = (await api('POST', '/api/login', { pin: pin, did: deviceId })).token;
             dispoUnlocked = true;
             pinError = false;
+            pushSync(false);
           } catch (e) {
             pinError = e.net ? 'Keine Verbindung zum Server' : e.message || 'Falscher PIN';
           }
@@ -4869,7 +4940,7 @@
           const pin = uploadPinInput;
           uploadPinInput = '';
           try {
-            uploadToken = (await api('POST', '/api/login-upload', { pin: pin })).token;
+            uploadToken = (await api('POST', '/api/login-upload', { pin: pin, did: deviceId })).token;
             uploadPinError = false;
             errorMsg = '';
           } catch (e) {
@@ -5282,7 +5353,251 @@
           );
       }
 
-      // Disponent: Kopfzeile + Tabs und je nach Tab die passende Ansicht
+      // ---- Geräteübersicht (Disponent) ----
+      // Kurzbeschreibung des Geräts aus dem User-Agent des Browsers: „Android · Chrome“
+      function deviceKind(ua) {
+        const text = String(ua || ''),
+          system = /iPhone|iPad|iPod/.test(text)
+            ? 'iPhone/iPad'
+            : /Android/.test(text)
+              ? 'Android'
+              : /Windows/.test(text)
+                ? 'Windows'
+                : /Mac OS X/.test(text)
+                  ? 'Mac'
+                  : /Linux/.test(text)
+                    ? 'Linux'
+                    : 'Gerät',
+          browser = /Edg\//.test(text)
+            ? 'Edge'
+            : /OPR\/|Opera/.test(text)
+              ? 'Opera'
+              : /Firefox|FxiOS/.test(text)
+                ? 'Firefox'
+                : /SamsungBrowser/.test(text)
+                  ? 'Samsung Internet'
+                  : /Chrome|CriOS/.test(text)
+                    ? 'Chrome'
+                    : /Safari/.test(text)
+                      ? 'Safari'
+                      : '';
+        return browser ? system + ' · ' + browser : system;
+      }
+      // „gerade eben“, „vor 5 Min“, „vor 3 Std“, sonst Datum und Uhrzeit (seen = Zeitpunkt, now = Serverzeit)
+      function agoText(seen, now) {
+        const minutes = Math.floor((now - seen) / 60000);
+        if (minutes < 1) return 'gerade eben';
+        if (minutes < 60) return `vor ${minutes} Min`;
+        if (minutes < 1440) return `vor ${Math.floor(minutes / 60)} Std`;
+        return formatDateTime(seen);
+      }
+      // Lädt die Geräteliste vom Server (GET /api/devices) und zeichnet neu
+      async function loadDevices() {
+        try {
+          const response = await api('GET', '/api/devices');
+          deviceList = response.devices;
+          deviceListOffset = response.now - Date.now();
+          deviceListError = '';
+        } catch (e) {
+          deviceListError = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
+        }
+        render();
+      }
+      // Spitzname speichern (leer = entfernen)
+      async function renameDevice(did, name) {
+        try {
+          await api('POST', '/api/devices/name', { did, name });
+          deviceRenameId = null;
+        } catch (e) {
+          errorMsg = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
+        }
+        await loadDevices();
+      }
+      // Gerät ausloggen: der Server merkt die Abmeldung vor; das Gerät folgt beim nächsten Abgleich (meist sofort)
+      async function logoutDevice(did) {
+        deviceLogoutArmed = null;
+        try {
+          await api('POST', '/api/devices/logout', { did });
+          infoMsg = 'Abmeldung angefordert – das Gerät wird beim nächsten Abgleich abgemeldet.';
+        } catch (e) {
+          errorMsg = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
+        }
+        await loadDevices();
+      }
+      /**
+       * Dispo-Tab „Geräte“: alle Geräte der letzten 30 Tage mit Rolle/Team (wo angemeldet), Spitzname, zuletzt aktiv und
+       * Push-Status. Je Gerät: Spitzname vergeben und „Ausloggen“ (mit Rückfrage). Die Liste lädt beim Öffnen des Tabs und
+       * erneuert sich alle 20 Sekunden.
+       */
+      function drawDevices() {
+        if (deviceList === null) {
+          app.append(el('p', { class: deviceListError ? 'mu er' : 'mu' }, deviceListError || 'Lade …'));
+          return;
+        }
+        const now = Date.now() + deviceListOffset,
+          isOnline = device => now - device.seen < 2 * 60e3,
+          loggedIn = deviceList.filter(device => device.role).length,
+          online = deviceList.filter(isOnline).length;
+        app.append(
+          el(
+            'div',
+            { class: 'card' },
+            el('b', {}, 'Geräte'),
+            el(
+              'p',
+              { class: 'mu' },
+              `${deviceList.length} ${deviceList.length === 1 ? 'Gerät' : 'Geräte'} in den letzten 30 Tagen · ${loggedIn} angemeldet · ${online} online`
+            ),
+            el(
+              'p',
+              { class: 'mu' },
+              'Hier siehst du, welches Gerät wo angemeldet ist, und kannst Geräten einen Spitznamen geben. „Ausloggen“ schickt ein Gerät beim nächsten Abgleich zum Startbildschirm zurück (bei Disponenten wird die Anmeldung sofort ungültig). Monteure können sich danach wieder anmelden.'
+            ),
+            deviceListError && el('p', { class: 'mu er' }, deviceListError)
+          )
+        );
+        // angemeldete Geräte zuerst, innerhalb davon das zuletzt aktive
+        const sorted = [...deviceList].sort((a, b) => (b.role ? 1 : 0) - (a.role ? 1 : 0) || b.seen - a.seen);
+        app.append(
+          el(
+            'div',
+            { class: 'grid' },
+            sorted.map(device => {
+              const kind = deviceKind(device.ua),
+                where =
+                  device.role === 'dispo'
+                    ? 'Disponent'
+                    : device.role === 'monteur'
+                      ? 'Monteur · ' + (device.team || 'kein Team gewählt')
+                      : 'Abgemeldet',
+                renaming = deviceRenameId === device.did;
+              return el(
+                'div',
+                { class: 'card dv' + (device.role ? '' : ' off') },
+                el(
+                  'div',
+                  { class: 'row' },
+                  el('b', {}, device.name || kind),
+                  device.did === deviceId && el('span', { class: 'tag' }, 'Dieses Gerät'),
+                  el(
+                    'span',
+                    { class: 'tag ' + (device.role === 'dispo' ? 'st-teil' : device.role ? 'st-ok' : '') },
+                    where
+                  ),
+                  device.kick && el('span', { class: 'tag st-zf' }, '⏳ Abmeldung angefordert')
+                ),
+                el(
+                  'div',
+                  { class: 'mu' },
+                  (device.name ? kind + ' · ' : '') + 'Kennung …' + device.did.slice(-4)
+                ),
+                el(
+                  'div',
+                  { class: 'mu' },
+                  el('span', { class: 'dv-dot' + (isOnline(device) ? ' on' : '') }),
+                  isOnline(device) ? 'online' : 'Zuletzt aktiv ' + agoText(device.seen, now)
+                ),
+                device.role === 'monteur' &&
+                  el(
+                    'div',
+                    { class: 'mu' },
+                    device.push ? '🔔 Benachrichtigungen an' : '🔕 ohne Benachrichtigungen'
+                  ),
+                device.first &&
+                  el('div', { class: 'mu' }, 'Erstmals gesehen: ' + formatDateTime(device.first)),
+                renaming
+                  ? el(
+                      'div',
+                      { class: 'ed' },
+                      el('input', {
+                        class: 'dv-name',
+                        type: 'text',
+                        maxlength: '40',
+                        'data-keep': 'dn',
+                        placeholder: 'Spitzname, z. B. „Handy Max“',
+                        value: deviceRenameText,
+                        oninput: e => {
+                          deviceRenameText = e.target.value;
+                        },
+                        onkeydown: e => {
+                          if (e.key === 'Enter') renameDevice(device.did, deviceRenameText);
+                        }
+                      }),
+                      el(
+                        'div',
+                        { class: 'ob' },
+                        el(
+                          'button',
+                          { class: 'sv', onclick: () => renameDevice(device.did, deviceRenameText) },
+                          'Speichern'
+                        ),
+                        el(
+                          'button',
+                          {
+                            onclick: () => {
+                              deviceRenameId = null;
+                              render();
+                            }
+                          },
+                          'Abbrechen'
+                        )
+                      )
+                    )
+                  : el(
+                      'div',
+                      { class: 'ob dv-actions' },
+                      el(
+                        'button',
+                        {
+                          onclick: () => {
+                            deviceRenameId = device.did;
+                            deviceRenameText = device.name || '';
+                            deviceLogoutArmed = null;
+                            render();
+                            const field = app.querySelector('[data-keep="dn"]');
+                            if (field) field.focus();
+                          }
+                        },
+                        device.name ? 'Umbenennen' : 'Spitzname geben'
+                      ),
+                      device.role &&
+                        !device.kick &&
+                        (deviceLogoutArmed === device.did
+                          ? [
+                              el(
+                                'button',
+                                { class: 'er', onclick: () => logoutDevice(device.did) },
+                                'Wirklich ausloggen?'
+                              ),
+                              el(
+                                'button',
+                                {
+                                  onclick: () => {
+                                    deviceLogoutArmed = null;
+                                    render();
+                                  }
+                                },
+                                'Abbrechen'
+                              )
+                            ]
+                          : el(
+                              'button',
+                              {
+                                class: 'er',
+                                onclick: () => {
+                                  deviceLogoutArmed = device.did;
+                                  render();
+                                }
+                              },
+                              'Ausloggen'
+                            ))
+                    )
+              );
+            })
+          )
+        );
+      }
+      // Disponent: Kopfzeile + Tabs (Übersicht, Fortschritt, Upload, Vergleich, Geräte) und je nach Tab die passende Ansicht
       function drawDispo(back) {
         app.append(
           el('div', { class: 'bar' }, el('h1', {}, 'Disponent'), back),
@@ -5342,9 +5657,28 @@
                 }
               },
               'Vergleich'
+            ),
+            el(
+              'button',
+              {
+                class: dispoTab === 'dv' ? 'on' : null,
+                onclick: () => {
+                  dispoTab = 'dv';
+                  uploadToken = '';
+                  deviceRenameId = null;
+                  deviceLogoutArmed = null;
+                  render();
+                  loadDevices();
+                }
+              },
+              'Geräte'
             )
           )
         );
+        if (dispoTab === 'dv') {
+          drawDevices();
+          return;
+        }
         if (dispoTab === 'vg') {
           drawComparison();
           return;
@@ -5418,6 +5752,17 @@
       setInterval(() => {
         if (!document.hidden) poll();
       }, 30000); // Sicherheitsnetz; normalerweise kommt der Hinweis live vom Server
+      // Geräteübersicht offen: alle 20 Sekunden neu laden (nicht während ein Spitzname getippt wird)
+      setInterval(() => {
+        if (
+          dispoTab === 'dv' &&
+          dispoUnlocked &&
+          session.role === 'dispo' &&
+          !document.hidden &&
+          deviceRenameId === null
+        )
+          loadDevices();
+      }, 20000);
       render();
       poll().then(() => {
         sendAllPending();
