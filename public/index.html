@@ -1326,6 +1326,51 @@
         box-sizing: border-box;
         margin: 8px 0;
       }
+      /* ---- Skeleton-Platzhalter (während etwas lädt): .sk = grauer, pulsierender Balken, .sk-btn = Schaltfläche ---- */
+      .sk {
+        background: linear-gradient(
+          90deg,
+          var(--bd) 25%,
+          color-mix(in srgb, var(--bd) 45%, var(--card)) 37%,
+          var(--bd) 63%
+        );
+        background-size: 400% 100%;
+        border-radius: 6px;
+        margin: 8px 0;
+        animation: sk-shimmer 1.4s ease infinite;
+      }
+      .sk-btn {
+        height: 3.5rem;
+        border-radius: 10px;
+        margin: 0 0 10px;
+      }
+      .row .sk,
+      .chips .sk,
+      .ob .sk {
+        margin: 0;
+      }
+      .chips .sk {
+        border-radius: 20px;
+      }
+      .ob .sk {
+        border-radius: 10px;
+      }
+      .ob > .sk {
+        flex: 1;
+      }
+      @keyframes sk-shimmer {
+        from {
+          background-position: 100% 50%;
+        }
+        to {
+          background-position: 0 50%;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .sk {
+          animation: none;
+        }
+      }
       /* ---- Signatur unten rechts: immer sichtbar, Größe unabhängig von der Schriftgröße (px statt rem) ---- */
       .made {
         position: fixed;
@@ -1384,7 +1429,7 @@
        *
        * ABSCHNITTE (der Reihe nach)
        *   Zustand · Gerät/Schriftgröße/Theme · Upload · Prüfobjekt-Texte · Excel-Export · Ergebnisse & Status ·
-       *   Zeitrückmeldung · Prüfobjekte bewerten · Outbox · Server-Zugriff & Cache · Abgleich (poll) · Abhaken ·
+       *   Zeitrückmeldung · Prüfobjekte bewerten · Outbox · Server-Zugriff & Cache · Skeleton-Platzhalter · Abgleich (poll) · Abhaken ·
        *   Filter & Karten · Fortschritt/Frist · Vergleich · Fortschritt aller Teams · Geräteübersicht · Update · Nachrichten & Push ·
        *   Tooltip & Suche · Verlassen-Warnung · Zeichnen (draw …) · Start
        * ================================================================================================= */
@@ -1682,6 +1727,76 @@
       const naturalCompare = (a, b) => String(a).localeCompare(String(b), 'de', { numeric: true });
       // Text aus einer Exception (oder beliebigem Wert)
       const errorMessageOf = e => (e && e.message ? e.message : String(e));
+
+      // ---- Skeleton-Platzhalter (während etwas lädt) ----
+      // Graue, sanft pulsierende Platzhalter in der Form des späteren Inhalts – statt „Lade …“ oder einer leeren Seite.
+      // Der äußere Container meldet sich Screenreadern als „Lade …“ (role=status), die einzelnen Teile sind dekorativ
+      // (aria-hidden). Stellt das System „weniger Bewegung“ ein, steht die Animation still (siehe CSS .sk).
+      const skeletonBar = (width = '100%', height = '1em') =>
+        el('div', { class: 'sk', 'aria-hidden': 'true', style: `width:${width};height:${height}` });
+      // Platzhalter für Container: Screenreader hören „Lade …“
+      const skeletonBox = (cls, ...children) =>
+        el('div', { class: cls, role: 'status', 'aria-busy': 'true', 'aria-label': 'Lade …' }, ...children);
+      // Platzhalter einer Auftrags-/Gerätekarte: Etiketten, Titel, zwei Textzeilen
+      const skeletonCard = () =>
+        el(
+          'div',
+          { class: 'card', 'aria-hidden': 'true' },
+          el('div', { class: 'row' }, skeletonBar('5.5rem', '1.5rem'), skeletonBar('4rem', '1.5rem')),
+          skeletonBar('70%', '1.2em'),
+          skeletonBar('50%'),
+          skeletonBar('35%')
+        );
+      // Raster aus count Platzhalter-Karten (gleiches Raster wie die echte Liste)
+      const skeletonGrid = (count = 6) =>
+        skeletonBox('grid', ...Array.from({ length: count }, () => skeletonCard()));
+      // Platzhalter einer Seite mit Fortschrittskarte, Filter-Chips und Kartenliste (Monteur-Liste, Dispo-Übersicht)
+      const skeletonPage = () =>
+        skeletonBox(
+          '',
+          el(
+            'div',
+            { class: 'card', 'aria-hidden': 'true' },
+            skeletonBar('30%', '1.8rem'),
+            skeletonBar('100%', '14px'),
+            skeletonBar('55%')
+          ),
+          el(
+            'div',
+            { class: 'chips', 'aria-hidden': 'true' },
+            ...[0, 1, 2, 3].map(() => skeletonBar('5rem', '2rem'))
+          ),
+          el(
+            'div',
+            { class: 'grid', 'aria-hidden': 'true' },
+            ...Array.from({ length: 6 }, () => skeletonCard())
+          )
+        );
+      // Platzhalter der Teamauswahl: count große Schaltflächen
+      const skeletonButtons = (count = 4) =>
+        skeletonBox(
+          'tgrid',
+          ...Array.from({ length: count }, () => el('div', { class: 'sk sk-btn', 'aria-hidden': 'true' }))
+        );
+      // Platzhalter der Prüfobjekte: je Eintrag eine Textzeile und zwei Schaltflächen
+      const skeletonChecklist = () =>
+        skeletonBox(
+          '',
+          ...Array.from({ length: 4 }, () =>
+            el(
+              'div',
+              { class: 'it', 'aria-hidden': 'true' },
+              skeletonBar('85%', '1.1em'),
+              el('div', { class: 'ob' }, skeletonBar('100%', '2.8rem'), skeletonBar('100%', '2.8rem'))
+            )
+          )
+        );
+      // Platzhalter einer Ergebnistabelle (Vergleich)
+      const skeletonTable = () =>
+        skeletonBox(
+          'card',
+          ...[0, 1, 2, 3, 4, 5].map(i => skeletonBar(i === 0 ? '100%' : i % 2 ? '90%' : '75%', '1.2em'))
+        );
 
       // ---- Upload (Disponent) ----
       /**
@@ -2790,7 +2905,12 @@
           // der Disponent hat dieses Gerät ausgeloggt
           if (response.kicked) forcedLogout();
           // der Disponent hat die Geräteübersicht offen und fragt Standorte ab (locate = Nummer der Abfragerunde)
-          if (response.locate) reportLocationIfAsked(response.locate);
+          // Eine Runde, die schon lief, als die App gestartet wurde, bleibt ohne Hinweis. Nur wenn der Disponent die Abfrage
+          // danach neu auslöst (Geräteübersicht geöffnet oder „Standorte jetzt aktualisieren“), erscheint die Kurzmeldung.
+          const announceLocate =
+            locateRoundSeen !== null && !!response.locate && response.locate !== locateRoundSeen;
+          locateRoundSeen = response.locate || 0;
+          if (response.locate) reportLocationIfAsked(response.locate, announceLocate);
           if (!response.same) {
             if (response.full) {
               ordersMap = new Map();
@@ -3333,6 +3453,11 @@
             cmpBusy ? 'Vergleiche …' : 'Vergleichen'
           )
         );
+        // Vergleich läuft: Platzhalter, bis das Ergebnis da ist
+        if (cmpBusy) {
+          app.append(skeletonTable());
+          return;
+        }
         if (!cmpResult) {
           app.append(
             el(
@@ -4419,25 +4544,28 @@
 
       // ---- Standort melden (Monteur-Gerät) ----
       // locating: gerade läuft eine Standortbestimmung · lastLocationAt: Zeitpunkt der letzten Meldung ·
-      // lastLocateRound: Abfragerunde, auf die zuletzt geantwortet wurde
+      // lastLocateRound: Abfragerunde, auf die zuletzt geantwortet wurde · locateRoundSeen: Abfragerunde, die der letzte
+      // Abgleich gemeldet hat (0 = keine aktiv, null = noch kein Abgleich seit dem App-Start)
       let locating = false,
         lastLocationAt = 0,
-        lastLocateRound = 0;
+        lastLocateRound = 0,
+        locateRoundSeen = null;
       /**
        * Meldet den Standort an den Disponenten – aber nur, wenn er danach fragt: Der Server meldet beim Abgleich `locate`,
        * solange der Disponent die Geräteübersicht offen hat. Es antworten nur geöffnete Monteur-Geräte (nicht im
        * Hintergrund), höchstens einmal pro Minute – außer bei einer neuen Abfragerunde. Der Browser fragt den Monteur
-       * beim ersten Mal um Erlaubnis; wird sie verweigert, sieht der Disponent „nicht freigegeben“. Zur Information
-       * erscheint beim Start einer Runde eine Kurzmeldung. Es wird nur der jeweils letzte Standort gespeichert.
+       * beim ersten Mal um Erlaubnis; wird sie verweigert, sieht der Disponent „nicht freigegeben“. Löst der Disponent
+       * die Abfrage neu aus, während die App läuft, erscheint eine Kurzmeldung (announce); beim App-Start gibt es keine.
+       * Es wird nur der jeweils letzte Standort gespeichert.
        */
-      function reportLocationIfAsked(round) {
+      function reportLocationIfAsked(round, announce) {
         if (session.role !== 'monteur' || locating || document.hidden) return;
         const newRound = round !== lastLocateRound;
         if (!newRound && Date.now() - lastLocationAt < 60000) return;
         locating = true;
         lastLocateRound = round;
         lastLocationAt = Date.now();
-        if (newRound) toast('📍 Der Disponent hat deinen Standort abgefragt.');
+        if (announce) toast('📍 Der Disponent hat deinen Standort abgefragt.');
         const send = body =>
           api('POST', '/api/devices/location', { did: deviceId, ...body })
             .catch(() => {})
@@ -4598,7 +4726,7 @@
           { class: 'card pcard', 'data-k': 'pc' },
           el('b', {}, 'Prüfobjekte' + (checklist.st === 'ok' ? ` (${checklist.list.length})` : ''))
         );
-        if (checklist.st === 'load') checklistCard.append(el('p', { class: 'mu' }, 'Lade …'));
+        if (checklist.st === 'load') checklistCard.append(skeletonChecklist());
         else if (checklist.st === 'err')
           checklistCard.append(el('p', { class: 'mu er' }, 'Fehler beim Laden: ' + checklist.m));
         else if (!checklist.list.length)
@@ -4853,7 +4981,7 @@
       function drawTeamPicker(back) {
         app.append(el('div', { class: 'bar' }, el('h1', {}, 'Dein Team'), back));
         const teamEntries = teamCounts();
-        if (!dataReady) app.append(el('p', { class: 'mu' }, 'Lade …'));
+        if (!dataReady) app.append(skeletonButtons(4));
         else if (!teamEntries.length)
           app.append(el('p', { class: 'mu' }, 'Noch keine Aufträge hochgeladen.'));
         if (teamEntries.length)
@@ -4889,6 +5017,11 @@
             )
           )
         );
+        // Daten laden noch (erster Start ohne Zwischenspeicher): Platzhalter statt einer leeren Liste
+        if (!dataReady) {
+          app.append(skeletonPage());
+          return;
+        }
         const view = () =>
           rows.filter(
             r =>
@@ -4942,11 +5075,9 @@
         const stats = teamStats();
         if (!stats.length) {
           app.append(
-            el(
-              'p',
-              { class: 'mu' },
-              dataReady ? 'Noch keine Aufträge – im Tab „Upload“ hochladen.' : 'Lade …'
-            )
+            dataReady
+              ? el('p', { class: 'mu' }, 'Noch keine Aufträge – im Tab „Upload“ hochladen.')
+              : skeletonGrid(2)
           );
           return;
         }
@@ -5148,6 +5279,11 @@
 
       // Dispo-Tab „Übersicht“: Filter (Team, Rückgemeldet, Status, Abgehakte), Excel-Export, „Alle abhaken“, Suche und Kartenliste
       function drawDispoOverview() {
+        // Daten laden noch: Platzhalter statt leerer Filter und Liste
+        if (!dataReady) {
+          app.append(skeletonPage());
+          return;
+        }
         if (dataReady && !ordersByTeam.size)
           app.append(el('p', { class: 'mu' }, 'Noch keine Aufträge – im Tab „Upload" hochladen.'));
         const teamEntries = teamCounts(),
@@ -5459,12 +5595,14 @@
         }
         await loadDevices();
       }
-      // Gerät ausloggen: der Server merkt die Abmeldung vor; das Gerät folgt beim nächsten Abgleich (meist sofort)
+      // Gerät ausloggen: der Server meldet es sofort ab (Rolle/Team weg, Tokens ungültig); das Gerät selbst kehrt zum Startbildschirm
+      // zurück, sobald es sich beim Server meldet (bei offener App sofort)
       async function logoutDevice(did) {
         deviceLogoutArmed = null;
         try {
           await api('POST', '/api/devices/logout', { did });
-          infoMsg = 'Abmeldung angefordert – das Gerät wird beim nächsten Abgleich abgemeldet.';
+          infoMsg =
+            'Gerät ausgeloggt – es kehrt zum Startbildschirm zurück, sobald es sich beim Server meldet.';
         } catch (e) {
           errorMsg = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
         }
@@ -5502,7 +5640,7 @@
        */
       function drawDevices() {
         if (deviceList === null) {
-          app.append(el('p', { class: deviceListError ? 'mu er' : 'mu' }, deviceListError || 'Lade …'));
+          app.append(deviceListError ? el('p', { class: 'mu er' }, deviceListError) : skeletonGrid(4));
           return;
         }
         const now = Date.now() + deviceListOffset,
@@ -5522,7 +5660,7 @@
             el(
               'p',
               { class: 'mu' },
-              'Hier siehst du, welches Gerät wo angemeldet ist, und kannst Geräten einen Spitznamen geben. „Ausloggen“ schickt ein Gerät beim nächsten Abgleich zum Startbildschirm zurück (bei Disponenten wird die Anmeldung sofort ungültig). Monteure können sich danach wieder anmelden.'
+              'Hier siehst du, welches Gerät wo angemeldet ist, und kannst Geräten einen Spitznamen geben. „Ausloggen“ meldet ein Gerät sofort ab: Es kehrt zum Startbildschirm zurück (bei geöffneter App gleich, sonst beim nächsten Öffnen), bei Disponenten wird die Anmeldung sofort ungültig. Monteure können sich danach wieder anmelden.'
             ),
             el(
               'p',
@@ -5574,7 +5712,7 @@
                     { class: 'tag ' + (device.role === 'dispo' ? 'st-teil' : device.role ? 'st-ok' : '') },
                     where
                   ),
-                  device.kick && el('span', { class: 'tag st-zf' }, '⏳ Abmeldung angefordert')
+                  device.kick && el('span', { class: 'tag st-zf' }, '⏳ Gerät noch nicht informiert')
                 ),
                 el(
                   'div',

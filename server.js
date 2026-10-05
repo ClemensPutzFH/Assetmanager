@@ -162,7 +162,11 @@ const sql = {
     'UPDATE dev SET loc_lat=NULL, loc_lon=NULL, loc_acc=NULL, loc_err=NULL, loc_at=NULL WHERE did=?'
   ),
   nameDev: db.prepare('UPDATE dev SET name=? WHERE did=?'),
-  kickDev: db.prepare('UPDATE dev SET kick=1, kick_at=? WHERE did=?'),
+  // Ausloggen: das Gerät ist sofort abgemeldet (Rolle, Team, Standort weg); `kick` merkt vor, dass es das beim nächsten
+  // Kontakt auch selbst erfährt (Startbildschirm), `kick_at` entwertet seine bisherigen Tokens
+  kickDev: db.prepare(
+    'UPDATE dev SET kick=1, kick_at=?, role=NULL, team=NULL, loc_lat=NULL, loc_lon=NULL, loc_acc=NULL, loc_err=NULL, loc_at=NULL WHERE did=?'
+  ),
   dupSub: db.prepare('UPDATE dev SET sub=NULL WHERE sub=? AND did<>?'),
   dropSub: db.prepare('UPDATE dev SET sub=NULL WHERE did=?'),
   resub: db.prepare("UPDATE dev SET sub=? WHERE json_extract(sub,'$.endpoint')=?"),
