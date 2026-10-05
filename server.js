@@ -13,6 +13,8 @@ const PUB = path.join(__dirname, 'public');
 const NAG_MIN = Math.max(1, +process.env.NAG_MIN || 5);         // Push-Erinnerung alle X Minuten wiederholen, bis bestätigt
 const MSG_H = Math.max(1, +process.env.MSG_HOURS || 12);        // spätestens nach X Stunden hört die Erinnerung auf
 const PUSH_CONTACT = process.env.PUSH_CONTACT || 'mailto:admin@example.com';   // Kontakt für die Push-Dienste (VAPID "sub")
+const clientIp = req => (process.env.TRUST_PROXY === '1' && String(req.headers['x-forwarded-for'] || '').split(',').pop().trim().replace(/^(\d+\.\d+\.\d+\.\d+):\d+$/, '$1')) || req.socket.remoteAddress;
+
 // nur an echte Push-Dienste senden (schützt davor, dass der Server beliebige Adressen aufruft)
 const PUSH_HOSTS = new RegExp(process.env.PUSH_HOSTS || '^https://((fcm|android)\\.googleapis\\.com|updates\\.push\\.services\\.mozilla\\.com|web\\.push\\.apple\\.com|[a-z0-9-]+\\.notify\\.windows\\.com)/');
 fs.mkdirSync(path.join(DIR, 'backups'), { recursive: true });
@@ -20,7 +22,7 @@ fs.mkdirSync(path.join(DIR, 'backups'), { recursive: true });
 // ---------- Datenbank ----------
 const db = new DatabaseSync(path.join(DIR, 'data.db'));
 db.exec(`
-PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+PRAGMA journal_mode=${process.env.DB_JOURNAL === 'DELETE' ? 'DELETE' : 'WAL'}; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS orders(auftrag TEXT PRIMARY KEY, team TEXT NOT NULL, tp TEXT, art TEXT, plz TEXT, str TEXT, kurz TEXT, start TEXT, ende TEXT,
   del INTEGER NOT NULL DEFAULT 0, ts INTEGER, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS orders_seq ON orders(seq);
@@ -206,7 +208,7 @@ const ORDER = r => ({ auftrag: r.auftrag, team: r.team, tp: r.tp, art: r.art, pl
 
 // ---------- API ----------
 async function api(req, res, url) {
-  const p = url.pathname, m = req.method, ip = req.socket.remoteAddress, S = url.searchParams;
+  const p = url.pathname, m = req.method, ip = clientIp(req), S = url.searchParams;
   if (p === '/api/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
     res.write('retry: 3000\n\n'); sse.add(res); req.on('close', () => sse.delete(res)); return;
