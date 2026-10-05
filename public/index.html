@@ -1295,6 +1295,9 @@
       .dv.off {
         opacity: 0.75;
       }
+      .dv a {
+        color: var(--act);
+      }
       .dv-dot {
         display: inline-block;
         width: 8px;
@@ -1356,7 +1359,7 @@
        *             die Zeit vollständig ist (Datum + Beginn + Dauer).
        *   Disponent PIN-geschützt: Übersicht (Filter, Excel-Export, Abhaken), Fortschritt aller Teams (+ Nachricht ans
        *             Team), Upload (eigener PIN), Vergleich (Aufträge-Excel gegen Export) und Geräte (wer ist wo
-       *             angemeldet, Spitznamen, Geräte ausloggen).
+       *             angemeldet, Spitznamen, Geräte ausloggen, Standort der Monteur-Geräte).
        *
        * DATENFLUSS
        *   Server (SQLite) <-> poll(): holt nur Änderungen seit der Änderungsnummer `syncSeq`; der Server meldet Änderungen
@@ -2786,6 +2789,8 @@
           if (response.ver) checkAppVersion(response.ver);
           // der Disponent hat dieses Gerät ausgeloggt
           if (response.kicked) forcedLogout();
+          // der Disponent hat die Geräteübersicht offen und fragt Standorte ab (locate = Nummer der Abfragerunde)
+          if (response.locate) reportLocationIfAsked(response.locate);
           if (!response.same) {
             if (response.full) {
               ordersMap = new Map();
@@ -4412,6 +4417,46 @@
         pushSync(false);
       };
 
+      // ---- Standort melden (Monteur-Gerät) ----
+      // locating: gerade läuft eine Standortbestimmung · lastLocationAt: Zeitpunkt der letzten Meldung ·
+      // lastLocateRound: Abfragerunde, auf die zuletzt geantwortet wurde
+      let locating = false,
+        lastLocationAt = 0,
+        lastLocateRound = 0;
+      /**
+       * Meldet den Standort an den Disponenten – aber nur, wenn er danach fragt: Der Server meldet beim Abgleich `locate`,
+       * solange der Disponent die Geräteübersicht offen hat. Es antworten nur geöffnete Monteur-Geräte (nicht im
+       * Hintergrund), höchstens einmal pro Minute – außer bei einer neuen Abfragerunde. Der Browser fragt den Monteur
+       * beim ersten Mal um Erlaubnis; wird sie verweigert, sieht der Disponent „nicht freigegeben“. Zur Information
+       * erscheint beim Start einer Runde eine Kurzmeldung. Es wird nur der jeweils letzte Standort gespeichert.
+       */
+      function reportLocationIfAsked(round) {
+        if (session.role !== 'monteur' || locating || document.hidden) return;
+        const newRound = round !== lastLocateRound;
+        if (!newRound && Date.now() - lastLocationAt < 60000) return;
+        locating = true;
+        lastLocateRound = round;
+        lastLocationAt = Date.now();
+        if (newRound) toast('📍 Der Disponent hat deinen Standort abgefragt.');
+        const send = body =>
+          api('POST', '/api/devices/location', { did: deviceId, ...body })
+            .catch(() => {})
+            .finally(() => {
+              locating = false;
+            });
+        if (!navigator.geolocation) return send({ error: 'unavailable' });
+        navigator.geolocation.getCurrentPosition(
+          position =>
+            send({
+              lat: position.coords.latitude,
+              lon: position.coords.longitude,
+              acc: Math.round(position.coords.accuracy)
+            }),
+          error =>
+            send({ error: error.code === 1 ? 'denied' : error.code === 2 ? 'unavailable' : 'timeout' }),
+          { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 }
+        );
+      }
       /**
        * Der Disponent hat dieses Gerät in der Geräteübersicht ausgeloggt (der Server meldet das beim Abgleich): zurück zum
        * Startbildschirm. switchRole(null) setzt Anmeldung und Eingaben zurück und meldet dem Server „abgemeldet“ – damit ist
@@ -5391,10 +5436,11 @@
         if (minutes < 1440) return `vor ${Math.floor(minutes / 60)} Std`;
         return formatDateTime(seen);
       }
-      // Lädt die Geräteliste vom Server (GET /api/devices) und zeichnet neu
-      async function loadDevices() {
+      // Lädt die Geräteliste vom Server (GET /api/devices) und zeichnet neu. Das hält auch die Standortabfrage am Leben
+      // (?locate=1, 90 Sekunden) – nur diese Seite fragt Standorte ab. refresh = true: sofort neue Abfragerunde.
+      async function loadDevices(refresh = false) {
         try {
-          const response = await api('GET', '/api/devices');
+          const response = await api('GET', '/api/devices?locate=1' + (refresh ? '&refresh=1' : ''));
           deviceList = response.devices;
           deviceListOffset = response.now - Date.now();
           deviceListError = '';
@@ -5424,6 +5470,31 @@
         }
         await loadDevices();
       }
+      // Standortzeile einer Gerätekarte: Karten-Link mit Genauigkeit und Alter, oder der Grund, warum es keinen gibt
+      function locationLine(device, now) {
+        if (device.locError)
+          return el(
+            'div',
+            { class: 'mu' },
+            '📍 ' +
+              (device.locError === 'denied'
+                ? 'Standort nicht freigegeben'
+                : device.locError === 'unavailable'
+                  ? 'Standort nicht verfügbar'
+                  : 'Standort: keine Antwort (Zeitüberschreitung)') +
+              ' · ' +
+              agoText(device.locAt, now)
+          );
+        if (device.lat == null) return el('div', { class: 'mu' }, '📍 Standort: noch keine Antwort');
+        const url = `https://www.openstreetmap.org/?mlat=${device.lat}&mlon=${device.lon}#map=17/${device.lat}/${device.lon}`;
+        return el(
+          'div',
+          { class: 'mu' },
+          '📍 ',
+          el('a', { href: url, target: '_blank', rel: 'noopener' }, 'Auf Karte öffnen'),
+          ` · ±${device.acc} m · ${agoText(device.locAt, now)}`
+        );
+      }
       /**
        * Dispo-Tab „Geräte“: alle Geräte der letzten 30 Tage mit Rolle/Team (wo angemeldet), Spitzname, zuletzt aktiv und
        * Push-Status. Je Gerät: Spitzname vergeben und „Ausloggen“ (mit Rückfrage). Die Liste lädt beim Öffnen des Tabs und
@@ -5452,6 +5523,25 @@
               'p',
               { class: 'mu' },
               'Hier siehst du, welches Gerät wo angemeldet ist, und kannst Geräten einen Spitznamen geben. „Ausloggen“ schickt ein Gerät beim nächsten Abgleich zum Startbildschirm zurück (bei Disponenten wird die Anmeldung sofort ungültig). Monteure können sich danach wieder anmelden.'
+            ),
+            el(
+              'p',
+              { class: 'mu' },
+              'Standorte werden nur abgefragt, solange diese Seite offen ist – und nur von Monteur-Geräten, die gerade geöffnet sind und den Standort freigeben.'
+            ),
+            el(
+              'button',
+              {
+                class: 'pri',
+                onclick: () => {
+                  loadDevices(true);
+                  // Geräte antworten innerhalb weniger Sekunden
+                  setTimeout(() => {
+                    if (dispoTab === 'dv') loadDevices();
+                  }, 6000);
+                }
+              },
+              '📍 Standorte jetzt aktualisieren'
             ),
             deviceListError && el('p', { class: 'mu er' }, deviceListError)
           )
@@ -5503,6 +5593,7 @@
                     { class: 'mu' },
                     device.push ? '🔔 Benachrichtigungen an' : '🔕 ohne Benachrichtigungen'
                   ),
+                device.role === 'monteur' && locationLine(device, now),
                 device.first &&
                   el('div', { class: 'mu' }, 'Erstmals gesehen: ' + formatDateTime(device.first)),
                 renaming
@@ -5669,6 +5760,10 @@
                   deviceLogoutArmed = null;
                   render();
                   loadDevices();
+                  // die Monteur-Geräte antworten auf die Standortabfrage innerhalb weniger Sekunden
+                  setTimeout(() => {
+                    if (dispoTab === 'dv') loadDevices();
+                  }, 6000);
                 }
               },
               'Geräte'

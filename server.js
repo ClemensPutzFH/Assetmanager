@@ -12,7 +12,7 @@
  *   orders    Aufträge (del = 1: gelöscht/verschoben, bleibt als Markierung, damit Geräte es erfahren)
  *   pruef     Prüfobjekt-Liste je Auftrag (JSON)       ergebnis  Bewertung/Zeit je Auftrag (JSON, Format siehe index.html)
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
- *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung)
+ *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
  *
  * ZUGRIFFSSTUFEN
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS dmark(auftrag TEXT PRIMARY KEY, v INTEGER NOT NULL, a
 CREATE INDEX IF NOT EXISTS dmark_seq ON dmark(seq);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 -- Geräte (Rolle/Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung durch den Disponenten), Nachrichten des Disponenten und Bestätigungen je Gerät
-CREATE TABLE IF NOT EXISTS dev(did TEXT PRIMARY KEY, team TEXT, sub TEXT, seen INTEGER, role TEXT, name TEXT, ua TEXT, first INTEGER, kick INTEGER NOT NULL DEFAULT 0, kick_at INTEGER);
+CREATE TABLE IF NOT EXISTS dev(did TEXT PRIMARY KEY, team TEXT, sub TEXT, seen INTEGER, role TEXT, name TEXT, ua TEXT, first INTEGER, kick INTEGER NOT NULL DEFAULT 0, kick_at INTEGER, loc_lat REAL, loc_lon REAL, loc_acc REAL, loc_at INTEGER, loc_err TEXT);
 CREATE TABLE IF NOT EXISTS msg(id INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, closed INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS mack(id INTEGER NOT NULL, did TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(id, did));
 `);
@@ -104,7 +104,12 @@ CREATE TABLE IF NOT EXISTS mack(id INTEGER NOT NULL, did TEXT NOT NULL, at INTEG
     ua: 'TEXT',
     first: 'INTEGER',
     kick: 'INTEGER NOT NULL DEFAULT 0',
-    kick_at: 'INTEGER'
+    kick_at: 'INTEGER',
+    loc_lat: 'REAL',
+    loc_lon: 'REAL',
+    loc_acc: 'REAL',
+    loc_at: 'INTEGER',
+    loc_err: 'TEXT'
   };
   for (const [column, type] of Object.entries(added))
     if (!have.has(column)) db.exec(`ALTER TABLE dev ADD COLUMN ${column} ${type}`);
@@ -147,7 +152,14 @@ const sql = {
     'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick) VALUES(?,?,?,?,?,?,?,0) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0'
   ),
   listDevs: db.prepare(
-    'SELECT did, name, role, team, sub IS NOT NULL AS push, seen, first, ua, kick FROM dev WHERE seen>? ORDER BY seen DESC'
+    'SELECT did, name, role, team, sub IS NOT NULL AS push, seen, first, ua, kick, loc_lat, loc_lon, loc_acc, loc_at, loc_err FROM dev WHERE seen>? ORDER BY seen DESC'
+  ),
+  // letzter Standort bzw. Fehler (nur das Neueste, kein Verlauf); nur für angemeldete Monteur-Geräte
+  setLoc: db.prepare(
+    "UPDATE dev SET loc_lat=?, loc_lon=?, loc_acc=?, loc_err=?, loc_at=? WHERE did=? AND role='monteur'"
+  ),
+  clearLoc: db.prepare(
+    'UPDATE dev SET loc_lat=NULL, loc_lon=NULL, loc_acc=NULL, loc_err=NULL, loc_at=NULL WHERE did=?'
   ),
   nameDev: db.prepare('UPDATE dev SET name=? WHERE did=?'),
   kickDev: db.prepare('UPDATE dev SET kick=1, kick_at=? WHERE did=?'),
@@ -279,6 +291,14 @@ setInterval(() => {
 // ---------- Hilfsfunktionen ----------
 // Text auf höchstens n Zeichen kürzen (aus null/undefined wird ein leerer Text) – begrenzt Eingaben
 const clipString = (v, n = 300) => String(v ?? '').slice(0, n);
+// Standortabfrage: Solange der Disponent die Geräteübersicht offen hat, hält er die Abfrage am Leben (`locateUntil`).
+// Nur dann melden Monteur-Geräte (beim Abgleich über `locate` informiert) ihren Standort. `locateRound` zählt die
+// Abfragerunden: eine neue Runde (Tab geöffnet / „jetzt aktualisieren“) lässt die Geräte sofort antworten.
+let locateUntil = 0,
+  locateRound = 0;
+const LOCATE_WINDOW_MS = 90e3;
+// Feld für die Abgleich-Antwort: `locate: <Runde>` nur, wenn die Abfrage gerade aktiv ist
+const locateField = () => (Date.now() < locateUntil ? { locate: locateRound } : {});
 // gültige Geräte-ID (32 Hex-Zeichen) oder '' – die ID erzeugt die App einmalig je Gerät
 const validDeviceId = v => (/^[a-f0-9]{32}$/.test(String(v ?? '')) ? String(v) : '');
 // versteht der Client gzip?
@@ -599,7 +619,8 @@ async function handleApi(req, res, url) {
         seq: changeSeq,
         same: true,
         ver: appVersion(),
-        ...(kicked ? { kicked: true } : {})
+        ...(kicked ? { kicked: true } : {}),
+        ...locateField()
       });
     const full = since === 0 || since > changeSeq || since < minSeq,
       from = full ? 0 : since;
@@ -608,6 +629,7 @@ async function handleApi(req, res, url) {
       full,
       ver: appVersion(),
       ...(kicked ? { kicked: true } : {}),
+      ...locateField(),
       teams: db
         .prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team')
         .all()
@@ -747,6 +769,7 @@ async function handleApi(req, res, url) {
       changeSeq++;
       if (sub) sql.dupSub.run(sub, did);
       sql.upDev.run(did, role, team, sub, now, clipString(req.headers['user-agent'], 200), now);
+      if (role !== 'monteur') sql.clearLoc.run(did); // abgemeldet oder nicht (mehr) Monteur -> kein Standort
     });
     notifyClients();
     return sendJson(req, res, 200, { ok: true });
@@ -765,6 +788,26 @@ async function handleApi(req, res, url) {
       }),
       clipString(body.old, 1000)
     );
+    return sendJson(req, res, 200, { ok: true });
+  }
+  // Gerät meldet seinen Standort (nur auf Abfrage: der Server nimmt ihn nur an, solange der Disponent die Geräteübersicht
+  // offen hat). Body: { did, lat, lon, acc } oder { did, error: 'denied' | 'unavailable' | 'timeout' }
+  if (pathname === '/api/devices/location' && method === 'POST') {
+    const body = await readBody(req, 1e4),
+      did = validDeviceId(body.did);
+    if (!did) return sendJson(req, res, 400, { error: 'Ungültige Geräte-ID' });
+    if (Date.now() >= locateUntil + 30e3) return sendJson(req, res, 200, { ok: true, ignored: true });
+    const now = Date.now();
+    if (['denied', 'unavailable', 'timeout'].includes(body.error)) {
+      sql.setLoc.run(null, null, null, body.error, now, did);
+      return sendJson(req, res, 200, { ok: true });
+    }
+    const lat = Number(body.lat),
+      lon = Number(body.lon),
+      acc = Number(body.acc);
+    if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && acc >= 0))
+      return sendJson(req, res, 400, { error: 'Ungültiger Standort' });
+    sql.setLoc.run(Math.round(lat * 1e5) / 1e5, Math.round(lon * 1e5) / 1e5, Math.round(acc), null, now, did);
     return sendJson(req, res, 200, { ok: true });
   }
   // Gerät bestätigt eine Nachricht
@@ -816,7 +859,20 @@ async function handleApi(req, res, url) {
     return sendJson(req, res, 200, { ok: true });
   }
   // Geräteübersicht: alle Geräte, die in den letzten 30 Tagen aktiv waren (jüngste zuerst); `now` = Serverzeit für „vor … Min“
+  // Mit ?locate=1 wird die Standortabfrage gestartet bzw. verlängert (90 s) – das macht nur die offene Geräteübersicht;
+  // ?refresh=1 beginnt sofort eine neue Runde. Alle anderen Ansichten fragen nie nach Standorten.
   if (pathname === '/api/devices' && method === 'GET') {
+    if (params.get('locate') === '1') {
+      const wasActive = Date.now() < locateUntil;
+      locateUntil = Date.now() + LOCATE_WINDOW_MS;
+      if (!wasActive || params.get('refresh') === '1') {
+        transaction(() => {
+          locateRound++;
+          changeSeq++;
+        });
+        notifyClients(); // alle Geräte gleichen sofort ab und erfahren von der Abfrage
+      }
+    }
     const devices = sql.listDevs.all(Date.now() - 30 * 864e5).map(r => ({
       did: r.did,
       name: r.name,
@@ -826,7 +882,12 @@ async function handleApi(req, res, url) {
       seen: r.seen,
       first: r.first,
       ua: r.ua,
-      kick: !!r.kick
+      kick: !!r.kick,
+      lat: r.loc_lat,
+      lon: r.loc_lon,
+      acc: r.loc_acc,
+      locAt: r.loc_at,
+      locError: r.loc_err
     }));
     return sendJson(req, res, 200, { devices, now: Date.now() });
   }
