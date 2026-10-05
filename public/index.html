@@ -898,11 +898,11 @@ function draw(){
       if(d&&!valid)pb.append(el('p',{class:'mu er'},'Die Prüfliste hat sich seit der letzten Bewertung geändert – bitte neu prüfen.'));
       // „Alles OK“ setzt nur offene Prüfobjekte auf OK – Nicht OK (samt Text) bleibt erhalten
       const op=n-ok-nx;
-      // immer zweite Bestätigung; Klicks kurz nach dem ersten zählen nicht (versehentlicher Doppel-Tipp)
+      // immer zweite Bestätigung; Klicks in den ersten 250 ms nach dem ersten zählen nicht (versehentlicher Doppel-Tipp)
       if(mon&&op>0)pb.append(!armA?el('button',{class:'allok','data-k':'aok',onclick:()=>{armA=Date.now();edi=null;render()}},ok+nx>0?`✓ Alle offenen OK (${op})`:'✓ Alles OK')
         :el('div',{class:'cfm','data-k':'aok'},el('b',{},op===n?`Wirklich alle ${n} Prüfobjekte OK?`:`Wirklich alle ${op} restlichen Prüfobjekte OK?`),
           nx>0&&el('div',{class:'mu'},`${nx}× Nicht OK bleibt erhalten.`),
-          el('div',{class:'ob'},el('button',{class:'yes',onclick:()=>{if(Date.now()-armA<600)return;armA=false;const c=cur(r.auftrag,L);setS(r,L,c.s.replace(/-/g,'o'),c.T)}},'Ja, alle OK'),
+          el('div',{class:'ob'},el('button',{class:'yes',onclick:()=>{if(Date.now()-armA<250)return;armA=false;const c=cur(r.auftrag,L);setS(r,L,c.s.replace(/-/g,'o'),c.T)}},'Ja, alle OK'),
             el('button',{onclick:()=>{armA=false;render()}},'Abbrechen'))));
       L.forEach((t,i)=>{
         const c=s[i],m=txt(i);
