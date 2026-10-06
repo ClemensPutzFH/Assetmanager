@@ -357,15 +357,23 @@
         width: 1.4em;
       }
       /* ---- Tabs der Disponentenansicht, Texteingaben ---- */
+      /* Tabs: nebeneinander, am Handy seitlich wischbar (nichts wird abgeschnitten), der aktive Tab wird in die Mitte gerückt */
       .tabs {
         display: flex;
         gap: 6px;
         margin-bottom: 12px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        overscroll-behavior-x: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+      .tabs::-webkit-scrollbar {
+        display: none;
       }
       .tabs button {
-        flex: 1;
-        min-width: 0;
-        padding: 10px 2px;
+        flex: 1 0 auto;
+        white-space: nowrap;
+        padding: 10px 14px;
         font-size: 0.875rem;
       }
       .tabs button.on {
@@ -401,6 +409,42 @@
       }
       .tmr {
         margin-bottom: 12px;
+      }
+      /* überfälliger Auftrag: roter Balken links an der Karte */
+      .card.due {
+        border-left: 4px solid var(--er);
+      }
+      /* Dispo-Filter: breit immer sichtbar; am Handy zugeklappt hinter „Filter“, oben nur Suche und die aktiven Filter */
+      .fbtn {
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .fbtn.on {
+        border-color: var(--ac);
+        color: var(--ac);
+      }
+      .fsum {
+        margin: 0 0 10px;
+      }
+      @media (max-width: 699px) {
+        .fp.closed {
+          display: none;
+        }
+        .srow {
+          display: flex;
+          gap: 8px;
+          align-items: flex-start;
+        }
+        .srow .tools {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+      }
+      @media (min-width: 700px) {
+        .fbtn,
+        .fsum {
+          display: none;
+        }
       }
       /* Liste: Marke am Ende, bei deren Annäherung die Liste automatisch länger wird (ohne IntersectionObserver ein Button) */
       .more {
@@ -820,8 +864,21 @@
         margin: -8px -16px 4px;
         padding: 8px 16px;
       }
+      .det {
+        display: flex;
+        flex-direction: column;
+      }
       .det > * {
         min-width: 0;
+      }
+      .det > .d-info {
+        order: 1;
+      }
+      .det > .d-check {
+        order: 2;
+      }
+      .det > .d-time {
+        order: 3;
       }
       .pcard {
         container-type: inline-size;
@@ -844,8 +901,21 @@
         .det {
           display: grid;
           grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-          gap: 16px;
+          grid-template-rows: auto 1fr;
+          grid-template-areas:
+            'info check'
+            'time check';
+          column-gap: 16px;
           align-items: start;
+        }
+        .det > .d-info {
+          grid-area: info;
+        }
+        .det > .d-time {
+          grid-area: time;
+        }
+        .det > .d-check {
+          grid-area: check;
         }
         .mtop {
           display: grid;
@@ -1739,6 +1809,13 @@
         dispoUnlocked = false,
         pinInput = '',
         pinError = false,
+        // dispoFiltersOpen: Filter der Dispo-Übersicht am Handy aufgeklappt · listSort: Sortierung der Listen ('nr' Nummer | 'termin' Termin)
+        dispoFiltersOpen = false,
+        listSort = 'nr',
+        // timeFormOpen: Eingabefelder (Datum, Beginn, Dauer) der Zeitkarte aufgeklappt ·
+        // timeFlash: Zeit wurde gerade gespeichert (Karte blinkt kurz auf)
+        timeFormOpen = false,
+        timeFlash = false,
         // timeWith: SAP-User der Kollegen, mit denen gearbeitet wurde (Auswahl in der Zeitkarte) ·
         // timeWithAuto: Vorauswahl „alle aus dem Team“ steht noch aus (wird einmal angewendet, nicht mehr nach einer Änderung)
         timeWith = [],
@@ -2415,6 +2492,7 @@
         timeWith = existingResult && existingResult.min != null && existingResult.mit ? [...existingResult.mit] : [];
         // neue Zeit: alle aus dem Team sind vorausgewählt (sobald die Kollegenliste da ist), solange der Monteur nichts ändert
         timeWithAuto = session.role === 'monteur' && !(existingResult && existingResult.min != null);
+        timeFormOpen = false;
         applyDefaultWith(order);
         if (session.role === 'monteur') loadColleagues(order.team);
         timeFormAtOpen = timeFormSnapshot();
@@ -2644,6 +2722,11 @@
        */
       function storeTime(order, items, minutes, date, start) {
         timeFormAtOpen = timeFormSnapshot();
+        timeFormOpen = false;
+        timeFlash = minutes > 0;
+        // kurze Bestätigung (bei „Ende“ hat stopTimer schon eine eigene Meldung gesetzt)
+        if (minutes > 0 && !infoMsg.startsWith('⏱')) infoMsg = '✓ Zeit gespeichert: ' + formatMinutes(minutes);
+        else if (!(minutes > 0)) infoMsg = '🗑 Zeit gelöscht';
         const result = resultOf(order.auftrag),
           count = items.length,
           listValid = !!(result && result.s && result.n === count && result.s.length === count);
@@ -2905,6 +2988,30 @@
                   ]
             )
           );
+        // Kompakt: Start/Ende und die Kollegen-Auswahl sind immer da (bei neuer Zeit), Datum/Beginn/Dauer erst nach „Zeit von Hand
+        // eintragen“ bzw. „Zeit ändern“. Bei einem Fehler oder angefangener Eingabe bleibt das Formular offen.
+        const formOpen = timeFormOpen || !!timeError;
+        if (!hasTime)
+          timePanel.append(el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order));
+        if (!formOpen) {
+          timePanel.append(
+            el(
+              'div',
+              { class: 'ob', 'data-k': 'zo' },
+              el(
+                'button',
+                {
+                  onclick: () => {
+                    timeFormOpen = true;
+                    render();
+                  }
+                },
+                hasTime ? '✎ Zeit ändern' : '✎ Zeit von Hand eintragen'
+              )
+            )
+          );
+          return timePanel;
+        }
         timePanel.append(
           el('div', { class: 'mu' }, 'Durchgeführt am'),
           el(
@@ -3033,8 +3140,7 @@
             ),
             el('span', {}, 'Min')
           ),
-          el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'),
-          withPicker(order),
+          ...(hasTime ? [el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order)] : []),
           timeError && el('p', { class: 'mu er' }, timeError),
           el(
             'div',
@@ -3048,7 +3154,18 @@
               },
               hasTime ? 'Zeit ändern' : 'Zeit speichern'
             ),
-            hasTime && el('button', { class: 'er', onclick: () => deleteTime(order, items) }, 'Löschen')
+            hasTime && el('button', { class: 'er', onclick: () => deleteTime(order, items) }, 'Löschen'),
+            el(
+              'button',
+              {
+                onclick: () => {
+                  timeFormOpen = false;
+                  timeError = '';
+                  render();
+                }
+              },
+              'Zuklappen'
+            )
           )
         );
         return timePanel;
@@ -3856,6 +3973,65 @@
         const x = reportedDate(r);
         return !!x && (!R[0] || x >= R[0]) && (!R[1] || x <= R[1]);
       };
+      // ---- Termine: Anzeige als TT.MM.JJJJ, Fälligkeit und Sortierung ----
+      // Termin-Text („1.10.2026“ oder „2026-10-01“) -> JJJJ-MM-TT, sonst ''
+      const isoOfDate = t => {
+        const x = String(t || '').trim();
+        let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(x);
+        if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+        m = /^(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})$/.exec(x);
+        return m ? `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : '';
+      };
+      const dateDe = t => (isoOfDate(t) ? formatIsoDate(isoOfDate(t)) : String(t || ''));
+      // Fälligkeit nach dem Endtermin (nur für nicht erledigte Aufträge): überfällig | heute | in höchstens 3 Tagen, sonst null
+      const dueInfo = order => {
+        const end = isoOfDate(order.ende);
+        if (!end || isFinished(order)) return null;
+        const days = Math.round((new Date(end + 'T12:00:00') - new Date(today() + 'T12:00:00')) / 864e5);
+        return days < 0 ? { kind: 'over', days: -days } : days <= 3 ? { kind: days ? 'soon' : 'today', days } : null;
+      };
+      const dueTag = order => {
+        const d = dueInfo(order);
+        if (!d) return null;
+        const plural = n => (n === 1 ? '1 Tag' : n + ' Tagen');
+        return d.kind === 'over'
+          ? el('span', { class: 'tag st-nok' }, `⏰ überfällig seit ${plural(d.days)}`)
+          : el('span', { class: 'tag st-zf' }, d.kind === 'today' ? '⏰ heute fällig' : `⏰ fällig in ${plural(d.days)}`);
+      };
+      // Sortierung der Listen: nach Auftragsnummer oder nach Endtermin (früheste zuerst, ohne Termin zuletzt)
+      const sortRows = rows => {
+        const byNr = (a, b) => naturalCompare(a.auftrag, b.auftrag),
+          end = r => isoOfDate(r.ende) || '9999-99-99';
+        return rows.sort(listSort === 'termin' ? (a, b) => end(a).localeCompare(end(b)) || byNr(a, b) : byNr);
+      };
+      const sortChips = () =>
+        el(
+          'div',
+          { class: 'chips ab' },
+          el('span', { class: 'mu' }, 'Sortierung:'),
+          [
+            ['nr', 'Auftragsnummer'],
+            ['termin', 'Termin']
+          ].map(([k, l]) =>
+            el(
+              'button',
+              {
+                class: 'chip' + (listSort === k ? ' on' : ''),
+                onclick: () => {
+                  listSort = k;
+                  try {
+                    localStorage.setItem('lsort', k);
+                  } catch (e) {}
+                  render();
+                }
+              },
+              l
+            )
+          )
+        );
+      try {
+        if (localStorage.getItem('lsort') === 'termin') listSort = 'termin';
+      } catch (e) {}
       // Suche: Text kommt in Auftrag, Kurztext, Straße, PLZ oder Technischem Platz vor
       const matchesSearch = r => {
         const t = searchText.trim().toLowerCase();
@@ -3884,7 +4060,8 @@
             class:
               'card' +
               (clickable ? ' cl' : '') +
-              (isDispo && clickable && markState(order.auftrag) === 1 ? ' dn' : ''),
+              (isDispo && clickable && markState(order.auftrag) === 1 ? ' dn' : '') +
+              (dueInfo(order) && dueInfo(order).kind === 'over' ? ' due' : ''),
             // Anker für render(): hält die Liste an derselben Stelle, wenn oben etwas dazukommt oder wegfällt (siehe viewportAnchors)
             'data-k': clickable ? 'o' + order.auftrag : null,
             onclick: clickable
@@ -3904,6 +4081,7 @@
             order.art && el('span', { class: 'tag' }, order.art),
             statusTags(order),
             timeTag(order),
+            dueTag(order),
             clickable && el('span', { class: 'chev' }, 'Prüfobjekte ›')
           ),
           el('div', { class: 'kt' }, order.kurz || '–'),
@@ -3911,7 +4089,7 @@
             el('div', { class: 'mu' }, [order.plz, order.str].filter(Boolean).join(' ')),
           order.tp && el('div', { class: 'mu' }, 'Techn. Platz: ' + order.tp),
           (order.start || order.ende) &&
-            el('div', { class: 'mu' }, 'Termin: ' + [order.start, order.ende].filter(Boolean).join(' – ')),
+            el('div', { class: 'mu' }, 'Termin: ' + [dateDe(order.start), dateDe(order.ende)].filter(Boolean).join(' – ')),
           isDispo &&
             result &&
             result.min != null &&
@@ -4054,11 +4232,11 @@
       }
       // Liste der Aufträge als Kartenraster (gefiltert nach Suche, sortiert nach Auftragsnummer, höchstens 300 Karten)
       function orderList(rows, showTeam) {
-        const filtered = rows.filter(matchesSearch).sort((a, b) => naturalCompare(a.auftrag, b.auftrag)),
+        const filtered = sortRows(rows.filter(matchesSearch)),
           total = Math.min(filtered.length, LIST_MAX);
         // Karten werden in Portionen gezeichnet (LIST_CHUNK), weitere kommen beim Scrollen dazu: so bleibt das Neuzeichnen auch bei
         // langen Listen schnell. Ändert sich Filter, Suche oder Ansicht, beginnt die Liste wieder mit der ersten Portion.
-        const sig = [teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab].join('|');
+        const sig = [teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab, listSort].join('|');
         if (sig !== listSig) {
           listSig = sig;
           listLimit = LIST_CHUNK;
@@ -5229,10 +5407,11 @@
       // höchste Nachrichten-ID des Teams
       const latestTeamMessageId = () =>
         messages.reduce((a, m) => (m.team === session.team ? Math.max(a, m.id | 0) : a), 0);
-      // Banner zu Benachrichtigungen (mit „✕“ zum Ausblenden) oder null
+      // Banner zu Benachrichtigungen (mit „✕“ zum Ausblenden) oder null. Einmal weggeklickt, bleibt er weg: dann gibt es nur die kleine
+      // Schaltfläche „🔔 Benachrichtigungen“ (pushBell) neben dem Benutzernamen, über die man den Hinweis wieder öffnen kann.
       function pushBanner() {
         const banner = pushStatusBanner();
-        if (!banner || (bannerHiddenUpTo >= 0 && latestTeamMessageId() <= bannerHiddenUpTo)) return null;
+        if (!banner || bannerHiddenUpTo >= 0) return null;
         banner.classList.add('dx');
         banner.append(
           el(
@@ -5253,6 +5432,27 @@
           )
         );
         return banner;
+      }
+      // kleine Schaltfläche statt des weggeklickten Banners (⚠ bei einem Problem, sonst 🔔), null wenn es nichts zu melden gibt
+      function pushBell() {
+        if (bannerHiddenUpTo < 0) return null;
+        const banner = pushStatusBanner();
+        if (!banner) return null;
+        return el(
+          'button',
+          {
+            class: 'lk',
+            title: 'Hinweis zu den Benachrichtigungen anzeigen',
+            onclick: () => {
+              bannerHiddenUpTo = -1;
+              try {
+                localStorage.removeItem('pbhide');
+              } catch (e) {}
+              render();
+            }
+          },
+          (banner.classList.contains('er') ? '⚠' : '🔔') + ' Benachrichtigungen'
+        );
       }
       // Passender Hinweis je Zustand: Browser kann kein Push (iPhone: „Zum Home-Bildschirm“, ohne HTTPS), Berechtigung blockiert,
       // Einrichtung fehlgeschlagen (mit Tipps je Browser) oder noch nicht aktiviert („Aktivieren“)
@@ -5756,6 +5956,16 @@
         animateView();
         animateRemoved(listSnap);
         animateOkPops(okBefore);
+        // frisch gespeicherte Zeit: Zeitkarte leuchtet kurz grün auf
+        if (timeFlash) {
+          timeFlash = false;
+          const card = app.querySelector('[data-zeit]');
+          if (card && card.animate && !matchMedia('(prefers-reduced-motion: reduce)').matches)
+            card.animate(
+              [{ backgroundColor: 'color-mix(in srgb, var(--ok) 24%, var(--card))' }, { backgroundColor: 'var(--card)' }],
+              { duration: 1100, easing: 'ease-out' }
+            );
+        }
       }
       // Einblendung beim Seitenwechsel: nur wenn sich die Ansicht ändert (Rolle, Team, Dispo-Tab, Auftrag auf/zu), nicht bei
       // jedem Neuzeichnen. Läuft nach der Scroll-Korrektur (die Verschiebung würde sonst die Messung verfälschen).
@@ -6032,7 +6242,11 @@
           isMonteur = session.role === 'monteur';
         const orderInfoCard = orderCard(order, !isMonteur, false);
         orderInfoCard.dataset.k = 'oc';
-        const detail = el('div', { class: 'det' }, el('div', {}, orderInfoCard, timeCard(order, isMonteur)));
+        // Reihenfolge am Handy: Auftrag, Prüfobjekte, Zeit (die Prüfliste ist die Hauptaufgabe); breit: links Auftrag + Zeit, rechts Prüfobjekte
+        orderInfoCard.classList.add('d-info');
+        const timePanel = timeCard(order, isMonteur);
+        timePanel.classList.add('d-time');
+        const detail = el('div', { class: 'det' }, orderInfoCard, timePanel);
         app.append(
           el(
             'div',
@@ -6044,7 +6258,7 @@
         );
         const checklistCard = el(
           'div',
-          { class: 'card pcard', 'data-k': 'pc' },
+          { class: 'card pcard d-check', 'data-k': 'pc' },
           el('b', {}, 'Prüfobjekte' + (checklist.st === 'ok' ? ` (${checklist.list.length})` : ''))
         );
         if (checklist.st === 'load') checklistCard.append(skeletonChecklist());
@@ -6460,7 +6674,8 @@
                   'p',
                   { class: 'mu uline' },
                   `👤 ${userInfo.name} (${userInfo.sap})${userInfo.lock ? ' · 🔒 Team fest zugewiesen' : ''} · `,
-                  el('button', { class: 'lk', onclick: userLogout }, 'Abmelden')
+                  el('button', { class: 'lk', onclick: userLogout }, 'Abmelden'),
+                  ...(pushBell() ? [' · ', pushBell()] : [])
                 )
               ]
             : [])
@@ -6503,6 +6718,7 @@
               monteurFilter = k;
             }
           ),
+          sortChips(),
           searchRow
         );
         const banner = pushBanner();
@@ -6795,7 +7011,10 @@
         );
         const option = (v, l, c) =>
           el('option', { value: v, ...(v === c ? { selected: 'selected' } : {}) }, l);
-        app.append(
+        // Filter: am Handy hinter der Schaltfläche „Filter“ (aufklappbar), breit immer sichtbar. Oben bleiben Suche und eine Zeile mit
+        // den aktiven Filtern (jeder lässt sich mit ✕ lösen).
+        const panel = el('div', { class: 'fp' + (dispoFiltersOpen ? '' : ' closed') });
+        panel.append(
           el(
             'div',
             { class: 'flt', 'data-k': 'fl' },
@@ -6879,8 +7098,8 @@
           )
         );
         if (reportedFilter === 'z' && reportedFrom && reportedTo && reportedFrom > reportedTo)
-          app.append(el('p', { class: 'mu er' }, '„Von“ liegt nach „Bis“ – es kann nichts gefunden werden.'));
-        app.append(
+          panel.append(el('p', { class: 'mu er' }, '„Von“ liegt nach „Bis“ – es kann nichts gefunden werden.'));
+        panel.append(
           filterChips(
             [
               ['', 'Alle', base.length],
@@ -6903,7 +7122,6 @@
           searchText.trim()
         );
         const actions = el('div', { class: 'acts' });
-        app.append(actions);
         actions.append(
           el(
             'button',
@@ -6944,7 +7162,7 @@
                   `☑ Alle angezeigten abhaken (${toMark.length})`
                 )
           );
-        // Abgehakte direkt bei der Liste ein-/ausblenden (Wahl bleibt im Gerät gespeichert)
+        // Abgehakte ein-/ausblenden (Wahl bleibt im Gerät gespeichert)
         const setMarkedFilter = k => {
           markedFilter = k;
           armMarkAll = false;
@@ -6953,6 +7171,51 @@
           } catch (x) {}
           render();
         };
+        const setMarkedFilterQuiet = k => {
+          markedFilter = k;
+          try {
+            localStorage.setItem('dha', markedFilter);
+          } catch (x) {}
+        };
+        panel.append(
+          el(
+            'div',
+            { class: 'chips ab' },
+            el('span', { class: 'mu' }, 'Abgehakte:'),
+            [
+              ['', 'Anzeigen'],
+              ['hide', `Ausblenden (${markedCount})`],
+              ['only', `Nur abgehakte (${anyMarkedCount})`]
+            ].map(([k, l]) =>
+              el(
+                'button',
+                { class: 'chip' + (markedFilter === k ? ' on' : ''), onclick: () => setMarkedFilter(k) },
+                l
+              )
+            )
+          ),
+          sortChips(),
+          actions
+        );
+        // aktive Filter als Kurzzeile (nur am Handy sichtbar, wenn die Filter zugeklappt sind)
+        const reportedNames = { h: 'Heute', g: 'Gestern', 7: 'Letzte 7 Tage', m: 'Dieser Monat', z: 'Zeitraum' },
+          statusNames = { nok: 'Nicht OK', done: 'Erledigt', teil: 'In Arbeit', offen: 'Offen' },
+          active = [
+            teamFilter && [`Team ${teamFilter}`, () => (teamFilter = '')],
+            statusFilter && [`Status ${statusNames[statusFilter]}`, () => (statusFilter = '')],
+            reportedFilter && [
+              `Rückgemeldet ${reportedNames[reportedFilter]}`,
+              () => {
+                reportedFilter = '';
+                reportedFrom = '';
+                reportedTo = '';
+              }
+            ],
+            markedFilter && [
+              markedFilter === 'hide' ? 'Abgehakte ausgeblendet' : 'Nur abgehakte',
+              () => setMarkedFilterQuiet('')
+            ]
+          ].filter(Boolean);
         app.append(
           el(
             'div',
@@ -6963,22 +7226,42 @@
               render();
             }),
             el(
-              'div',
-              { class: 'chips ab' },
-              el('span', { class: 'mu' }, 'Abgehakte:'),
-              [
-                ['', 'Anzeigen'],
-                ['hide', `Ausblenden (${markedCount})`],
-                ['only', `Nur abgehakte (${anyMarkedCount})`]
-              ].map(([k, l]) =>
-                el(
-                  'button',
-                  { class: 'chip' + (markedFilter === k ? ' on' : ''), onclick: () => setMarkedFilter(k) },
-                  l
-                )
-              )
+              'button',
+              {
+                class: 'fbtn' + (active.length ? ' on' : ''),
+                'aria-expanded': dispoFiltersOpen ? 'true' : 'false',
+                onclick: () => {
+                  dispoFiltersOpen = !dispoFiltersOpen;
+                  render();
+                }
+              },
+              `⚙ Filter${active.length ? ' (' + active.length + ')' : ''} ${dispoFiltersOpen ? '▴' : '▾'}`
             )
           ),
+          ...(active.length
+            ? [
+                el(
+                  'div',
+                  { class: 'fsum chips' },
+                  active.map(([label, reset]) =>
+                    el(
+                      'button',
+                      {
+                        class: 'chip on',
+                        title: 'Filter lösen',
+                        onclick: () => {
+                          reset();
+                          armMarkAll = false;
+                          render();
+                        }
+                      },
+                      label + ' ✕'
+                    )
+                  )
+                )
+              ]
+            : []),
+          panel,
           orderList(view(), true)
         );
         // Hinweis nur wenn zutreffend – app.append() würde false/null sonst als Text anzeigen
@@ -7917,6 +8200,10 @@
             )
           )
         );
+        // aktiven Tab in die Mitte der wischbaren Leiste rücken (die Leiste wird bei jedem Zeichnen neu gebaut)
+        const tabBar = app.querySelector('.tabs'),
+          activeTab = tabBar && tabBar.querySelector('button.on');
+        if (activeTab) tabBar.scrollLeft = activeTab.offsetLeft - (tabBar.clientWidth - activeTab.offsetWidth) / 2;
         if (dispoTab === 'us') {
           drawUsers();
           return;
