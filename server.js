@@ -985,6 +985,8 @@ async function handleApi(req, res, url) {
         try {
           prev = cur && JSON.parse(cur.doc);
         } catch {}
+        // Dauer nur in Viertelstunden; eine ältere, nicht gerundete Zeit darf unverändert bleiben (z. B. beim Bewerten von Prüfobjekten)
+        if (d.min % 15 !== 0 && !(prev && prev.min === d.min)) return { bad: 'Die Dauer muss in Viertelstunden angegeben werden (15, 30, 45 …).' };
         const unchanged = prev && prev.min === d.min && prev.tat === d.tat && prev.dat === d.dat && prev.von === d.von;
         if (unchanged) {
           if (prev.tu) d.tu = prev.tu;
@@ -994,6 +996,7 @@ async function handleApi(req, res, url) {
       sql.upErg.run(match[1], d.team, JSON.stringify(d), changeSeq, user.sap);
       return { sq: changeSeq };
     });
+    if (r.bad) return sendJson(req, res, 400, { error: r.bad });
     if (r.sq == null)
       return sendJson(req, res, 409, {
         error: 'Inzwischen auf einem anderen Gerät geändert',

@@ -114,3 +114,9 @@ Prüflose: Auftrag, Kurztext des Prüfobjektes.
 - **Was mit dem Benutzer protokolliert wird:** jedes gespeicherte Ergebnis (Feld `u` im Ergebnis, im Excel-Export „Zuletzt gespeichert von“), „mit wem gearbeitet“ in der Zeitrückmeldung (Feld `mit`: Kollegen als Schalter, weitere Personen über ein Auswahlfeld; sichtbar auf der Auftragskarte des Disponenten, in der Zeitkarte und im Excel-Export „Gearbeitet mit“), die Zeitrückmeldung (Feld `tu`: wer sie gemacht oder zuletzt geändert hat; Disponent: auf der Auftragskarte „Rückgemeldet … · von Name“, in der Zeitkarte und im Excel-Export „Zeit zurückgemeldet von“), die Gaswarngerät-Bestätigung (Karte und CSV), Nachrichten-Bestätigungen, Anmeldungen und die Benutzerverwaltung (Tabelle `act`, 400 Tage). In der Geräteübersicht steht an jedem Monteur-Gerät der angemeldete Benutzer.
 - **Ohne Anmeldung** liefert der Server Monteuren nichts: Abgleich, Prüfobjekte, Ergebnis speichern und Gaswarngerät bestätigen brauchen den Benutzer-Token. Den Gesamtstand (alle Teams) liefert der Server nur noch dem Disponenten (mit PIN-Token).
 - 5 Fehlversuche pro Benutzer und IP (und 40 pro IP) sperren die Anmeldung 10 Minuten.
+
+## Zeitrückmeldung in Viertelstunden
+
+- Die **Dauer** wird nur in **Viertelstunden** zurückgemeldet: Stunden als Zahl, Minuten als Auswahl (00, 15, 30, 45), dazu die Schnellwahl (15 Min bis 3 Std). Mindestens 15 Minuten, höchstens 24 Stunden. Der Server lehnt andere Werte ab (HTTP 400).
+- **Start/Ende:** „Ende“ rundet immer **auf die nächsthöhere Viertelstunde auf** (mindestens 15 Min; genau 30:00 Min bleibt 30, 30:01 wird 45). Die Meldung nach dem Speichern weist darauf hin.
+- **Ältere Zeiten** ohne Viertelstunden-Raster bleiben unverändert, auch wenn danach Prüfobjekte bewertet werden. Öffnet der Monteur das Formular, steht dort die auf die nächste Viertelstunde aufgerundete Dauer; erst beim Speichern ändert sie sich.

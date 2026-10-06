@@ -501,7 +501,8 @@
         width: 100%;
         margin-bottom: 12px;
       }
-      input.tm {
+      input.tm,
+      select.tm {
         font: inherit;
         font-size: 1.25rem;
         color: var(--tx);
@@ -512,6 +513,10 @@
         width: 72px;
         text-align: center;
         box-sizing: border-box;
+      }
+      select.tm {
+        width: 84px;
+        padding: 10px 6px;
       }
       /* ---- Zeitkarte (Datum, Beginn, Dauer) ---- */
       .zt {
@@ -2382,9 +2387,10 @@
         editIndex = null;
         checklist = { st: 'load' };
         const existingResult = resultOf(order.auftrag);
-        timeHours =
-          existingResult && existingResult.min != null ? String(Math.floor(existingResult.min / 60)) : '';
-        timeMinutes = existingResult && existingResult.min != null ? String(existingResult.min % 60) : '';
+        // ältere, nicht auf Viertelstunden gerundete Zeiten werden im Formular auf die nächste Viertelstunde aufgerundet vorbelegt
+        const shownMin = existingResult && existingResult.min != null ? roundUpQuarter(existingResult.min) : null;
+        timeHours = shownMin != null ? String(Math.floor(shownMin / 60)) : '';
+        timeMinutes = shownMin != null ? String(shownMin % 60) : '';
         timeError = '';
         timeDate =
           existingResult && existingResult.min != null ? performedDate(existingResult) || today() : today();
@@ -2538,6 +2544,8 @@
         return { s: result.s, T: nokTexts };
       }
       // ---- Zeitrückmeldung: Felder min (Minuten), tat (Zeitpunkt), dat (Datum), von (Beginn) im selben Ergebnis-Dokument ----
+      // Die Dauer wird nur in Viertelstunden zurückgemeldet. roundUpQuarter: nächsthöherer Viertelstundenwert (mindestens 15)
+      const roundUpQuarter = minutes => Math.max(15, Math.ceil(minutes / 15) * 15);
       // Dauer als Text: 90 -> „1 Std 30 Min“
       const formatMinutes = m =>
         m >= 60 ? `${Math.floor(m / 60)} Std${m % 60 ? ' ' + (m % 60) + ' Min' : ''}` : `${m} Min`;
@@ -2639,8 +2647,9 @@
         if (!/^\d{4}-\d{2}-\d{2}$/.test(timeDate)) return fail('Bitte ein Datum wählen.');
         if (timeDate > today()) return fail('Das Datum liegt in der Zukunft.');
         if (!/^\d{2}:\d{2}$/.test(timeStart || '')) return fail('Bitte die Beginn-Uhrzeit angeben.');
-        if (minutes < 1 || minutes > 1440)
-          return fail('Bitte eine Dauer zwischen 1 Minute und 24 Stunden eingeben.');
+        if (minutes < 15 || minutes > 1440)
+          return fail('Bitte eine Dauer zwischen 15 Minuten und 24 Stunden eingeben.');
+        if (minutes % 15 !== 0) return fail('Die Dauer wird in Viertelstunden angegeben (15, 30, 45 Min …).');
         timeError = '';
         storeTime(order, items, minutes, timeDate, timeStart);
       }
@@ -2673,7 +2682,8 @@
       function stopTimer(order, items) {
         const start = timerStartOf(order.auftrag);
         if (!start || !items) return;
-        const minutes = Math.max(1, Math.round((Date.now() - start) / 60000));
+        // immer auf die nächsthöhere Viertelstunde aufgerundet (mindestens 15 Minuten)
+        const minutes = Math.max(15, Math.ceil((Date.now() - start) / 900000) * 15);
         if (minutes > 1440) {
           timeError = 'Der Timer läuft schon länger als 24 Stunden – bitte „Verwerfen“ und die Zeit von Hand eintragen.';
           playErrorSound();
@@ -2686,7 +2696,7 @@
         timeHours = String(Math.floor(minutes / 60));
         timeMinutes = String(minutes % 60);
         timeError = '';
-        infoMsg = '⏱ Zeit gespeichert: ' + formatMinutes(minutes);
+        infoMsg = '⏱ Zeit gespeichert: ' + formatMinutes(minutes) + ' (auf die nächste Viertelstunde aufgerundet)';
         storeTime(order, items, minutes, timeDate, timeStart);
       }
       setInterval(() => {
@@ -2936,7 +2946,7 @@
                 '✕'
               )
           ),
-          el('div', { class: 'mu' }, 'Dauer'),
+          el('div', { class: 'mu' }, 'Dauer (in Viertelstunden)'),
           el(
             'div',
             { class: 'qk', 'data-k': 'zq' },
@@ -2962,9 +2972,23 @@
               timeHours = v;
             }),
             el('span', {}, 'Std'),
-            numberInput('m', timeMinutes, v => {
-              timeMinutes = v;
-            }),
+            el(
+              'select',
+              {
+                class: 'tm',
+                'aria-label': 'Minuten (Viertelstunden)',
+                onchange: e => {
+                  timeMinutes = e.target.value;
+                }
+              },
+              ['0', '15', '30', '45'].map(v =>
+                el(
+                  'option',
+                  { value: v, ...((timeMinutes || '0') === v ? { selected: 'selected' } : {}) },
+                  v.padStart(2, '0')
+                )
+              )
+            ),
             el('span', {}, 'Min')
           ),
           el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'),
