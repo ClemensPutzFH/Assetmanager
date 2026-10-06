@@ -1720,8 +1720,10 @@
         dispoUnlocked = false,
         pinInput = '',
         pinError = false,
-        // timeWith: SAP-User der Kollegen, mit denen gearbeitet wurde (Auswahl in der Zeitkarte)
+        // timeWith: SAP-User der Kollegen, mit denen gearbeitet wurde (Auswahl in der Zeitkarte) ·
+        // timeWithAuto: Vorauswahl „alle aus dem Team“ steht noch aus (wird einmal angewendet, nicht mehr nach einer Änderung)
         timeWith = [],
+        timeWithAuto = false,
         // timeHours … timeStart: Eingabefelder der Zeitkarte (Stunden, Minuten, Fehlertext, Datum, Beginn)
         timeHours = '',
         timeMinutes = '',
@@ -2389,6 +2391,9 @@
         timeStart =
           existingResult && existingResult.min != null && existingResult.von ? existingResult.von : '';
         timeWith = existingResult && existingResult.min != null && existingResult.mit ? [...existingResult.mit] : [];
+        // neue Zeit: alle aus dem Team sind vorausgewählt (sobald die Kollegenliste da ist), solange der Monteur nichts ändert
+        timeWithAuto = session.role === 'monteur' && !(existingResult && existingResult.min != null);
+        applyDefaultWith(order);
         if (session.role === 'monteur') loadColleagues(order.team);
         timeFormAtOpen = timeFormSnapshot();
         render();
@@ -2567,6 +2572,15 @@
           for (const c of list) userNames.set(c.sap, c.name);
         }
       } catch (e) {}
+      // Vorauswahl: alle Benutzer, deren Team dieses Team ist. Gilt nicht als Änderung (kein „nicht gespeichert“-Hinweis).
+      function applyDefaultWith(order) {
+        const list = colleagueCache.get(order.team);
+        if (!timeWithAuto || !list || !openOrder || openOrder.auftrag !== order.auftrag) return;
+        timeWithAuto = false;
+        const clean = timeFormSnapshot() === timeFormAtOpen;
+        timeWith = list.filter(c => c.team === order.team).map(c => c.sap);
+        if (clean) timeFormAtOpen = timeFormSnapshot();
+      }
       async function loadColleagues(team) {
         try {
           const list = (await api('GET', '/api/colleagues?team=' + encodeURIComponent(team))).list;
@@ -2575,6 +2589,7 @@
           try {
             localStorage.setItem('col', JSON.stringify(Object.fromEntries(colleagueCache)));
           } catch (e) {}
+          if (openOrder && openOrder.team === team) applyDefaultWith(openOrder);
           render();
         } catch (e) {}
       }
@@ -2760,6 +2775,7 @@
             others = list.filter(c => !nearSaps.has(c.sap) && !timeWith.includes(c.sap)),
             shown = [...near.map(c => c.sap), ...timeWith.filter(x => !nearSaps.has(x))],
             toggle = sap => {
+              timeWithAuto = false;
               timeWith = timeWith.includes(sap) ? timeWith.filter(x => x !== sap) : [...timeWith, sap];
               render();
             };
@@ -2790,6 +2806,7 @@
                   'aria-label': 'Weitere Person hinzufügen',
                   onchange: e => {
                     if (!e.target.value) return;
+                    timeWithAuto = false;
                     timeWith = [...timeWith, e.target.value];
                     render();
                   }
@@ -5171,7 +5188,7 @@
         if (
           timeFormAtOpen &&
           timeFormSnapshot() !== timeFormAtOpen &&
-          ((result && result.min != null) || timeHours || timeMinutes || timeStart || timeWith.length)
+          ((result && result.min != null) || timeHours || timeMinutes || timeStart)
         ) {
           unsaved = true;
           warnings.unshift(['Die eingegebene Zeit ist noch nicht gespeichert', '[data-zeit]']);
