@@ -2253,7 +2253,7 @@
       const filterChips = (items, cur, set) =>
         el(
           'div',
-          { class: 'chips' },
+          { class: 'chips', 'data-k': 'fc' },
           items.map(([k, l, n]) =>
             el(
               'button',
@@ -5723,7 +5723,7 @@
         app.append(
           el(
             'div',
-            { class: 'flt' },
+            { class: 'flt', 'data-k': 'fl' },
             el('span', { class: 'mu' }, 'Team'),
             teamSelect,
             teamFilter &&
@@ -5881,7 +5881,7 @@
         app.append(
           el(
             'div',
-            { class: 'srow' },
+            { class: 'srow', 'data-k': 'sr' },
             searchBox(v => {
               searchText = v;
               armMarkAll = false;
@@ -6105,7 +6105,7 @@
         app.append(
           el(
             'div',
-            { class: 'flt' },
+            { class: 'flt', 'data-k': 'fl' },
             el('span', { class: 'mu' }, 'Team'),
             el(
               'select',
