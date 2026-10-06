@@ -5190,8 +5190,16 @@
         }
         return snap.size ? snap : null;
       }
-      function animateRemoved(snap) {
-        if (!snap || !listStable || !app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      // tauscht die Liste in `container` aus, ohne die ganze Seite neu zu zeichnen (Suche der Monteur-Ansicht), mit denselben Animationen
+      function swapList(container, list) {
+        if (viewAnim) viewAnim.forEach(a => a.cancel()); // laufende Verschiebungen beenden, bevor die Positionen gemessen werden
+        viewAnim = null;
+        const snap = snapshotList();
+        container.replaceChildren(list);
+        animateRemoved(snap, true);
+      }
+      function animateRemoved(snap, force = false) {
+        if (!snap || !(force || listStable) || !app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
         const now = new Map();
         for (const n of app.querySelectorAll('[data-list] > [data-k]')) now.set(n.dataset.k, n);
         if (!now.size && !app.querySelector('[data-list]')) return;
@@ -5648,7 +5656,7 @@
         const container = el('div', {});
         const searchRow = searchBox(v => {
           searchText = v;
-          container.replaceChildren(orderList(view(), false));
+          swapList(container, orderList(view(), false));
         });
         searchRow.append(fontScaleButtons()); // Schriftgröße neben der Suche: Kopfzeile bleibt unverändert
         const controls = el(
