@@ -3475,7 +3475,7 @@
           el('p', { class: 'mu' }, filtered.length === 1 ? '1 Auftrag' : `${filtered.length} Aufträge`),
           el(
             'div',
-            { class: 'grid' },
+            { class: 'grid', 'data-list': '1' },
             filtered.slice(0, 300).map(r => orderCard(r, showTeam))
           )
         );
@@ -5070,47 +5070,70 @@
       // Einblendung beim Seitenwechsel: nur wenn sich die Ansicht ändert (Rolle, Team, Dispo-Tab, Auftrag auf/zu), nicht bei
       // jedem Neuzeichnen. Läuft nach der Scroll-Korrektur (die Verschiebung würde sonst die Messung verfälschen).
       // Auftrag öffnen: von rechts, schließen: von links, sonst von unten; die Blöcke kommen leicht gestaffelt.
+      // Ändert sich nur ein Filter (nicht die Suche), blenden die Karten der Liste ([data-list]) neu ein, die Filterleiste bleibt.
       // Zeichnet render() während der Einblendung neu (z. B. wenn Daten eintreffen), läuft sie an der gleichen Stelle weiter.
       // viewAnim: laufende Animationen · viewKey / viewDepth: zuletzt gezeigte Ansicht und ob ein Auftrag offen war ·
-      // viewFrom / viewStart: Startposition und Startzeit der letzten Einblendung
+      // filterKey: zuletzt gezeigte Filterwahl · viewFrom / viewStart / listStart: Startposition und Startzeit der Einblendungen
       const VIEW_MS = 260,
-        VIEW_STAGGER_MS = 25;
+        VIEW_STAGGER_MS = 25,
+        LIST_MS = 220,
+        LIST_STAGGER_MS = 20;
       let viewAnim = null,
         viewKey = null,
         viewDepth = 0,
+        filterKey = '',
         viewFrom = '',
-        viewStart = 0;
-      function animateView() {
-        const key = openOrder
-            ? 'o'
-            : [session.role, session.team, dispoUnlocked, session.role === 'dispo' ? dispoTab : ''].join('|'),
-          depth = openOrder ? 1 : 0,
-          changed = viewKey !== null && key !== viewKey,
-          now = performance.now();
-        if (changed) {
-          viewFrom =
-            depth > viewDepth ? 'translateX(28px)' : depth < viewDepth ? 'translateX(-28px)' : 'translateY(10px)';
-          viewStart = now;
-        }
-        viewKey = key;
-        viewDepth = depth;
-        const elapsed = now - viewStart,
-          blocks = [...app.children].slice(0, 10);
-        if (
-          !app.animate ||
-          !viewFrom ||
-          elapsed > VIEW_MS + blocks.length * VIEW_STAGGER_MS ||
-          matchMedia('(prefers-reduced-motion: reduce)').matches
-        )
-          return;
-        viewAnim = blocks.map((n, i) =>
-          n.animate([{ opacity: 0, transform: viewFrom }, { opacity: 1, transform: 'none' }], {
-            duration: VIEW_MS,
-            delay: i * VIEW_STAGGER_MS - elapsed,
+        viewStart = 0,
+        listStart = -1e9;
+      // Wirkt eine Einblendung noch (Start + Dauer + Staffelung)? Dann bei jedem Neuzeichnen an der gleichen Stelle fortsetzen.
+      function fadeIn(nodes, from, start, ms, stagger) {
+        const elapsed = performance.now() - start;
+        if (elapsed > ms + nodes.length * stagger) return [];
+        return nodes.map((n, i) =>
+          n.animate([{ opacity: 0, transform: from }, { opacity: 1, transform: 'none' }], {
+            duration: ms,
+            delay: i * stagger - elapsed,
             easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
             fill: 'backwards'
           })
         );
+      }
+      function animateView() {
+        const key = openOrder
+            ? 'o'
+            : [session.role, session.team, dispoUnlocked, session.role === 'dispo' ? dispoTab : ''].join('|'),
+          filters = [
+            teamFilter,
+            statusFilter,
+            markedFilter,
+            reportedFilter,
+            reportedFrom,
+            reportedTo,
+            monteurFilter,
+            deviceTeamFilter
+          ].join('|'),
+          depth = openOrder ? 1 : 0,
+          changed = viewKey !== null && key !== viewKey;
+        if (changed) {
+          viewFrom =
+            depth > viewDepth ? 'translateX(28px)' : depth < viewDepth ? 'translateX(-28px)' : 'translateY(10px)';
+          viewStart = performance.now();
+          listStart = -1e9;
+        } else if (viewKey !== null && filters !== filterKey) listStart = performance.now();
+        viewKey = key;
+        viewDepth = depth;
+        filterKey = filters;
+        if (!app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        viewAnim = [
+          ...(viewFrom ? fadeIn([...app.children].slice(0, 10), viewFrom, viewStart, VIEW_MS, VIEW_STAGGER_MS) : []),
+          ...fadeIn(
+            [...app.querySelectorAll('[data-list] > *')].slice(0, 12),
+            'translateY(8px)',
+            listStart,
+            LIST_MS,
+            LIST_STAGGER_MS
+          )
+        ];
       }
       // ---- Ansichten: draw() wählt je Zustand genau eine aus ----
 
@@ -6247,7 +6270,7 @@
         app.append(
           el(
             'div',
-            { class: 'grid' },
+            { class: 'grid', 'data-list': '1' },
             sorted.map(device => {
               const kind = deviceKind(device.ua),
                 where = device.role === 'dispo' ? 'Disponent' : device.role === 'monteur' ? 'Monteur' : 'Abgemeldet',
