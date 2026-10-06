@@ -3983,12 +3983,15 @@
         return m ? `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : '';
       };
       const dateDe = t => (isoOfDate(t) ? formatIsoDate(isoOfDate(t)) : String(t || ''));
-      // Fälligkeit nach dem Endtermin (nur für nicht erledigte Aufträge): überfällig | heute | in höchstens 3 Tagen, sonst null
+      // Fälligkeit nach dem Endtermin (nur für nicht erledigte Aufträge): überfällig | heute | in höchstens 3 Tagen, sonst null.
+      // Die Aufträge gelten für das ganze Jahr: „überfällig“ gibt es deshalb nur, wenn der Endtermin im Vorjahr (oder früher) liegt.
       const dueInfo = order => {
         const end = isoOfDate(order.ende);
         if (!end || isFinished(order)) return null;
-        const days = Math.round((new Date(end + 'T12:00:00') - new Date(today() + 'T12:00:00')) / 864e5);
-        return days < 0 ? { kind: 'over', days: -days } : days <= 3 ? { kind: days ? 'soon' : 'today', days } : null;
+        const now = today(),
+          days = Math.round((new Date(end + 'T12:00:00') - new Date(now + 'T12:00:00')) / 864e5);
+        if (days < 0) return end.slice(0, 4) < now.slice(0, 4) ? { kind: 'over', days: -days } : null;
+        return days <= 3 ? { kind: days ? 'soon' : 'today', days } : null;
       };
       const dueTag = order => {
         const d = dueInfo(order);
