@@ -1611,8 +1611,10 @@
       // ---- Geräteübersicht (Disponent) ----
       // deviceList: Geräte vom Server (null = noch nicht geladen) · deviceListOffset: Serveruhr minus Geräteuhr (für „vor … Min“) ·
       // deviceListError: Ladefehler · deviceRenameId / deviceRenameText: Gerät, dessen Spitzname gerade bearbeitet wird ·
-      // deviceLogoutArmed: Gerät, bei dem „Ausloggen“ einmal angetippt wurde (zweiter Tipp bestätigt)
-      let deviceList = null,
+      // deviceLogoutArmed: Gerät, bei dem „Ausloggen“ einmal angetippt wurde (zweiter Tipp bestätigt) ·
+      // deviceTeamFilter: Team-Filter der Geräteliste ('' = alle | '\u0000d' = Disponenten | '\u0000n' = ohne Team)
+      let deviceTeamFilter = '',
+        deviceList = null,
         deviceListOffset = 0,
         deviceListError = '',
         deviceRenameId = null,
@@ -4861,6 +4863,7 @@
         session = { role, team: team || null };
         searchText = '';
         teamFilter = '';
+        deviceTeamFilter = '';
         monteurFilter = 'open';
         reportedFilter = '';
         reportedFrom = '';
@@ -6066,20 +6069,91 @@
             deviceListError && el('p', { class: 'mu er' }, deviceListError)
           )
         );
-        // angemeldete Geräte zuerst, innerhalb davon das zuletzt aktive
-        const sorted = [...deviceList].sort((a, b) => (b.role ? 1 : 0) - (a.role ? 1 : 0) || b.seen - a.seen);
+        // Team-Filter: alle Teams der Monteur-Geräte (mit Anzahl Geräte und davon online), dazu Disponenten und „ohne Team“
+        const DEV_DISPO = '\u0000d',
+          DEV_NOTEAM = '\u0000n',
+          matchesDeviceTeam = device =>
+            !deviceTeamFilter ||
+            (deviceTeamFilter === DEV_DISPO
+              ? device.role === 'dispo'
+              : deviceTeamFilter === DEV_NOTEAM
+                ? device.role === 'monteur' && !device.team
+                : device.role === 'monteur' && device.team === deviceTeamFilter),
+          deviceTeams = new Map();
+        let dispoDevices = 0,
+          noTeamDevices = 0;
+        for (const device of deviceList) {
+          if (device.role === 'dispo') dispoDevices++;
+          else if (device.role === 'monteur' && !device.team) noTeamDevices++;
+          else if (device.role === 'monteur') {
+            const c = deviceTeams.get(device.team) || [0, 0];
+            c[0]++;
+            if (isOnline(device)) c[1]++;
+            deviceTeams.set(device.team, c);
+          }
+        }
+        // gewähltes Team gibt es nicht mehr (z. B. Gerät hat gewechselt): Filter aufheben
+        if (
+          deviceTeamFilter &&
+          deviceTeamFilter !== DEV_DISPO &&
+          deviceTeamFilter !== DEV_NOTEAM &&
+          !deviceTeams.has(deviceTeamFilter)
+        )
+          deviceTeamFilter = '';
+        const deviceOpt = (value, label) =>
+          el('option', { value, ...(value === deviceTeamFilter ? { selected: 'selected' } : {}) }, label);
+        app.append(
+          el(
+            'div',
+            { class: 'flt' },
+            el('span', { class: 'mu' }, 'Team'),
+            el(
+              'select',
+              {
+                onchange: e => {
+                  deviceTeamFilter = e.target.value;
+                  deviceLogoutArmed = null;
+                  render();
+                }
+              },
+              deviceOpt('', `Alle Geräte (${deviceList.length})`),
+              [...deviceTeams]
+                .sort((a, b) => naturalCompare(a[0], b[0]))
+                .map(([t, c]) => deviceOpt(t, `${t} (${c[0]} · ${c[1]} online)`)),
+              noTeamDevices > 0 && deviceOpt(DEV_NOTEAM, `Monteur ohne Team (${noTeamDevices})`),
+              dispoDevices > 0 && deviceOpt(DEV_DISPO, `Disponenten (${dispoDevices})`)
+            ),
+            deviceTeamFilter &&
+              el(
+                'button',
+                {
+                  class: 'rs',
+                  onclick: () => {
+                    deviceTeamFilter = '';
+                    deviceLogoutArmed = null;
+                    render();
+                  }
+                },
+                '✕ Teamfilter aufheben'
+              )
+          )
+        );
+        // angemeldete Geräte zuerst, innerhalb davon online vor offline und das zuletzt aktive
+        const sorted = deviceList
+          .filter(matchesDeviceTeam)
+          .sort(
+            (a, b) =>
+              (b.role ? 1 : 0) - (a.role ? 1 : 0) || isOnline(b) - isOnline(a) || b.seen - a.seen
+          );
+        if (!sorted.length) app.append(el('p', { class: 'mu' }, 'Keine Geräte in diesem Team.'));
         app.append(
           el(
             'div',
             { class: 'grid' },
             sorted.map(device => {
               const kind = deviceKind(device.ua),
-                where =
-                  device.role === 'dispo'
-                    ? 'Disponent'
-                    : device.role === 'monteur'
-                      ? 'Monteur · ' + (device.team || 'kein Team gewählt')
-                      : 'Abgemeldet',
+                where = device.role === 'dispo' ? 'Disponent' : device.role === 'monteur' ? 'Monteur' : 'Abgemeldet',
+                online = isOnline(device),
                 renaming = deviceRenameId === device.did;
               return el(
                 'div',
@@ -6089,11 +6163,14 @@
                   { class: 'row' },
                   el('b', {}, device.name || kind),
                   device.did === deviceId && el('span', { class: 'tag' }, 'Dieses Gerät'),
-                  el(
-                    'span',
-                    { class: 'tag ' + (device.role === 'dispo' ? 'st-teil' : device.role ? 'st-ok' : '') },
-                    where
-                  ),
+                  el('span', { class: 'tag ' + (online ? 'st-ok' : '') }, online ? '● Online' : '○ Offline'),
+                  el('span', { class: 'tag ' + (device.role === 'dispo' ? 'st-teil' : '') }, where),
+                  device.role === 'monteur' &&
+                    el(
+                      'span',
+                      { class: 'tag ' + (device.team ? 'st-teil' : 'st-zf') },
+                      '👥 ' + (device.team || 'kein Team gewählt')
+                    ),
                   device.kick && el('span', { class: 'tag st-zf' }, '⏳ Gerät noch nicht informiert')
                 ),
                 el(
@@ -6104,8 +6181,8 @@
                 el(
                   'div',
                   { class: 'mu' },
-                  el('span', { class: 'dv-dot' + (isOnline(device) ? ' on' : '') }),
-                  isOnline(device) ? 'online' : 'Zuletzt aktiv ' + agoText(device.seen, now)
+                  el('span', { class: 'dv-dot' + (online ? ' on' : '') }),
+                  online ? 'Online – gerade aktiv' : 'Offline – zuletzt aktiv ' + agoText(device.seen, now)
                 ),
                 device.role === 'monteur' &&
                   el(
