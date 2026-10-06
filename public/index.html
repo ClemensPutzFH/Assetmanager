@@ -5906,6 +5906,7 @@
        * Eingabefelds (data-keep) wieder her. Alle Änderungen am Zustand enden mit einem Aufruf von render().
        */
       function render() {
+        syncLoginFields(); // Autofill-Werte der Anmeldeseite retten, bevor draw() die Felder neu aufbaut
         if (viewAnim) viewAnim.forEach(a => a.cancel()); // laufende Einblendung beenden, bevor die Positionen gemessen werden
         viewAnim = null;
         const focused = document.activeElement,
@@ -6566,9 +6567,26 @@
         );
       }
 
+      // Browser-Autofill (Passwortmanager) füllt die Felder oft ohne input-Ereignis: loginUser/loginPass bleiben dann leer, und
+      // jedes Neuzeichnen würde die ausgefüllten Felder wieder leeren. Darum die Werte direkt aus den Feldern übernehmen
+      // (beim Absenden und in render() vor dem Neuzeichnen).
+      function syncLoginFields() {
+        const u = document.getElementById('lgu'),
+          p = document.getElementById('lgp');
+        if (u) loginUser = u.value;
+        if (p) loginPass = p.value;
+      }
+      // Passwort leeren – auch im Feld, sonst holt syncLoginFields() es beim nächsten Neuzeichnen zurück
+      function clearLoginPass() {
+        loginPass = '';
+        const p = document.getElementById('lgp');
+        if (p) p.value = '';
+      }
+
       // Anmeldung der Monteure: SAP-User + Passwort (POST /api/user/login). Danach wird das Team aus der Benutzerverwaltung gewählt.
       function drawMonteurLogin(back) {
         const submit = async () => {
+          syncLoginFields();
           const user = loginUser.trim(),
             password = loginPass;
           if (loginBusy) return;
@@ -6587,12 +6605,12 @@
             const last = userInfo && userInfo.sap === r.user.sap ? userInfo.last : null;
             userInfo = { sap: r.user.sap, name: r.user.name, team: r.user.team, lock: !!r.user.lock, last };
             saveUser();
-            loginPass = '';
+            clearLoginPass();
             loginBusy = false;
             switchRole('monteur', (r.user.lock ? null : last) || r.user.team || undefined);
           } catch (e) {
             loginBusy = false;
-            loginPass = '';
+            clearLoginPass();
             loginError = e.net ? 'Keine Verbindung zum Server' : e.message || 'Anmeldung fehlgeschlagen.';
             render();
             const n = app.querySelector('[data-keep="lp"]');
@@ -6615,6 +6633,7 @@
             el('input', {
               id: 'lgu',
               type: 'text',
+              name: 'username',
               autocomplete: 'username',
               autocapitalize: 'characters',
               autocorrect: 'off',
@@ -6630,6 +6649,7 @@
             el('input', {
               id: 'lgp',
               type: 'password',
+              name: 'password',
               autocomplete: 'current-password',
               maxlength: '100',
               'data-keep': 'lp',
@@ -6648,7 +6668,7 @@
         userToken = '';
         userInfo = null;
         saveUser();
-        loginPass = '';
+        clearLoginPass();
         loginError = '';
         switchRole(null);
       }
