@@ -5047,6 +5047,50 @@
         },
         true
       );
+      // „Alles OK“ und „Ja“ (Rückfrage) verschwinden beim Tippen sofort aus dem DOM (neu gezeichnet). Damit man trotzdem die
+      // gleiche kleine Rückmeldung wie beim OK-Button sieht, federt eine Kopie des Buttons an seiner Stelle und blendet aus
+      // (fixed, ohne Einfluss auf das Layout, nicht antippbar). Der „Ja“-Klick in den ersten 250 ms zählt nicht (siehe
+      // armAllOk) und löst daher auch nichts aus.
+      document.addEventListener(
+        'click',
+        e => {
+          const t = e.target instanceof Element ? e.target : e.target.parentElement,
+            btn = t && t.closest('button.allok, .cfm button.yes');
+          if (!btn || !app.contains(btn) || !btn.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+          if (btn.classList.contains('yes') && armAllOk && Date.now() - armAllOk < 250) return;
+          const r = btn.getBoundingClientRect(),
+            cs = getComputedStyle(btn),
+            ghost = btn.cloneNode(true);
+          // Aussehen mitnehmen: Stile wie „.cfm button.yes“ greifen außerhalb der Rückfrage nicht mehr
+          for (const prop of ['backgroundColor', 'color', 'border', 'borderRadius', 'font', 'padding', 'textAlign'])
+            ghost.style[prop] = cs[prop];
+          Object.assign(ghost.style, {
+            position: 'fixed',
+            left: r.left + 'px',
+            top: r.top + 'px',
+            width: r.width + 'px',
+            height: r.height + 'px',
+            margin: '0',
+            boxSizing: 'border-box',
+            pointerEvents: 'none',
+            zIndex: '4'
+          });
+          ghost.setAttribute('aria-hidden', 'true');
+          ghost.tabIndex = -1;
+          document.body.append(ghost);
+          ghost
+            .animate(
+              [
+                { transform: 'scale(0.96)', opacity: 1 },
+                { transform: 'scale(1.03)', opacity: 1, offset: 0.4 },
+                { transform: 'scale(1.06)', opacity: 0 }
+              ],
+              { duration: OK_POP_MS, easing: 'ease-out', fill: 'forwards' }
+            )
+            .finished.then(() => ghost.remove(), () => ghost.remove());
+        },
+        true
+      );
       // sichtbare data-k-Elemente samt Abstand zum oberen Rand, nach Wichtigkeit sortiert (Grundlage für die Scroll-Stabilität)
       function viewportAnchors() {
         const marked = app.querySelectorAll('[data-k]');
