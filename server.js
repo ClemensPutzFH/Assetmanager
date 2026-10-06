@@ -244,6 +244,10 @@ const sql = {
   loginUsr: db.prepare('UPDATE usr SET login_at=? WHERE sap=?'),
   delUsr: db.prepare('DELETE FROM usr WHERE sap=?'),
   unlinkDevs: db.prepare('UPDATE dev SET usr=NULL WHERE usr=?'),
+  // Kollegen für „mit wem gearbeitet“: alle aktiven Benutzer außer dem anfragenden; here = hat in letzter Zeit ein Gerät in diesem Team
+  colleagues: db.prepare(
+    "SELECT sap, trim(first || ' ' || last) name, team, EXISTS(SELECT 1 FROM dev WHERE dev.usr=usr.sap AND dev.team=? AND dev.seen>?) here FROM usr WHERE active=1 AND sap<>? ORDER BY last, first"
+  ),
   usrNames: db.prepare("SELECT sap, trim(first || ' ' || last) name FROM usr ORDER BY last, first"),
   addAct: db.prepare('INSERT INTO act(at,usr,did,team,kind,ref,info) VALUES(?,?,?,?,?,?,?)'),
   listAct: db.prepare('SELECT at, did, team, kind, ref, info FROM act WHERE usr=? ORDER BY id DESC LIMIT ?'),
@@ -735,6 +739,11 @@ function cleanResultDoc(orderNo, doc) {
     clean.tat = +doc.tat || Date.now();
     if (/^\d{4}-\d{2}-\d{2}$/.test(doc.dat || '')) clean.dat = doc.dat;
     if (/^\d{2}:\d{2}$/.test(doc.von || '')) clean.von = doc.von;
+    // mit wem gearbeitet (SAP-User der Kollegen, höchstens 10); der Server streicht unbekannte und den Speichernden selbst
+    if (Array.isArray(doc.mit)) {
+      const mit = [...new Set(doc.mit.map(normalizeSap).filter(x => validSap(x) && sql.getUsr.get(x)))].slice(0, 10);
+      if (mit.length) clean.mit = mit;
+    }
   }
   return clean;
 }
@@ -914,6 +923,15 @@ async function handleApi(req, res, url) {
     }
     return sendJson(req, res, 200, out);
   }
+  // Monteur: Kollegen zur Auswahl bei der Zeitrückmeldung („mit wem gearbeitet“). ?team=<Team>: here = hatte zuletzt ein Gerät in diesem Team
+  if (pathname === '/api/colleagues' && method === 'GET') {
+    const user = userFromRequest(req);
+    if (!user) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
+    const list = sql.colleagues
+      .all(clipString(params.get('team'), 100), Date.now() - 7 * 864e5, user.sap)
+      .map(r => ({ sap: r.sap, name: r.name, team: r.team, here: !!r.here }));
+    return sendJson(req, res, 200, { list });
+  }
   // Prüfobjekte lesen: ?a=<Auftrag> liefert eine Liste, ?team=<Team>&since=<Nr> alle geänderten Listen des Teams
   if (pathname === '/api/pruef' && method === 'GET') {
     const pruefUser = isDispo(req) ? null : userFromRequest(req);
@@ -952,6 +970,10 @@ async function handleApi(req, res, url) {
       base = body._b == null ? null : Number(body._b);
     if (!teamAllowed(user, d.team))
       return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt – dieser Auftrag gehört zu einem anderen Team.' });
+    if (d.mit) {
+      d.mit = d.mit.filter(x => x !== user.sap);
+      if (!d.mit.length) delete d.mit;
+    }
     d.u = user.sap; // wer das Ergebnis zuletzt gespeichert hat (kommt aus der Anmeldung, nicht vom Gerät)
     const r = await inBatch(() => {
       const cur = sql.getErg.get(match[1]);

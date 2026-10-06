@@ -1599,7 +1599,8 @@
        *   Auftrag        { auftrag, team, tp (Techn. Platz), art, plz, str, kurz, start, ende }
        *   Prüfobjekte    Liste von Kurztexten je Auftrag (aus dem Prüflos-Excel)
        *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von?, u?, tu? } je Auftrag (u = SAP-User, der zuletzt gespeichert hat,
-       *                  tu = SAP-User, der die Zeit zurückgemeldet hat – beide setzt der Server):
+       *                  tu = SAP-User, der die Zeit zurückgemeldet hat – beide setzt der Server,
+       *                  mit = SAP-User der Kollegen, mit denen gearbeitet wurde):
        *                    n = Anzahl Prüfobjekte, ok / nx = Anzahl OK / Nicht OK,
        *                    s = Status-String, ein Zeichen je Prüfobjekt: 'o' OK, 'x' Nicht OK, '-' offen,
        *                    nok = [{ i: Index, t: Kurztext, m: Text des Monteurs }],
@@ -1710,6 +1711,8 @@
         dispoUnlocked = false,
         pinInput = '',
         pinError = false,
+        // timeWith: SAP-User der Kollegen, mit denen gearbeitet wurde (Auswahl in der Zeitkarte)
+        timeWith = [],
         // timeHours … timeStart: Eingabefelder der Zeitkarte (Stunden, Minuten, Fehlertext, Datum, Beginn)
         timeHours = '',
         timeMinutes = '',
@@ -1818,6 +1821,10 @@
       // Name zu einem SAP-User (Disponent kennt alle Namen, sonst nur der SAP-User selbst)
       const userLabel = sap =>
         !sap ? '' : userNames.get(sap) ? `${userNames.get(sap)} (${sap})` : userInfo && userInfo.sap === sap ? `${userInfo.name} (${sap})` : sap;
+      // nur der Name (ohne SAP-User); ohne bekannten Namen der SAP-User
+      const userShort = sap => userNames.get(sap) || (userInfo && userInfo.sap === sap ? userInfo.name : sap);
+      // „Anna Muster, Max Beispiel“ für eine Liste von SAP-Usern
+      const userNamesText = saps => (saps || []).map(userShort).join(', ');
       // session: { role: 'monteur' | 'dispo' | null, team } – wird im Gerät gespeichert
       let session = { role: null, team: null };
       try {
@@ -2242,6 +2249,7 @@
               'Dauer (Std)',
               'Zeit zurückgemeldet am',
               'Zeit zurückgemeldet von',
+              'Gearbeitet mit',
               'Nicht OK – Prüfobjekt → Text',
               'Hinweis',
               'Abgehakt am',
@@ -2296,6 +2304,7 @@
               status.min != null ? Math.round((status.min / 60) * 100) / 100 : null,
               status.tat ? new Date(status.tat).toLocaleString('de-AT') : null,
               status.tu ? userLabel(status.tu) : null,
+              status.mit && status.mit.length ? status.mit.map(userLabel).join(', ') : null,
               status.nok.map(z => (z.m ? `${z.t} → ${z.m}` : z.t)).join(' | '),
               stale ? 'Prüfliste seit der Bewertung geändert' : '',
               markState(order.auftrag)
@@ -2370,6 +2379,8 @@
           existingResult && existingResult.min != null ? performedDate(existingResult) || today() : today();
         timeStart =
           existingResult && existingResult.min != null && existingResult.von ? existingResult.von : '';
+        timeWith = existingResult && existingResult.min != null && existingResult.mit ? [...existingResult.mit] : [];
+        if (session.role === 'monteur') loadColleagues(order.team);
         timeFormAtOpen = timeFormSnapshot();
         render();
         try {
@@ -2537,6 +2548,27 @@
         /^\d{2}:\d{2}$/.test(v || '') ? (+v.slice(0, 2) * 60 + +v.slice(3, 5)) / 1440 : null;
       // „Durchgeführt am“: das gewählte Datum, sonst das Datum der Rückmeldung
       const performedDate = d => d.dat || (d.tat ? new Date(d.tat).toLocaleDateString('sv-SE') : '');
+      // ---- Kollegen („mit wem gearbeitet“) ----
+      // colleagueCache: Team -> [{ sap, name, team, here }] (alle aktiven Benutzer außer dem eigenen; here = zuletzt in diesem Team
+      // unterwegs). Wird im Gerät gemerkt, damit die Auswahl auch ohne Netz da ist.
+      const colleagueCache = new Map();
+      try {
+        for (const [team, list] of Object.entries(JSON.parse(localStorage.getItem('col') || '{}'))) {
+          colleagueCache.set(team, list);
+          for (const c of list) userNames.set(c.sap, c.name);
+        }
+      } catch (e) {}
+      async function loadColleagues(team) {
+        try {
+          const list = (await api('GET', '/api/colleagues?team=' + encodeURIComponent(team))).list;
+          colleagueCache.set(team, list);
+          for (const c of list) userNames.set(c.sap, c.name);
+          try {
+            localStorage.setItem('col', JSON.stringify(Object.fromEntries(colleagueCache)));
+          } catch (e) {}
+          render();
+        } catch (e) {}
+      }
       /**
        * Speichert Zeitfelder im Ergebnis-Dokument (min > 0) bzw. löscht sie (min leer/0). Gibt es noch keine gültige
        * Bewertung, wird ein leeres Dokument angelegt – so kann die Zeit vor den Prüfobjekten erfasst werden.
@@ -2555,6 +2587,7 @@
         delete doc.tat;
         delete doc.dat;
         delete doc.von;
+        delete doc.mit;
         if (minutes > 0) {
           delete runningTimers[order.auftrag]; // die Zeit ist jetzt gespeichert: ein laufender Timer ist erledigt
           saveTimers();
@@ -2562,6 +2595,7 @@
           doc.tat = Date.now();
           if (date) doc.dat = date;
           if (start) doc.von = start;
+          if (timeWith.length) doc.mit = [...timeWith];
         }
         doc._b = serverBaseOf(order.auftrag);
         outbox.set(order.auftrag, doc);
@@ -2640,6 +2674,7 @@
         timeMinutes = '';
         timeError = '';
         timeStart = '';
+        timeWith = [];
         timeDate = today();
         storeTime(order, items, null);
       }
@@ -2664,6 +2699,7 @@
               : 'Noch keine Zeit zurückgemeldet.'
           ),
           hasTime && result.tu && el('p', { class: 'mu' }, '👤 Zeit zurückgemeldet von ' + userLabel(result.tu)),
+          hasTime && result.mit && el('p', { class: 'mu' }, '👥 Gearbeitet mit: ' + userNamesText(result.mit)),
           result &&
             result.u &&
             result.u !== result.tu &&
@@ -2707,6 +2743,53 @@
               set((e.target.value = e.target.value.replace(/\D/g, '')));
             }
           });
+        // Auswahl der Kollegen: Teammitglieder (und wer zuletzt in diesem Team war) als Schalter, alle weiteren über das Auswahlfeld
+        const withPicker = order => {
+          const list = colleagueCache.get(order.team) || [],
+            near = list.filter(c => c.team === order.team || c.here),
+            nearSaps = new Set(near.map(c => c.sap)),
+            others = list.filter(c => !nearSaps.has(c.sap) && !timeWith.includes(c.sap)),
+            shown = [...near.map(c => c.sap), ...timeWith.filter(x => !nearSaps.has(x))],
+            toggle = sap => {
+              timeWith = timeWith.includes(sap) ? timeWith.filter(x => x !== sap) : [...timeWith, sap];
+              render();
+            };
+          return el(
+            'div',
+            { class: 'wp', 'data-k': 'zw' },
+            shown.length
+              ? el(
+                  'div',
+                  { class: 'chips' },
+                  shown.map(sap =>
+                    el(
+                      'button',
+                      {
+                        class: 'chip' + (timeWith.includes(sap) ? ' on' : ''),
+                        'aria-pressed': timeWith.includes(sap) ? 'true' : 'false',
+                        onclick: () => toggle(sap)
+                      },
+                      (timeWith.includes(sap) ? '✓ ' : '') + userShort(sap)
+                    )
+                  )
+                )
+              : el('p', { class: 'mu' }, list.length ? 'Keine weiteren Personen im Team.' : 'Kollegen werden geladen …'),
+            others.length > 0 &&
+              el(
+                'select',
+                {
+                  'aria-label': 'Weitere Person hinzufügen',
+                  onchange: e => {
+                    if (!e.target.value) return;
+                    timeWith = [...timeWith, e.target.value];
+                    render();
+                  }
+                },
+                el('option', { value: '' }, '＋ Weitere Person …'),
+                others.map(c => el('option', { value: c.sap }, c.name + (c.team ? ` (${c.team})` : '')))
+              )
+          );
+        };
         const yesterday = () => {
           const g = new Date();
           g.setDate(g.getDate() - 1);
@@ -2858,6 +2941,8 @@
             }),
             el('span', {}, 'Min')
           ),
+          el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'),
+          withPicker(order),
           timeError && el('p', { class: 'mu er' }, timeError),
           el(
             'div',
@@ -3604,6 +3689,11 @@
             result &&
             result.min != null &&
             el('div', { class: 'mu' }, el('b', {}, '⏱ Dauer: ' + formatMinutes(result.min)), ' · ' + workSpanText(result)),
+          isDispo &&
+            result &&
+            result.min != null &&
+            result.mit &&
+            el('div', { class: 'mu' }, '👥 Gearbeitet mit: ' + userNamesText(result.mit)),
           isDispo &&
             result &&
             result.min != null &&
@@ -5036,7 +5126,7 @@
       // ---- Verlassen-Warnung ----
       // Monteur verlässt einen angefangenen, aber unvollständigen Auftrag (oder hat ungespeicherte Eingaben) -> nachfragen
       // Momentaufnahme der Zeit-Eingaben: unterscheidet gespeicherte von ungespeicherten Eingaben
-      const timeFormSnapshot = () => [timeHours, timeMinutes, timeDate, timeStart].join('|');
+      const timeFormSnapshot = () => [timeHours, timeMinutes, timeDate, timeStart, [...timeWith].sort().join(',')].join('|');
       let timeFormAtOpen = '';
       /**
        * Prüft beim Verlassen eines Auftrags (Monteur), was noch fehlt: offene Prüfobjekte, fehlende/unvollständige Zeit,
@@ -5072,7 +5162,7 @@
         if (
           timeFormAtOpen &&
           timeFormSnapshot() !== timeFormAtOpen &&
-          ((result && result.min != null) || timeHours || timeMinutes || timeStart)
+          ((result && result.min != null) || timeHours || timeMinutes || timeStart || timeWith.length)
         ) {
           unsaved = true;
           warnings.unshift(['Die eingegebene Zeit ist noch nicht gespeichert', '[data-zeit]']);
