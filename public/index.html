@@ -6113,9 +6113,15 @@
        * Kleine Rückmeldung, wenn ein Prüfobjekt auf OK gesetzt wird: der OK-Button füllt sich grün und federt einmal leicht
        * (ca. 0,3 s, ohne Layoutänderung). okSnapshot() merkt sich vor dem Neuzeichnen, welche Buttons schon „on“ waren;
        * neu gesetzte (auch durch „Alle offenen OK“ oder einen Abgleich) werden animiert, nur im selben Auftrag.
+       * Werden mehrere auf einmal gesetzt, werden die sichtbaren von oben nach unten der Reihe nach grün, als würde jedes
+       * einzeln angetippt (Abstand OK_WAVE_STEP, die ganze Welle höchstens OK_WAVE_MAX); der Start folgt kurz nach dem
+       * Zuklappen der Rückfrage (OK_WAVE_LEAD). Prüfobjekte außerhalb des Bildschirms folgen erst nach der Welle.
        * okPops: Prüfobjekt (data-k) -> Startzeit; so läuft die Animation weiter, wenn gleich danach nochmal gezeichnet wird.
        */
-      const OK_POP_MS = 320;
+      const OK_POP_MS = 320,
+        OK_WAVE_STEP = 100,
+        OK_WAVE_MAX = 900,
+        OK_WAVE_LEAD = 120;
       const okPops = new Map();
       let okOrder = null;
       function okSnapshot() {
@@ -6131,10 +6137,26 @@
         okOrder = openOrder ? openOrder.auftrag : null;
         if (!sameOrder) okPops.clear();
         if (!app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-        let n = 0;
+        const fresh = [];
         for (const b of app.querySelectorAll('.it[data-k] .ok.on')) {
           const key = b.closest('.it').dataset.k;
-          if (sameOrder && !before.on.has(key) && !okPops.has(key)) okPops.set(key, now + n++ * 40);
+          if (sameOrder && !before.on.has(key) && !okPops.has(key)) fresh.push([key, b]);
+        }
+        if (fresh.length) {
+          const shown = new Set(
+              fresh
+                .filter(([, b]) => {
+                  const r = b.getBoundingClientRect();
+                  return r.bottom > 0 && r.top < innerHeight;
+                })
+                .map(([key]) => key)
+            ),
+            step = Math.min(OK_WAVE_STEP, OK_WAVE_MAX / Math.max(1, shown.size - 1)),
+            lead = fresh.length > 1 ? OK_WAVE_LEAD : 0;
+          // die sichtbaren der Reihe nach, alle anderen (außerhalb des Bildschirms) erst nach der Welle
+          const rest = now + lead + shown.size * step;
+          let n = 0;
+          for (const [key] of fresh) okPops.set(key, shown.has(key) ? now + lead + n++ * step : rest);
         }
         const anims = [];
         for (const [key, start] of okPops) {
@@ -6148,9 +6170,17 @@
           anims.push(
             b.animate(
               [
-                { backgroundColor: 'var(--card)', transform: 'scale(0.96)' },
+                // bis zum Einsatz (fill: 'backwards') sieht der Button noch unbewertet aus, dann drückt er sich ein und füllt sich
+                { backgroundColor: 'var(--card)', borderColor: 'var(--bd)', color: 'var(--tx)', transform: 'none' },
+                {
+                  backgroundColor: 'var(--card)',
+                  borderColor: 'var(--bd)',
+                  color: 'var(--tx)',
+                  transform: 'scale(0.96)',
+                  offset: 0.2
+                },
                 { transform: 'scale(1.03)', offset: 0.6 },
-                { backgroundColor: 'var(--ok)', transform: 'none' }
+                { backgroundColor: 'var(--ok)', borderColor: 'var(--ok)', color: '#fff', transform: 'none' }
               ],
               { duration: OK_POP_MS, delay: -elapsed, easing: 'ease-out', fill: 'backwards' }
             )
