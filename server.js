@@ -1035,13 +1035,10 @@ async function handleApi(req, res, url) {
     if (!user) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
     const body = await readBody(req, 1e6),
       d = cleanResultDoc(match[1], body),
+      sentMit = Array.isArray(body.mit), // Kollegen mitgeschickt? (leere Liste = bewusst keine)
       base = body._b == null ? null : Number(body._b);
     if (!teamAllowed(user, d.team))
       return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt – dieser Auftrag gehört zu einem anderen Team.' });
-    if (d.mit) {
-      d.mit = d.mit.filter(x => x !== user.sap);
-      if (!d.mit.length) delete d.mit;
-    }
     d.u = user.sap; // wer das Ergebnis zuletzt gespeichert hat (kommt aus der Anmeldung, nicht vom Gerät)
     const r = await inBatch(() => {
       const cur = sql.getErg.get(match[1]);
@@ -1060,7 +1057,17 @@ async function handleApi(req, res, url) {
         const unchanged = prev && prev.min === d.min && prev.tat === d.tat && prev.dat === d.dat && prev.von === d.von;
         if (unchanged) {
           if (prev.tu) d.tu = prev.tu;
-        } else d.tu = user.sap;
+          // gleiche Zeit: die Kollegen bleiben, wie sie sind – auch wenn der Speichernde selbst einer davon ist (er bewertet nur ein
+          // Prüfobjekt); wurden sie nicht mitgeschickt (ältere App), gelten die bisherigen
+          if (!sentMit && prev.mit) d.mit = prev.mit;
+        } else {
+          d.tu = user.sap;
+          // neue oder geänderte Zeit: der Speichernde ist nicht „mit“ sich selbst unterwegs
+          if (d.mit) {
+            d.mit = d.mit.filter(x => x !== user.sap);
+            if (!d.mit.length) delete d.mit;
+          }
+        }
       }
       changeSeq++;
       sql.upErg.run(match[1], d.team, JSON.stringify(d), changeSeq, user.sap);

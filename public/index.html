@@ -2605,6 +2605,18 @@
        * Prüfobjekt) und nokTexts (Text je Index), legt es in die Outbox und stößt das Senden an. Bereits erfasste
        * Zeitfelder bleiben erhalten.
        */
+      // Die Zeit-Felder eines Ergebnisses (Dauer, Zeitpunkt, Datum, Beginn, Kollegen), die jedes neue Ergebnis mitnehmen muss –
+      // sonst gingen sie beim Bewerten eines Prüfobjekts verloren. Ohne Zeit: nichts.
+      const timeFieldsOf = result =>
+        result && result.min != null
+          ? {
+              min: result.min,
+              ...(result.tat ? { tat: result.tat } : {}),
+              ...(result.dat ? { dat: result.dat } : {}),
+              ...(result.von ? { von: result.von } : {}),
+              ...(Array.isArray(result.mit) ? { mit: [...result.mit] } : {})
+            }
+          : {};
       function saveChecklistState(order, items, state, nokTexts = {}) {
         const nokItems = [...state].flatMap((c, k) =>
           c === 'x' ? [{ i: k, t: items[k], m: nokTexts[k] || '' }] : []
@@ -2619,14 +2631,7 @@
           nx: nokItems.length,
           s: state,
           nok: nokItems,
-          ...(result && result.min != null
-            ? {
-                min: result.min,
-                ...(result.tat ? { tat: result.tat } : {}),
-                ...(result.dat ? { dat: result.dat } : {}),
-                ...(result.von ? { von: result.von } : {})
-              }
-            : {})
+          ...timeFieldsOf(result)
         });
         errorMsg = '';
         saveOutbox();
@@ -2748,7 +2753,7 @@
           doc.tat = Date.now();
           if (date) doc.dat = date;
           if (start) doc.von = start;
-          if (timeWith.length) doc.mit = [...timeWith];
+          doc.mit = [...timeWith]; // immer als Liste (auch leer): so ist „alle abgewählt“ etwas anderes als „nicht angegeben“
         }
         doc._b = serverBaseOf(order.auftrag);
         outbox.set(order.auftrag, doc);
