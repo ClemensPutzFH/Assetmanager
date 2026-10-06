@@ -429,6 +429,18 @@
       .ucard.off {
         opacity: 0.7;
       }
+      .uq {
+        margin-top: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .uq select {
+        flex: 1 1 10rem;
+        min-width: 0;
+      }
+      .uq button {
+        flex: 0 0 auto;
+      }
       .ufm label {
         display: block;
         font-size: 0.875rem;
@@ -1778,8 +1790,8 @@
         markedFilter = localStorage.getItem('dha') || '';
       } catch (e) {}
       // ---- Benutzer (Monteur-Anmeldung mit SAP-User + Passwort) ----
-      // userToken: Anmelde-Token des Servers (Header X-User-Token) · userInfo: { sap, name, team (Standardteam laut Benutzerverwaltung),
-      // last (zuletzt gewähltes Team) } · userNames: SAP-User -> Name (Disponent, für „bewertet von“) ·
+      // userToken: Anmelde-Token des Servers (Header X-User-Token) · userInfo: { sap, name, team (Team laut Benutzerverwaltung),
+      // lock (Team fest zugewiesen: kein Teamwechsel), last (zuletzt gewähltes Team) } · userNames: SAP-User -> Name (Disponent, für „bewertet von“) ·
       // loginUser / loginPass / loginError / loginBusy: Eingaben und Zustand der Anmeldeseite
       let userToken = '',
         userInfo = null,
@@ -3281,14 +3293,17 @@
           if (response.ver) checkAppVersion(response.ver);
           if (response.gday) gasDay = response.gday;
           if (response.users) userNames = new Map(response.users); // Disponent: SAP-User -> Name
-          // Monteur: Name/Team laut Benutzerverwaltung; ändert der Disponent das Team des Benutzers, gilt es sofort
+          // Monteur: Name, Team und Teamsperre laut Benutzerverwaltung. Ändert der Disponent das Team (oder sperrt er den
+          // Teamwechsel, während der Monteur in einem anderen Team ist), gilt das sofort
           if (response.me && userInfo && userInfo.sap === response.me.sap) {
             const me = response.me,
-              teamChanged = userInfo.team !== me.team;
-            if (userInfo.name !== me.name || teamChanged) {
+              teamChanged = userInfo.team !== me.team,
+              forced = !!me.lock && !!me.team && session.role === 'monteur' && session.team !== me.team;
+            if (userInfo.name !== me.name || teamChanged || !!userInfo.lock !== !!me.lock || forced) {
               userInfo.name = me.name;
               userInfo.team = me.team;
-              if (teamChanged && session.role === 'monteur' && me.team) {
+              userInfo.lock = !!me.lock;
+              if ((teamChanged || forced) && session.role === 'monteur' && me.team) {
                 session.team = me.team;
                 userInfo.last = me.team;
                 saveSession();
@@ -3299,15 +3314,6 @@
               render();
             }
           }
-          // der Disponent hat dieses Gerät ausgeloggt
-          if (response.kicked) forcedLogout();
-          // der Disponent hat die Geräteübersicht offen und fragt Standorte ab (locate = Nummer der Abfragerunde)
-          // Eine Runde, die schon lief, als die App gestartet wurde, bleibt ohne Hinweis. Nur wenn der Disponent die Abfrage
-          // danach neu auslöst (Geräteübersicht geöffnet oder „Standorte jetzt aktualisieren“), erscheint die Kurzmeldung.
-          const announceLocate =
-            locateRoundSeen !== null && !!response.locate && response.locate !== locateRoundSeen;
-          locateRoundSeen = response.locate || 0;
-          if (response.locate) reportLocationIfAsked(response.locate, announceLocate);
           if (!response.same) {
             if (response.full) {
               ordersMap = new Map();
@@ -4597,16 +4603,17 @@
               'div',
               { class: 'ob' },
               el('button', { class: 'sv', onclick: confirmGas }, '✓ Funktioniert ordnungsgemäß'),
-              el(
-                'button',
-                {
-                  onclick: () => {
-                    gasDialog.close();
-                    switchRole('monteur');
-                  }
-                },
-                'Team wechseln'
-              )
+              !(userInfo && userInfo.lock) &&
+                el(
+                  'button',
+                  {
+                    onclick: () => {
+                      gasDialog.close();
+                      switchRole('monteur');
+                    }
+                  },
+                  'Team wechseln'
+                )
             )
           )
         );
@@ -5856,7 +5863,10 @@
               class: 'big',
               onclick: () => {
                 // angemeldet: gleich weiter (zuletzt gewähltes Team), sonst zur Anmeldung
-                switchRole('monteur', userToken && userInfo ? userInfo.last || userInfo.team || undefined : undefined);
+                switchRole(
+                  'monteur',
+                  userToken && userInfo ? (userInfo.lock ? null : userInfo.last) || userInfo.team || undefined : undefined
+                );
                 const n = app.querySelector('[data-keep="lu"]');
                 if (n) n.focus();
               }
@@ -5905,11 +5915,11 @@
             userToken = r.token;
             // erneute Anmeldung desselben Benutzers (abgelaufen): beim zuletzt gewählten Team bleiben, sonst Team laut Benutzerverwaltung
             const last = userInfo && userInfo.sap === r.user.sap ? userInfo.last : null;
-            userInfo = { sap: r.user.sap, name: r.user.name, team: r.user.team, last };
+            userInfo = { sap: r.user.sap, name: r.user.name, team: r.user.team, lock: !!r.user.lock, last };
             saveUser();
             loginPass = '';
             loginBusy = false;
-            switchRole('monteur', last || r.user.team || undefined);
+            switchRole('monteur', (r.user.lock ? null : last) || r.user.team || undefined);
           } catch (e) {
             loginBusy = false;
             loginPass = '';
@@ -6054,7 +6064,7 @@
             el(
               'div',
               { class: 'row' },
-              el('button', { onclick: () => switchRole('monteur') }, 'Team wechseln'),
+              !(userInfo && userInfo.lock) && el('button', { onclick: () => switchRole('monteur') }, 'Team wechseln'),
               back
             )
           ),
@@ -6062,7 +6072,7 @@
             el(
               'p',
               { class: 'mu uline' },
-              `👤 ${userInfo.name} (${userInfo.sap}) · `,
+              `👤 ${userInfo.name} (${userInfo.sap})${userInfo.lock ? ' · 🔒 Team fest zugewiesen' : ''} · `,
               el('button', { class: 'lk', onclick: userLogout }, 'Abmelden')
             )
         );
@@ -6974,7 +6984,7 @@
         userSearch = '',
         userTeamFilter = '',
         userEdit = null,
-        userForm = { sap: '', last: '', first: '', team: '', active: true },
+        userForm = { sap: '', last: '', first: '', team: '', active: true, lock: false },
         userError = '',
         userArmed = null,
         userLogFor = null,
@@ -7009,7 +7019,7 @@
             isNew ? '/api/users' : '/api/users/' + encodeURIComponent(userEdit),
             isNew
               ? form
-              : { last: form.last, first: form.first, team: form.team, active: form.active }
+              : { last: form.last, first: form.first, team: form.team, active: form.active, lock: form.lock }
           );
           userEdit = null;
           userError = '';
@@ -7017,6 +7027,16 @@
         } catch (e) {
           userError = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
           return render();
+        }
+        await loadUsers();
+      }
+      // Schnelländerung direkt an der Karte (Team wählen oder Teamwechsel erlauben/sperren), gilt sofort auf dem Gerät des Monteurs
+      async function quickUserChange(u, changes, message) {
+        try {
+          await api('PUT', '/api/users/' + encodeURIComponent(u.sap), changes);
+          infoMsg = message;
+        } catch (e) {
+          errorMsg = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
         }
         await loadUsers();
       }
@@ -7082,7 +7102,14 @@
           recent = userList.filter(u => u.loginAt && userNow - u.loginAt < 30 * 864e5).length;
         const startNew = () => {
           userEdit = 'new';
-          userForm = { sap: '', last: '', first: '', team: userTeamFilter && userTeamFilter !== '\u0000n' ? userTeamFilter : '', active: true };
+          userForm = {
+            sap: '',
+            last: '',
+            first: '',
+            team: userTeamFilter && userTeamFilter !== '\u0000n' ? userTeamFilter : '',
+            active: true,
+            lock: false
+          };
           userError = '';
           render();
           const n = app.querySelector('[data-keep="us"]');
@@ -7118,6 +7145,18 @@
             field('Vorname', 'first'),
             field('Team', 'team', { list: 'uteams', placeholder: 'z. B. FW-IH01' }),
             el('datalist', { id: 'uteams' }, teams.map(t => el('option', { value: t }))),
+            el(
+              'label',
+              {},
+              el('input', {
+                type: 'checkbox',
+                checked: userForm.lock ? null : 'checked',
+                onchange: e => {
+                  userForm.lock = !e.target.checked;
+                }
+              }),
+              ' Darf sein Team selbst wechseln (Haken weg = Team fest zugewiesen)'
+            ),
             userEdit !== 'new' &&
               el(
                 'label',
@@ -7238,6 +7277,7 @@
                   el('b', {}, `${u.first} ${u.last}`.trim()),
                   el('span', { class: 'tag' }, u.sap),
                   el('span', { class: 'tag ' + (u.team ? 'st-teil' : 'st-zf') }, '👥 ' + (u.team || 'kein Team')),
+                  u.lock && u.team && el('span', { class: 'tag' }, '🔒 Team fest'),
                   !u.active && el('span', { class: 'tag st-nok' }, 'gesperrt')
                 ),
                 el(
@@ -7252,6 +7292,44 @@
                     ? `📱 ${u.devs} ${u.devs === 1 ? 'Gerät' : 'Geräte'}` + (u.seen ? ' · zuletzt aktiv ' + agoText(u.seen, userNow) : '')
                     : '📱 kein Gerät'
                 ),
+                // Schnellauswahl: Team direkt ändern (der Disponent darf das immer) und Teamwechsel durch den Monteur erlauben/sperren
+                !editing &&
+                  el(
+                    'div',
+                    { class: 'ob uq' },
+                    el(
+                      'select',
+                      {
+                        'aria-label': 'Team von ' + u.sap,
+                        onchange: e =>
+                          quickUserChange(
+                            u,
+                            { team: e.target.value },
+                            e.target.value ? `${u.sap}: Team ${e.target.value}` : `${u.sap}: kein Team`
+                          )
+                      },
+                      el('option', { value: '', ...(u.team ? {} : { selected: 'selected' }) }, '— kein Team —'),
+                      [...new Set([...teams, ...(u.team ? [u.team] : [])])].sort(naturalCompare).map(t =>
+                        el('option', { value: t, ...(t === u.team ? { selected: 'selected' } : {}) }, t)
+                      )
+                    ),
+                    el(
+                      'button',
+                      {
+                        class: u.lock ? 'er' : null,
+                        title: 'Darf der Monteur sein Team selbst wechseln?',
+                        onclick: () =>
+                          quickUserChange(
+                            u,
+                            { lock: !u.lock },
+                            u.lock
+                              ? `${u.sap}: darf das Team wieder selbst wechseln`
+                              : `${u.sap}: Team fest zugewiesen (kein Teamwechsel)`
+                          )
+                      },
+                      u.lock ? '🔒 Team fest' : '🔓 Wechsel erlaubt'
+                    )
+                  ),
                 editing
                   ? form()
                   : el(
@@ -7262,7 +7340,14 @@
                         {
                           onclick: () => {
                             userEdit = u.sap;
-                            userForm = { sap: u.sap, last: u.last, first: u.first, team: u.team || '', active: u.active };
+                            userForm = {
+                              sap: u.sap,
+                              last: u.last,
+                              first: u.first,
+                              team: u.team || '',
+                              active: u.active,
+                              lock: !!u.lock
+                            };
                             userError = '';
                             userArmed = null;
                             render();
@@ -7503,6 +7588,7 @@
         // Team gibt es (noch) nicht bei den Aufträgen (z. B. „Springer“): Team wählen lassen
         if (
           session.role === 'monteur' &&
+          !(userInfo && userInfo.lock) &&
           dataReady &&
           teamList.length &&
           !teamList.some(([t]) => t === session.team)

@@ -129,6 +129,8 @@ addColumn('dev', 'usr', 'TEXT');
 addColumn('gas', 'usr', 'TEXT');
 addColumn('mack', 'usr', 'TEXT');
 addColumn('ergebnis', 'usr', 'TEXT');
+// team_lock = 1: der Monteur darf sein Team nicht selbst wechseln (der Disponent kann es immer ändern)
+addColumn('usr', 'team_lock', 'INTEGER NOT NULL DEFAULT 0');
 // Ältere Datenbanken haben in `dev` noch nicht alle Spalten: beim Start ergänzen. Bisherige Geräte mit Team waren Monteure.
 {
   const have = new Set(
@@ -234,10 +236,10 @@ const sql = {
   // Benutzer und Protokoll
   getUsr: db.prepare('SELECT * FROM usr WHERE sap=?'),
   listUsr: db.prepare(
-    'SELECT sap, last, first, team, active, created, login_at, (SELECT MAX(seen) FROM dev WHERE usr=usr.sap) seen, (SELECT COUNT(*) FROM dev WHERE usr=usr.sap) devs FROM usr ORDER BY team, last, first'
+    'SELECT sap, last, first, team, team_lock, active, created, login_at, (SELECT MAX(seen) FROM dev WHERE usr=usr.sap) seen, (SELECT COUNT(*) FROM dev WHERE usr=usr.sap) devs FROM usr ORDER BY team, last, first'
   ),
-  addUsr: db.prepare('INSERT INTO usr(sap,last,first,team,pw,pw_at,active,created) VALUES(?,?,?,?,?,?,1,?)'),
-  editUsr: db.prepare('UPDATE usr SET last=?, first=?, team=?, active=? WHERE sap=?'),
+  addUsr: db.prepare('INSERT INTO usr(sap,last,first,team,pw,pw_at,active,created,team_lock) VALUES(?,?,?,?,?,?,1,?,?)'),
+  editUsr: db.prepare('UPDATE usr SET last=?, first=?, team=?, active=?, team_lock=? WHERE sap=?'),
   pwUsr: db.prepare('UPDATE usr SET pw=?, pw_at=? WHERE sap=?'),
   loginUsr: db.prepare('UPDATE usr SET login_at=? WHERE sap=?'),
   delUsr: db.prepare('DELETE FROM usr WHERE sap=?'),
@@ -522,8 +524,12 @@ function userFromRequest(req) {
   const row = sql.getUsr.get(sap);
   if (!row || !row.active || +e - USER_TOKEN_MS < row.pw_at) return null;
   if (d !== '-' && deviceKickedAt(d) > +e - USER_TOKEN_MS) return null;
-  return { sap, did: d === '-' ? '' : d, name: fullName(row), team: row.team };
+  // lock: Team ist fest zugewiesen (nur wirksam, wenn es ein Team gibt)
+  return { sap, did: d === '-' ? '' : d, name: fullName(row), team: row.team, lock: !!row.team_lock && !!row.team };
 }
+// Monteur mit festem Team darf nur dieses Team abfragen/bearbeiten
+const teamAllowed = (user, team) => !user.lock || team === user.team;
+const meOf = user => ({ sap: user.sap, name: user.name, team: user.team, lock: user.lock });
 // Anmeldung eines Monteurs: nach 5 Fehlversuchen je Benutzer und IP sowie 40 je IP (gemeinsames WLAN) 10 Minuten gesperrt
 function userLogin(ip, sapInput, password) {
   const keys = ['ul:' + sapInput + ':' + ip, 'ui:' + ip],
@@ -574,7 +580,8 @@ if (!getMeta('usersSeeded')) {
             clipString(u.team, 100) || null,
             hashPassword(MONTEUR_PASSWORD),
             now,
-            now
+            now,
+            0
           );
     });
     setMeta('usersSeeded', true);
@@ -783,7 +790,12 @@ async function handleApi(req, res, url) {
     logAct('login', sap, did, result.row.team);
     return sendJson(req, res, 200, {
       token: userTokenFor(sap, did),
-      user: { sap, name: fullName(result.row), team: result.row.team }
+      user: {
+        sap,
+        name: fullName(result.row),
+        team: result.row.team,
+        lock: !!result.row.team_lock && !!result.row.team
+      }
     });
   }
   // Disponent: PIN (+ Geräte-ID) -> Token
@@ -812,6 +824,15 @@ async function handleApi(req, res, url) {
         sql.touchDev.run(Date.now(), did, Date.now() - 60e3);
       }
     }
+    // festes Team: für ein anderes Team gibt es keine Daten, nur die Angabe des erlaubten Teams (die App wechselt dann dorthin)
+    if (me && team !== '-' && !teamAllowed(me, team))
+      return sendJson(req, res, 200, {
+        seq: changeSeq,
+        same: true,
+        ver: appVersion(),
+        gday: dayOf(Date.now()),
+        me: meOf(me)
+      });
     if (since === changeSeq)
       return sendJson(req, res, 200, {
         seq: changeSeq,
@@ -819,7 +840,7 @@ async function handleApi(req, res, url) {
         ver: appVersion(),
         gday: dayOf(Date.now()),
         ...(kicked ? { kicked: true } : {}),
-        ...(me ? { me: { sap: me.sap, name: me.name, team: me.team } } : {}),
+        ...(me ? { me: meOf(me) } : {}),
         ...locateField()
       });
     const full = since === 0 || since > changeSeq || since < minSeq,
@@ -830,7 +851,7 @@ async function handleApi(req, res, url) {
       ver: appVersion(),
       gday: dayOf(Date.now()),
       ...(kicked ? { kicked: true } : {}),
-      ...(me ? { me: { sap: me.sap, name: me.name, team: me.team } } : {}),
+      ...(me ? { me: meOf(me) } : {}),
       ...locateField(),
       teams: db
         .prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team')
@@ -895,8 +916,10 @@ async function handleApi(req, res, url) {
   }
   // Prüfobjekte lesen: ?a=<Auftrag> liefert eine Liste, ?team=<Team>&since=<Nr> alle geänderten Listen des Teams
   if (pathname === '/api/pruef' && method === 'GET') {
-    if (!isDispo(req) && !userFromRequest(req))
-      return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
+    const pruefUser = isDispo(req) ? null : userFromRequest(req);
+    if (!isDispo(req) && !pruefUser) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
+    if (pruefUser && params.get('team') && !teamAllowed(pruefUser, params.get('team')))
+      return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt.' });
     const a = params.get('a'),
       team = params.get('team'),
       since = +params.get('since') || 0;
@@ -927,6 +950,8 @@ async function handleApi(req, res, url) {
     const body = await readBody(req, 1e6),
       d = cleanResultDoc(match[1], body),
       base = body._b == null ? null : Number(body._b);
+    if (!teamAllowed(user, d.team))
+      return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt – dieser Auftrag gehört zu einem anderen Team.' });
     d.u = user.sap; // wer das Ergebnis zuletzt gespeichert hat (kommt aus der Anmeldung, nicht vom Gerät)
     const r = await inBatch(() => {
       const cur = sql.getErg.get(match[1]);
@@ -956,10 +981,10 @@ async function handleApi(req, res, url) {
   if (pathname === '/api/push/key' && method === 'GET') return sendJson(req, res, 200, { key: vapid.pub });
   if (pathname === '/api/push/sub' && method === 'POST') {
     const body = await readBody(req, 1e4),
-      did = validDeviceId(body.did),
-      team = body.team == null || body.team === '' ? null : clipString(body.team, 100),
-      // Rolle des Geräts: 'monteur' | 'dispo' | null (abgemeldet); ältere Apps melden nur das Team -> Monteur
-      role = body.role === 'dispo' || body.role === 'monteur' ? body.role : team ? 'monteur' : null;
+      did = validDeviceId(body.did);
+    let team = body.team == null || body.team === '' ? null : clipString(body.team, 100);
+    // Rolle des Geräts: 'monteur' | 'dispo' | null (abgemeldet); ältere Apps melden nur das Team -> Monteur
+    const role = body.role === 'dispo' || body.role === 'monteur' ? body.role : team ? 'monteur' : null;
     if (!did) return sendJson(req, res, 400, { error: 'Ungültige Geräte-ID' });
     // Monteur-Geräte gehören zu einem angemeldeten Benutzer (dev.usr); abgemeldete und Disponenten-Geräte zu keinem
     let userSap = null;
@@ -967,6 +992,7 @@ async function handleApi(req, res, url) {
       const user = userFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
       userSap = user.sap;
+      if (!teamAllowed(user, team)) team = user.team; // festes Team gilt immer
     }
     let sub = null;
     if (body.sub) {
@@ -1071,6 +1097,7 @@ async function handleApi(req, res, url) {
       team = clipString(body.team, 100);
     if (!did || !team || !sql.hasTeam.get(team))
       return sendJson(req, res, 400, { error: 'Ungültiges Team oder Gerät' });
+    if (!teamAllowed(user, team)) return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt.' });
     const now = Date.now();
     let at = Number(body.at);
     if (!(at >= now - 24 * 3600e3 && at <= now + 5 * 60e3)) at = now;
@@ -1189,6 +1216,7 @@ async function handleApi(req, res, url) {
         last: r.last,
         first: r.first,
         team: r.team,
+        lock: !!r.team_lock,
         active: !!r.active,
         created: r.created,
         loginAt: r.login_at,
@@ -1203,13 +1231,14 @@ async function handleApi(req, res, url) {
       sap = normalizeSap(body.sap),
       last = clipString(body.last, 60).trim(),
       first = clipString(body.first, 60).trim(),
-      team = clipString(body.team, 100).trim() || null;
+      team = clipString(body.team, 100).trim() || null,
+      lock = body.lock ? 1 : 0;
     if (!validSap(sap)) return sendJson(req, res, 400, { error: 'SAP-User: 2–20 Buchstaben/Ziffern' });
     if (!last) return sendJson(req, res, 400, { error: 'Bitte den Nachnamen angeben' });
     if (sql.getUsr.get(sap)) return sendJson(req, res, 409, { error: 'Diesen SAP-User gibt es schon' });
     const now = Date.now();
-    sql.addUsr.run(sap, last, first, team, hashPassword(MONTEUR_PASSWORD), now, now);
-    logAct('user_new', null, null, team, sap, `${first} ${last}`);
+    sql.addUsr.run(sap, last, first, team, hashPassword(MONTEUR_PASSWORD), now, now, lock);
+    logAct('user_new', null, null, team, sap, `${first} ${last}${lock ? ' (Team fest)' : ''}`);
     return sendJson(req, res, 200, { ok: true });
   }
   let userMatch;
@@ -1232,10 +1261,25 @@ async function handleApi(req, res, url) {
         last = clipString(body.last ?? row.last, 60).trim(),
         first = clipString(body.first ?? row.first, 60).trim(),
         team = (body.team === undefined ? row.team : clipString(body.team, 100).trim()) || null,
-        active = body.active === undefined ? row.active : body.active ? 1 : 0;
+        active = body.active === undefined ? row.active : body.active ? 1 : 0,
+        lock = body.lock === undefined ? row.team_lock : body.lock ? 1 : 0;
       if (!last) return sendJson(req, res, 400, { error: 'Bitte den Nachnamen angeben' });
-      sql.editUsr.run(last, first, team, active, sap);
-      logAct('user_edit', null, null, team, sap, `${first} ${last}${active ? '' : ' (gesperrt)'}`);
+      sql.editUsr.run(last, first, team, active, lock, sap);
+      logAct(
+        'user_edit',
+        null,
+        null,
+        team,
+        sap,
+        `${first} ${last}${active ? '' : ' (gesperrt)'}${lock ? ' (Team fest)' : ''}`
+      );
+      // Geräte gleichen sofort ab und übernehmen das neue Team bzw. die Sperre des Teamwechsels
+      if (team !== row.team || lock !== row.team_lock) {
+        transaction(() => {
+          changeSeq++;
+        });
+        notifyClients();
+      }
       return sendJson(req, res, 200, { ok: true });
     }
     // Benutzer löschen: seine Anmeldungen enden sofort, die Verknüpfung der Geräte wird gelöst (Protokoll bleibt)
