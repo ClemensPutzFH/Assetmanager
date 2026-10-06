@@ -874,10 +874,10 @@
       .det > .d-info {
         order: 1;
       }
-      .det > .d-check {
+      .det > .d-time {
         order: 2;
       }
-      .det > .d-time {
+      .det > .d-check {
         order: 3;
       }
       .pcard {
@@ -6312,7 +6312,7 @@
           isMonteur = session.role === 'monteur';
         const orderInfoCard = orderCard(order, !isMonteur, false);
         orderInfoCard.dataset.k = 'oc';
-        // Reihenfolge am Handy: Auftrag, Prüfobjekte, Zeit (die Prüfliste ist die Hauptaufgabe); breit: links Auftrag + Zeit, rechts Prüfobjekte
+        // Reihenfolge am Handy: Auftrag, Zeit, Prüfobjekte (die Zeitkarte ist kompakt); breit: links Auftrag + Zeit, rechts Prüfobjekte
         orderInfoCard.classList.add('d-info');
         const timePanel = timeCard(order, isMonteur);
         timePanel.classList.add('d-time');
