@@ -5049,7 +5049,8 @@
           caret = keepKey ? focused.selectionStart : 0,
           // ganz oben bleibt die Seite oben: kommt dort später etwas dazu (Hinweise, Fortschrittskarte, geladene Liste),
           // würde der Anker die Seite sonst um deren Höhe nach unten schieben
-          savedAnchors = scrollY < 1 ? [] : viewportAnchors();
+          savedAnchors = scrollY < 1 ? [] : viewportAnchors(),
+          listSnap = snapshotList();
         draw();
         for (const [key, top] of savedAnchors) {
           const n = app.querySelector('[data-k="' + key + '"]');
@@ -5069,6 +5070,7 @@
           }
         }
         animateView();
+        animateRemoved(listSnap);
       }
       // Einblendung beim Seitenwechsel: nur wenn sich die Ansicht ändert (Rolle, Team, Dispo-Tab, Auftrag auf/zu), nicht bei
       // jedem Neuzeichnen. Läuft nach der Scroll-Korrektur (die Verschiebung würde sonst die Messung verfälschen).
@@ -5082,6 +5084,8 @@
         LIST_MS = 220,
         LIST_STAGGER_MS = 20;
       let viewAnim = null,
+        listStable = false,
+        searchShown = '',
         viewKey = null,
         viewDepth = 0,
         filterKey = '',
@@ -5123,9 +5127,12 @@
           viewStart = performance.now();
           listStart = -1e9;
         } else if (viewKey !== null && filters !== filterKey) listStart = performance.now();
+        // für animateRemoved: nur „echte“ Änderungen der Daten animieren, nicht Ansichts-, Filter- oder Suchwechsel
+        listStable = !changed && filters === filterKey && searchText === searchShown;
         viewKey = key;
         viewDepth = depth;
         filterKey = filters;
+        searchShown = searchText;
         if (!app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
         viewAnim = [
           ...(viewFrom ? fadeIn([...app.children].slice(0, 10), viewFrom, viewStart, VIEW_MS, VIEW_STAGGER_MS) : []),
@@ -5137,6 +5144,68 @@
             LIST_STAGGER_MS
           )
         ];
+      }
+      /**
+       * Verschwindet ein Auftrag aus der Liste (Disponent hakt ihn ab und „Abgehakte ausblenden“ ist an, Daten vom Server,
+       * Filter nach Änderung des Zustands …), blendet seine Karte aus: eine Kopie der alten Karte schwebt an ihrer Stelle
+       * (fixed, ohne Einfluss auf das Layout) und verschwindet; die übrigen Karten gleiten an ihren neuen Platz (FLIP).
+       * snapshotList() merkt sich vor dem Neuzeichnen die sichtbaren Karten samt Position, animateRemoved() vergleicht danach.
+       */
+      function snapshotList() {
+        const snap = new Map();
+        for (const n of app.querySelectorAll('[data-list] > [data-k]')) {
+          const r = n.getBoundingClientRect();
+          if (r.bottom > 0 && r.top < innerHeight && snap.size < 40) snap.set(n.dataset.k, { node: n, rect: r });
+        }
+        return snap.size ? snap : null;
+      }
+      function animateRemoved(snap) {
+        if (!snap || !listStable || !app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        const now = new Map();
+        for (const n of app.querySelectorAll('[data-list] > [data-k]')) now.set(n.dataset.k, n);
+        if (!now.size && !app.querySelector('[data-list]')) return;
+        const gone = [...snap].filter(([k]) => !now.has(k));
+        if (!gone.length || gone.length > 12) return;
+        const easing = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+        for (const [, { node, rect }] of gone) {
+          Object.assign(node.style, {
+            position: 'fixed',
+            left: rect.left + 'px',
+            top: rect.top + 'px',
+            width: rect.width + 'px',
+            height: rect.height + 'px',
+            margin: '0',
+            boxSizing: 'border-box',
+            display: 'flex',
+            flexDirection: 'column',
+            pointerEvents: 'none',
+            zIndex: '4'
+          });
+          node.setAttribute('aria-hidden', 'true');
+          document.body.append(node);
+          node
+            .animate(
+              [
+                { opacity: 1, transform: 'none' },
+                { opacity: 0, transform: 'translateX(-24px) scale(0.94)' }
+              ],
+              { duration: 240, easing, fill: 'forwards' }
+            )
+            .finished.then(() => node.remove(), () => node.remove());
+        }
+        const slides = [];
+        for (const [k, n] of now) {
+          const before = snap.get(k);
+          if (!before) continue;
+          const r = n.getBoundingClientRect(),
+            dx = before.rect.left - r.left,
+            dy = before.rect.top - r.top;
+          if (Math.abs(dx) + Math.abs(dy) < 1) continue;
+          slides.push(
+            n.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 260, easing })
+          );
+        }
+        viewAnim = [...(viewAnim || []), ...slides];
       }
       // ---- Ansichten: draw() wählt je Zustand genau eine aus ----
 
