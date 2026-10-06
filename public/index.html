@@ -5885,14 +5885,16 @@
             },
             '📋 Ich bin Disponent'
           ),
-          userToken &&
-            userInfo &&
-            el(
-              'p',
-              { class: 'mu' },
-              `👤 Angemeldet als ${userInfo.name} (${userInfo.sap}) · `,
-              el('button', { class: 'lk', onclick: userLogout }, 'Abmelden')
-            )
+          ...(userToken && userInfo
+            ? [
+                el(
+                  'p',
+                  { class: 'mu' },
+                  `👤 Angemeldet als ${userInfo.name} (${userInfo.sap}) · `,
+                  el('button', { class: 'lk', onclick: userLogout }, 'Abmelden')
+                )
+              ]
+            : [])
         );
       }
 
@@ -6068,13 +6070,16 @@
               back
             )
           ),
-          userInfo &&
-            el(
-              'p',
-              { class: 'mu uline' },
-              `👤 ${userInfo.name} (${userInfo.sap})${userInfo.lock ? ' · 🔒 Team fest zugewiesen' : ''} · `,
-              el('button', { class: 'lk', onclick: userLogout }, 'Abmelden')
-            )
+          ...(userInfo
+            ? [
+                el(
+                  'p',
+                  { class: 'mu uline' },
+                  `👤 ${userInfo.name} (${userInfo.sap})${userInfo.lock ? ' · 🔒 Team fest zugewiesen' : ''} · `,
+                  el('button', { class: 'lk', onclick: userLogout }, 'Abmelden')
+                )
+              ]
+            : [])
         );
         // Daten laden noch (erster Start ohne Zwischenspeicher): Platzhalter statt einer leeren Liste
         if (!dataReady) {
@@ -7262,7 +7267,7 @@
               }
             })
           ),
-          !shown.length && el('p', { class: 'mu' }, 'Keine Benutzer gefunden.'),
+          ...(shown.length ? [] : [el('p', { class: 'mu' }, 'Keine Benutzer gefunden.')]),
           el(
             'div',
             { class: 'grid', 'data-list': '1' },
