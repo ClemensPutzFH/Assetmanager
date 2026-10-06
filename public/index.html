@@ -324,6 +324,17 @@
         border-color: var(--nk);
         color: #fff;
       }
+      /* abgehakter Auftrag (Monteur): Prüfobjekte nur ansehen */
+      .ob button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .lockn {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        border-color: var(--ac);
+      }
       button.allok {
         display: block;
         width: 100%;
@@ -1698,7 +1709,8 @@
        *                    s = Status-String, ein Zeichen je Prüfobjekt: 'o' OK, 'x' Nicht OK, '-' offen,
        *                    nok = [{ i: Index, t: Kurztext, m: Text des Monteurs }],
        *                    min = Dauer in Minuten, tat = Zeitpunkt der Rückmeldung, dat = Datum (JJJJ-MM-TT), von = Beginn (HH:MM)
-       *   Abhaken        marks: Auftrag -> { v: 1/0, at: Zeitpunkt, sq: Änderungsnummer } (nur Disponent)
+       *   Abhaken        marks: Auftrag -> { v: 1/0, at: Zeitpunkt, sq: Änderungsnummer } (Disponent: alle, Monteur: eigenes Team –
+       *                  ein abgehakter Auftrag ist für den Monteur gesperrt, siehe isLocked)
        *
        * ABSCHNITTE (der Reihe nach)
        *   Zustand · Gerät/Schriftgröße/Theme · Upload · Prüfobjekt-Texte · Excel-Export · Ergebnisse & Status ·
@@ -2618,6 +2630,7 @@
             }
           : {};
       function saveChecklistState(order, items, state, nokTexts = {}) {
+        if (isLocked(order.auftrag)) return denyLocked();
         const nokItems = [...state].flatMap((c, k) =>
           c === 'x' ? [{ i: k, t: items[k], m: nokTexts[k] || '' }] : []
         );
@@ -2727,6 +2740,7 @@
        * Bewertung, wird ein leeres Dokument angelegt – so kann die Zeit vor den Prüfobjekten erfasst werden.
        */
       function storeTime(order, items, minutes, date, start) {
+        if (isLocked(order.auftrag)) return denyLocked();
         timeFormAtOpen = timeFormSnapshot();
         timeFormOpen = false;
         timeFlash = minutes > 0;
@@ -2867,6 +2881,8 @@
             result.u !== result.tu &&
             el('p', { class: 'mu' }, '👤 Zuletzt gespeichert von ' + userLabel(result.u))
         );
+        // abgehakt (Monteur): nur ansehen – keine Hinweise zum Ausfüllen, keine Eingabe von Zeit und Kollegen
+        if (isMonteur && isLocked(order.auftrag)) return timePanel;
         if (hasTime && !timeComplete(result))
           timePanel.append(
             el(
@@ -3311,6 +3327,24 @@
             toast(
               `⚠ Auftrag ${orderNo} wurde gleichzeitig auf einem anderen Gerät geändert. Es gilt der Stand vom Server – deine letzte Eingabe wurde nicht übernommen.`
             );
+          } else if (e && e.status === 423) {
+            // inzwischen vom Disponenten abgehakt -> die Eingabe wird nicht übernommen, der Server-Stand und der Haken gelten
+            const locked = e.data || {};
+            outbox.delete(orderNo);
+            saveOutbox();
+            if (locked.mark) marks.set(orderNo, locked.mark);
+            if (locked.doc) {
+              results.set(orderNo, locked.doc);
+              resultSeq.set(orderNo, locked.sq | 0);
+            } else {
+              results.delete(orderNo);
+              resultSeq.delete(orderNo);
+            }
+            dropEditsOfLockedOrder();
+            clearTimeout(cacheSaveTimer);
+            cacheSaveTimer = setTimeout(saveCache, 1500);
+            toast(`🔒 Auftrag ${orderNo}: ${LOCKED_TEXT} Deine letzte Eingabe wurde nicht übernommen.`);
+            playErrorSound();
           } else if (e && e.status === 401 && e.data && e.data.login) {
             // Anmeldung abgelaufen: die Eingabe bleibt gesichert und geht nach der erneuten Anmeldung hinaus
           } else if (e && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) {
@@ -3538,8 +3572,9 @@
           teamList = cached.teams || [];
           uploadMeta = cached.meta || null;
           checklistMeta = cached.pmeta || null;
-          // Zwischenspeicher aus einer Version ohne Gaswarngerät: komplett neu laden, damit die Bestätigungen kommen
-          syncSeq = cached.gas ? cached.since || 0 : 0;
+          // Zwischenspeicher aus einer Version ohne Gaswarngerät (oder, beim Monteur, ohne Haken des Disponenten): komplett neu
+          // laden, damit die Bestätigungen bzw. die gesperrten (abgehakten) Aufträge kommen
+          syncSeq = cached.gas && (cached.mk || key === 'dispo') ? cached.since || 0 : 0;
           for (const g of cached.gas || []) gasRows.set(g.d + '|' + g.t, g);
           messages = cached.msgs || [];
           devices = cached.devs || {};
@@ -3562,6 +3597,7 @@
             meta: uploadMeta,
             pmeta: checklistMeta,
             marks: Object.fromEntries(marks),
+            mk: 1, // Haken sind enthalten (auch beim Monteur)
             msgs: messages,
             devs: devices,
             pcfg: pushConfig,
@@ -3640,6 +3676,7 @@
             for (const g of response.gas || []) mergeGas(g);
             for (const x of response.marks || [])
               if (x.sq > ((marks.get(x.a) || {}).sq || 0)) marks.set(x.a, { v: x.v, at: x.at, sq: x.sq });
+            dropEditsOfLockedOrder(); // der offene Auftrag wurde abgehakt: Eingaben schließen
             for (const r of response.orders || []) {
               if (r.del) ordersMap.delete(r.auftrag);
               else ordersMap.set(r.auftrag, r);
@@ -3836,7 +3873,10 @@
             results.set(d.a, d.doc);
             resultSeq.set(d.a, m.s);
           }
-        } else if (d.k === 'm') for (const a of d.ids) marks.set(a, { v: d.v, at: d.at, sq: m.s });
+        } else if (d.k === 'm') {
+          for (const a of d.ids) marks.set(a, { v: d.v, at: d.at, sq: m.s });
+          dropEditsOfLockedOrder(); // der offene Auftrag wurde abgehakt: Eingaben schließen
+        }
         // höchstens alle 80 ms neu zeichnen (mehrere Änderungen auf einmal -> ein Zeichnen), Cache höchstens alle 3 s schreiben
         liveDirty = true;
         if (!liveRenderTimer) liveRenderTimer = setTimeout(renderLive, liveRenderDelay);
@@ -3871,12 +3911,36 @@
       };
       // [[Team, Anzahl]] sortiert
       const teamCounts = () => teamList.map(([t, n]) => [t, n]).sort((a, b) => naturalCompare(a[0], b[0]));
-      // ---- Abhaken (nur Disponent) ----
+      // ---- Abhaken (Disponent) ----
       // 0 = nicht abgehakt, 1 = abgehakt, 2 = abgehakt, aber das Ergebnis wurde danach noch geändert
       const markState = orderNo => {
         const mark = marks.get(orderNo);
         return !mark || !mark.v ? 0 : (resultSeq.get(orderNo) || 0) > mark.sq ? 2 : 1;
       };
+      /**
+       * Monteur: Vom Disponenten abgehakte Aufträge sind gesperrt – man kann sie ansehen, aber nichts mehr ändern (Prüfobjekte,
+       * Zeit, Kollegen). Auch der Server lehnt Änderungen dann ab (423). Nimmt der Disponent den Haken zurück, geht es wieder.
+       */
+      function isLocked(orderNo) {
+        return session.role === 'monteur' && !!(marks.get(orderNo) || {}).v;
+      }
+      const LOCKED_TEXT = 'Dieser Auftrag wurde vom Disponenten abgehakt und kann nicht mehr bearbeitet werden.';
+      // Änderung an einem gesperrten Auftrag (z. B. kurz nach dem Abhaken getippt): nicht speichern, Hinweis zeigen
+      function denyLocked() {
+        dropEditsOfLockedOrder();
+        toast('🔒 ' + LOCKED_TEXT);
+        playErrorSound();
+        render();
+      }
+      // Wird der offene Auftrag gesperrt, während der Monteur gerade etwas eingibt, schließen sich die Eingaben (Nicht-OK-Text,
+      // Rückfrage „Alles OK“, Zeitformular)
+      function dropEditsOfLockedOrder() {
+        if (!openOrder || !isLocked(openOrder.auftrag)) return;
+        editIndex = null;
+        armAllOk = false;
+        timeFormOpen = false;
+        timeError = '';
+      }
       // Zeitpunkt (ms) als „TT.MM.JJ, HH:MM“
       const formatDateTime = t =>
         new Date(t).toLocaleString('de-AT', { dateStyle: 'short', timeStyle: 'short' });
@@ -4107,6 +4171,7 @@
             statusTags(order),
             timeTag(order),
             dueTag(order),
+            isLocked(order.auftrag) && el('span', { class: 'tag' }, '🔒 Abgehakt'),
             clickable && el('span', { class: 'chev' }, 'Prüfobjekte ›')
           ),
           el('div', { class: 'kt' }, order.kurz || '–'),
@@ -5630,6 +5695,7 @@
       function unsavedWarnings() {
         const order = openOrder;
         if (!order || session.role !== 'monteur') return null;
+        if (isLocked(order.auftrag)) return null; // abgehakt: es gibt nichts mehr auszufüllen
         const result = resultOf(order.auftrag),
           checklistItems = checklist.st === 'ok' ? checklist.list : null,
           warnings = [];
@@ -6348,6 +6414,8 @@
         const timePanel = timeCard(order, isMonteur);
         timePanel.classList.add('d-time');
         const detail = el('div', { class: 'det' }, orderInfoCard, timePanel);
+        // Monteur: vom Disponenten abgehakt -> nur ansehen
+        const locked = isMonteur && isLocked(order.auftrag);
         app.append(
           el(
             'div',
@@ -6355,6 +6423,9 @@
             el('h1', {}, 'Auftrag ' + order.auftrag),
             el('button', { onclick: requestBack }, '← Zurück')
           ),
+          ...(locked
+            ? [el('div', { class: 'card lockn', 'data-k': 'lk' }, el('b', {}, '🔒 Abgehakt'), el('div', {}, LOCKED_TEXT))]
+            : []),
           detail
         );
         const checklistCard = el(
@@ -6405,7 +6476,7 @@
           // „Alles OK“ setzt nur offene Prüfobjekte auf OK – Nicht OK (samt Text) bleibt erhalten
           const openCount = count - okCount - nokCount;
           // immer zweite Bestätigung; Klicks in den ersten 250 ms nach dem ersten zählen nicht (versehentlicher Doppel-Tipp)
-          if (isMonteur && openCount > 0)
+          if (isMonteur && !locked && openCount > 0)
             checklistCard.append(
               !armAllOk
                 ? el(
@@ -6493,16 +6564,24 @@
                   { class: 'ob' },
                   el(
                     'button',
-                    { class: 'ok' + (c === 'o' ? ' on' : ''), onclick: () => toggleOk(order, items, i) },
+                    {
+                      class: 'ok' + (c === 'o' ? ' on' : ''),
+                      disabled: locked ? 'disabled' : null,
+                      onclick: () => toggleOk(order, items, i)
+                    },
                     'OK'
                   ),
                   el(
                     'button',
-                    { class: 'nk' + (c === 'x' ? ' on' : ''), onclick: () => openNokEditor(i, m) },
+                    {
+                      class: 'nk' + (c === 'x' ? ' on' : ''),
+                      disabled: locked ? 'disabled' : null,
+                      onclick: () => openNokEditor(i, m)
+                    },
                     'Nicht OK'
                   )
                 ),
-                editIndex === i
+                editIndex === i && !locked
                   ? el(
                       'div',
                       { class: 'ed' },

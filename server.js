@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS pruef(auftrag TEXT PRIMARY KEY, items TEXT NOT NULL, 
 CREATE INDEX IF NOT EXISTS pruef_seq ON pruef(seq);
 CREATE TABLE IF NOT EXISTS ergebnis(auftrag TEXT PRIMARY KEY, team TEXT, doc TEXT NOT NULL, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ergebnis_seq ON ergebnis(seq, team);
--- Abhaken durch den Disponenten (nur Disponentenansicht): v=1 abgehakt, v=0 zurückgenommen
+-- Abhaken durch den Disponenten: v=1 abgehakt (der Auftrag ist für Monteure gesperrt), v=0 zurückgenommen
 CREATE TABLE IF NOT EXISTS dmark(auftrag TEXT PRIMARY KEY, v INTEGER NOT NULL, at INTEGER, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS dmark_seq ON dmark(seq);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -183,6 +183,15 @@ const sql = {
   ),
   marksSince: db.prepare('SELECT auftrag,v,at,seq FROM dmark WHERE seq>?'),
   marksSinceLive: db.prepare('SELECT auftrag,v,at,seq FROM dmark WHERE seq>? AND v=1'),
+  // Haken der Aufträge eines Teams (Monteure sehen sie, damit abgehakte Aufträge gesperrt sind)
+  marksSinceTeam: db.prepare(
+    'SELECT d.auftrag,d.v,d.at,d.seq FROM dmark d JOIN orders o ON o.auftrag=d.auftrag WHERE d.seq>? AND o.team=?'
+  ),
+  marksSinceLiveTeam: db.prepare(
+    'SELECT d.auftrag,d.v,d.at,d.seq FROM dmark d JOIN orders o ON o.auftrag=d.auftrag WHERE d.seq>? AND d.v=1 AND o.del=0 AND o.team=?'
+  ),
+  getMark: db.prepare('SELECT v,at,seq FROM dmark WHERE auftrag=?'),
+  ordersOfIds: db.prepare('SELECT auftrag,team FROM orders WHERE auftrag IN (SELECT value FROM json_each(?))'),
   pruefOne: db.prepare('SELECT items FROM pruef WHERE auftrag=?'),
   maxSeq: db.prepare(
     'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas)'
@@ -404,21 +413,32 @@ for (const sig of ['SIGINT', 'SIGTERM'])
 // bzw. ältere App: bekommt bei jeder Änderung { s, n: 1 }), team }
 const sseClients = new Set();
 /**
- * scope: 'all' (alle Geräte betroffen) | 'dispo' (nur Disponenten) | { team } (dieses Team und Disponenten)
- * delta: optionale Daten, die betroffene Geräte direkt übernehmen (siehe oben)
+ * scope: 'all' (alle Geräte betroffen) | 'dispo' (nur Disponenten) | { team } (dieses Team und Disponenten) |
+ *        { teams: Set } (mehrere Teams und Disponenten)
+ * delta: optionale Daten, die betroffene Geräte direkt übernehmen (siehe oben); oder eine Funktion (client) => Daten | null,
+ *        wenn jedes Gerät nur seinen Teil bekommen soll (null = das Gerät gleicht ab)
  */
 function announce(sq, scope = 'all', delta = null) {
   if (!sseClients.size) return;
   const ping = `data: ${JSON.stringify({ s: sq })}\n\n`,
     sync = `data: ${JSON.stringify({ s: sq, n: 1 })}\n\n`,
-    data = delta ? `data: ${JSON.stringify({ s: sq, d: delta })}\n\n` : sync;
+    shared = delta && typeof delta !== 'function' ? `data: ${JSON.stringify({ s: sq, d: delta })}\n\n` : sync;
   for (const c of sseClients) {
     if (c.res.writableLength > 262144) {
       c.res.destroy(); // Gerät liest nicht mehr (hängende Verbindung): nicht endlos Daten aufstauen
       continue;
     }
     const relevant =
-      c.kind === 'dispo' || scope === 'all' || (scope !== 'dispo' && c.kind === 'team' && scope.team === c.team);
+      c.kind === 'dispo' ||
+      scope === 'all' ||
+      (scope !== 'dispo' &&
+        c.kind === 'team' &&
+        (scope.team === c.team || (scope.teams !== undefined && scope.teams.has(c.team))));
+    let data = shared;
+    if (relevant && typeof delta === 'function') {
+      const d = delta(c);
+      data = d ? `data: ${JSON.stringify({ s: sq, d })}\n\n` : sync;
+    }
     c.res.write(c.kind === 'anon' ? sync : relevant ? data : ping);
   }
 }
@@ -984,10 +1004,11 @@ async function handleApi(req, res, url) {
       // Gaswarngerät-Bestätigungen der letzten 60 Tage: Monteur nur die des eigenen Teams, Disponent alle
       const gasFrom = dayOf(Date.now() - 60 * 864e5);
       out.gas = team ? sql.gasSinceTeam.all(from, gasFrom, team) : sql.gasSince.all(from, gasFrom);
-      if (!team)
-        out.marks = (full ? sql.marksSinceLive : sql.marksSince)
-          .all(from)
-          .map(r => ({ a: r.auftrag, v: r.v, at: r.at, sq: r.seq })); // nur Disponentenansicht
+      // Haken: der Disponent sieht alle, ein Monteur die Haken der Aufträge seines Teams (abgehakte Aufträge sind für ihn gesperrt)
+      out.marks = (team
+        ? (full ? sql.marksSinceLiveTeam : sql.marksSinceTeam).all(from, team)
+        : (full ? sql.marksSinceLive : sql.marksSince).all(from)
+      ).map(r => ({ a: r.auftrag, v: r.v, at: r.at, sq: r.seq }));
     }
     return sendJson(req, res, 200, out);
   }
@@ -1042,6 +1063,9 @@ async function handleApi(req, res, url) {
     d.u = user.sap; // wer das Ergebnis zuletzt gespeichert hat (kommt aus der Anmeldung, nicht vom Gerät)
     const r = await inBatch(() => {
       const cur = sql.getErg.get(match[1]);
+      // Vom Disponenten abgehakt: der Monteur kann nichts mehr ändern (erst wieder, wenn der Haken zurückgenommen wird)
+      const mark = sql.getMark.get(match[1]);
+      if (mark && mark.v) return { locked: mark, cur: cur || null };
       if (base !== null && (cur ? cur.seq : 0) !== base) return { cur: cur || null };
       // Zeitrückmeldung (tu = SAP-User, der sie gemacht hat): bleibt die Zeit unverändert, bleibt auch der bisherige Benutzer
       // (z. B. wenn ein anderer Monteur nur Prüfobjekte bewertet); neue oder geänderte Zeit gehört dem speichernden Benutzer
@@ -1083,6 +1107,14 @@ async function handleApi(req, res, url) {
       return { sq: changeSeq };
     });
     if (r.bad) return sendJson(req, res, 400, { error: r.bad });
+    if (r.locked)
+      return sendJson(req, res, 423, {
+        error: 'Der Disponent hat diesen Auftrag abgehakt – er kann nicht mehr bearbeitet werden.',
+        locked: 1,
+        mark: { v: 1, at: r.locked.at, sq: r.locked.seq },
+        doc: r.cur ? JSON.parse(r.cur.doc) : null,
+        sq: r.cur ? r.cur.seq : 0
+      });
     if (r.sq == null)
       return sendJson(req, res, 409, {
         error: 'Inzwischen auf einem anderen Gerät geändert',
@@ -1450,8 +1482,17 @@ async function handleApi(req, res, url) {
         for (const a of ids) sql.upMark.run(a, body.v ? 1 : 0, now, changeSeq);
         return changeSeq;
       });
-    // Haken sehen nur Disponenten; bei sehr vielen Aufträgen gleichen sie lieber ab, statt die Liste mitzuschicken
-    announce(sq, 'dispo', ids.length <= 500 ? { k: 'm', ids, v: body.v ? 1 : 0, at: now } : null);
+    // Haken sehen Disponenten (alle) und die Monteure der betroffenen Teams (nur Aufträge des eigenen Teams – abgehakte Aufträge
+    // sind für sie gesperrt); bei sehr vielen Aufträgen gleichen die Geräte lieber ab, statt die Liste mitzuschicken
+    const teamOf = new Map(sql.ordersOfIds.all(JSON.stringify(ids)).map(r => [r.auftrag, r.team])),
+      v = body.v ? 1 : 0;
+    announce(
+      sq,
+      { teams: new Set(teamOf.values()) },
+      ids.length <= 500
+        ? c => ({ k: 'm', ids: c.kind === 'dispo' ? ids : ids.filter(a => teamOf.get(a) === c.team), v, at: now })
+        : null
+    );
     return sendJson(req, res, 200, { ok: true, sq, at: now });
   }
   // Aufträge hochladen: ersetzt je enthaltenem Team alle Aufträge, die in der Datei fehlen (keep = nur ergänzen); fehlende werden als gelöscht markiert

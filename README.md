@@ -44,7 +44,7 @@ Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zus
 
 ## Wie die Geräte abgleichen
 - Der Server vergibt bei jeder Änderung eine fortlaufende Nummer. Geräte holen nur Änderungen seit ihrer letzten Nummer, nach einer Eingabe also wenige hundert Byte.
-- Monteure bekommen nur Aufträge und Ergebnisse ihres Teams, Disponenten alles. Die Haken des Disponenten (abgehakte Aufträge) gehen nur an die Disponentenansicht.
+- Monteure bekommen nur Aufträge und Ergebnisse ihres Teams, Disponenten alles. Die Haken des Disponenten (abgehakte Aufträge) sehen die Disponenten (alle) und die Monteure des jeweiligen Teams (nur ihre Aufträge): Ein **abgehakter Auftrag ist für Monteure gesperrt** – sie können ihn ansehen, aber Prüfobjekte, Zeit und Kollegen nicht mehr ändern (der Server lehnt Änderungen mit 423 ab). Nimmt der Disponent den Haken zurück, ist der Auftrag wieder bearbeitbar.
 - Änderungen kommen **live** per Server-Sent Events (`/api/events`) bei den betroffenen Geräten an, siehe Abschnitt „Live-Abgleich und Leistung“.
 - Antworten und Dateien werden vom Server selbst per gzip komprimiert.
 - Excel-Dateien werden im Browser in einem Hintergrund-Thread gelesen und geschrieben, die Oberfläche bleibt bedienbar.
