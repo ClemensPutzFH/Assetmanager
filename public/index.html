@@ -2395,7 +2395,9 @@
         timeDate =
           existingResult && existingResult.min != null ? performedDate(existingResult) || today() : today();
         timeStart =
-          existingResult && existingResult.min != null && existingResult.von ? existingResult.von : '';
+          existingResult && existingResult.min != null && existingResult.von
+            ? roundQuarterHHMM(existingResult.von)
+            : '';
         timeWith = existingResult && existingResult.min != null && existingResult.mit ? [...existingResult.mit] : [];
         // neue Zeit: alle aus dem Team sind vorausgewählt (sobald die Kollegenliste da ist), solange der Monteur nichts ändert
         timeWithAuto = session.role === 'monteur' && !(existingResult && existingResult.min != null);
@@ -2546,6 +2548,19 @@
       // ---- Zeitrückmeldung: Felder min (Minuten), tat (Zeitpunkt), dat (Datum), von (Beginn) im selben Ergebnis-Dokument ----
       // Die Dauer wird nur in Viertelstunden zurückgemeldet. roundUpQuarter: nächsthöherer Viertelstundenwert (mindestens 15)
       const roundUpQuarter = minutes => Math.max(15, Math.ceil(minutes / 15) * 15);
+      // Beginn-Uhrzeit: auf die nächste Viertelstunde gerundet, und zwar auf- UND abgerundet (07:07 -> 07:00, 07:08 -> 07:15),
+      // nie über Mitternacht hinaus (dann 23:45, damit das Datum stimmt). roundQuarterClock: Zeitpunkt (ms) -> { date, time }
+      const clockText = t => String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
+      const roundQuarterClock = ms => {
+        const d = new Date(ms),
+          t = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+        return { date: d.toLocaleDateString('sv-SE'), time: clockText(Math.min(1425, Math.round(t / 15) * 15)) };
+      };
+      // „HH:MM“ -> auf die nächste Viertelstunde gerundet (ungültige Eingaben bleiben unverändert)
+      const roundQuarterHHMM = v => {
+        const m = /^(\d{2}):(\d{2})$/.exec(v || '');
+        return m ? clockText(Math.min(1425, Math.round((+m[1] * 60 + +m[2]) / 15) * 15)) : v;
+      };
       // Dauer als Text: 90 -> „1 Std 30 Min“
       const formatMinutes = m =>
         m >= 60 ? `${Math.floor(m / 60)} Std${m % 60 ? ' ' + (m % 60) + ' Min' : ''}` : `${m} Min`;
@@ -2644,6 +2659,7 @@
           playErrorSound();
           render();
         };
+        timeStart = roundQuarterHHMM(timeStart); // auch ein getippter Wert wird auf die Viertelstunde gerundet
         if (!/^\d{4}-\d{2}-\d{2}$/.test(timeDate)) return fail('Bitte ein Datum wählen.');
         if (timeDate > today()) return fail('Das Datum liegt in der Zukunft.');
         if (!/^\d{2}:\d{2}$/.test(timeStart || '')) return fail('Bitte die Beginn-Uhrzeit angeben.');
@@ -2690,13 +2706,14 @@
           render();
           return;
         }
-        const began = new Date(start);
-        timeDate = began.toLocaleDateString('sv-SE');
-        timeStart = began.toTimeString().slice(0, 5);
+        // Beginn auf die nächste Viertelstunde gerundet (auf- und abrunden), die Dauer wird aufgerundet
+        const began = roundQuarterClock(start);
+        timeDate = began.date;
+        timeStart = began.time;
         timeHours = String(Math.floor(minutes / 60));
         timeMinutes = String(minutes % 60);
         timeError = '';
-        infoMsg = '⏱ Zeit gespeichert: ' + formatMinutes(minutes) + ' (auf die nächste Viertelstunde aufgerundet)';
+        infoMsg = `⏱ Zeit gespeichert: ab ${timeStart} Uhr, ${formatMinutes(minutes)} (Beginn auf die nächste, Dauer auf die nächsthöhere Viertelstunde gerundet)`;
         storeTime(order, items, minutes, timeDate, timeStart);
       }
       setInterval(() => {
@@ -2907,27 +2924,30 @@
               'Gestern'
             )
           ),
-          el('div', { class: 'mu' }, 'Beginn (Uhrzeit)'),
+          el('div', { class: 'mu' }, 'Beginn (Uhrzeit, auf Viertelstunden gerundet)'),
           el(
             'div',
             { class: 'zt', 'data-k': 'zv' },
             el('input', {
               class: 'dt',
               type: 'time',
+              step: '900',
               'data-nr': '1',
               value: timeStart,
               oninput: e => {
                 timeStart = e.target.value;
               },
+              // beim Verlassen des Feldes auf die nächste Viertelstunde runden (auf oder ab)
               onchange: e => {
-                timeStart = e.target.value;
+                timeStart = roundQuarterHHMM(e.target.value);
+                e.target.value = timeStart;
               }
             }),
             el(
               'button',
               {
                 onclick: () => {
-                  timeStart = new Date().toTimeString().slice(0, 5);
+                  timeStart = roundQuarterClock(Date.now()).time;
                   timeError = '';
                   render();
                 }

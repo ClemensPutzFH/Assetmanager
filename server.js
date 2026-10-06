@@ -986,6 +986,8 @@ async function handleApi(req, res, url) {
           prev = cur && JSON.parse(cur.doc);
         } catch {}
         // Dauer nur in Viertelstunden; eine ältere, nicht gerundete Zeit darf unverändert bleiben (z. B. beim Bewerten von Prüfobjekten)
+        if (d.von && +d.von.slice(3) % 15 !== 0 && !(prev && prev.von === d.von))
+          return { bad: 'Die Beginn-Uhrzeit muss auf eine Viertelstunde gerundet sein (:00, :15, :30, :45).' };
         if (d.min % 15 !== 0 && !(prev && prev.min === d.min)) return { bad: 'Die Dauer muss in Viertelstunden angegeben werden (15, 30, 45 …).' };
         const unchanged = prev && prev.min === d.min && prev.tat === d.tat && prev.dat === d.dat && prev.von === d.von;
         if (unchanged) {
