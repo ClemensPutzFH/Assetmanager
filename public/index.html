@@ -399,6 +399,12 @@
       .nk1 {
         margin-top: 4px;
       }
+      .tmr {
+        margin-bottom: 12px;
+      }
+      .tmr p {
+        margin: 6px 0;
+      }
       .it .nokbox {
         margin-top: 8px;
       }
@@ -2451,6 +2457,8 @@
         delete doc.dat;
         delete doc.von;
         if (minutes > 0) {
+          delete runningTimers[order.auftrag]; // die Zeit ist jetzt gespeichert: ein laufender Timer ist erledigt
+          saveTimers();
           doc.min = minutes;
           doc.tat = Date.now();
           if (date) doc.dat = date;
@@ -2479,6 +2487,54 @@
         timeError = '';
         storeTime(order, items, minutes, timeDate, timeStart);
       }
+      // ---- Start / Ende: der Monteur kann beim Arbeitsbeginn „Start“ und am Ende „Ende“ drücken ----
+      // „Ende“ speichert Datum, Beginn und Dauer wie die Zeitkarte. Der Start wird je Gerät gemerkt (localStorage), auch wenn die
+      // App dazwischen geschlossen wird. runningTimers: Auftrag -> Startzeitpunkt (ms)
+      let runningTimers = {};
+      try {
+        runningTimers = JSON.parse(localStorage.getItem('tmr') || '{}') || {};
+      } catch (e) {}
+      const saveTimers = () => {
+        try {
+          localStorage.setItem('tmr', JSON.stringify(runningTimers));
+        } catch (e) {}
+      };
+      const timerStartOf = orderNo => +runningTimers[orderNo] || 0;
+      // „seit 08:15 Uhr · 12 Min“ (die Minuten aktualisiert ein Intervall, siehe unten)
+      const elapsedMinutes = start => Math.max(0, Math.floor((Date.now() - start) / 60000));
+      const startTimer = order => {
+        runningTimers[order.auftrag] = Date.now();
+        saveTimers();
+        timeError = '';
+        render();
+      };
+      const cancelTimer = order => {
+        delete runningTimers[order.auftrag];
+        saveTimers();
+        render();
+      };
+      function stopTimer(order, items) {
+        const start = timerStartOf(order.auftrag);
+        if (!start || !items) return;
+        const minutes = Math.max(1, Math.round((Date.now() - start) / 60000));
+        if (minutes > 1440) {
+          timeError = 'Der Timer läuft schon länger als 24 Stunden – bitte „Verwerfen“ und die Zeit von Hand eintragen.';
+          playErrorSound();
+          render();
+          return;
+        }
+        const began = new Date(start);
+        timeDate = began.toLocaleDateString('sv-SE');
+        timeStart = began.toTimeString().slice(0, 5);
+        timeHours = String(Math.floor(minutes / 60));
+        timeMinutes = String(minutes % 60);
+        timeError = '';
+        infoMsg = '⏱ Zeit gespeichert: ' + formatMinutes(minutes);
+        storeTime(order, items, minutes, timeDate, timeStart);
+      }
+      setInterval(() => {
+        for (const n of document.querySelectorAll('[data-tmr]')) n.textContent = formatMinutes(elapsedMinutes(+n.dataset.tmr));
+      }, 15000);
       // Löscht die erfasste Zeit (Felder leeren und Zeitangaben im Ergebnis entfernen)
       function deleteTime(order, items) {
         timeHours = '';
@@ -2552,6 +2608,41 @@
           g.setDate(g.getDate() - 1);
           return g.toLocaleDateString('sv-SE');
         };
+        const timerStart = timerStartOf(order.auftrag);
+        if (timerStart || !hasTime)
+          timePanel.append(
+            el(
+              'div',
+              { class: 'tmr', 'data-k': 'zs' },
+              timerStart
+                ? [
+                    el(
+                      'p',
+                      { class: 'mu' },
+                      `⏱ Läuft seit ${new Date(timerStart).toTimeString().slice(0, 5)} Uhr · `,
+                      el('b', { 'data-tmr': timerStart }, formatMinutes(elapsedMinutes(timerStart)))
+                    ),
+                    el(
+                      'div',
+                      { class: 'ob' },
+                      el(
+                        'button',
+                        { class: 'sv', disabled: items ? null : 'disabled', onclick: () => stopTimer(order, items) },
+                        '■ Ende'
+                      ),
+                      el('button', { class: 'er', onclick: () => cancelTimer(order) }, 'Verwerfen')
+                    )
+                  ]
+                : [
+                    el(
+                      'p',
+                      { class: 'mu' },
+                      'Optional: „Start“ drücken, wenn die Arbeit beginnt, und „Ende“, wenn sie fertig ist – die Zeit wird dann automatisch gespeichert.'
+                    ),
+                    el('div', { class: 'ob' }, el('button', { class: 'sv', onclick: () => startTimer(order) }, '▶ Start'))
+                  ]
+            )
+          );
         timePanel.append(
           el('div', { class: 'mu' }, 'Durchgeführt am'),
           el(
