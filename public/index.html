@@ -5117,7 +5117,6 @@
         LIST_STAGGER_MS = 20;
       let viewAnim = null,
         listStable = false,
-        searchShown = '',
         viewKey = null,
         viewDepth = 0,
         filterKey = '',
@@ -5159,12 +5158,11 @@
           viewStart = performance.now();
           listStart = -1e9;
         } else if (viewKey !== null && filters !== filterKey) listStart = performance.now();
-        // für animateRemoved: nur „echte“ Änderungen der Daten animieren, nicht Ansichts-, Filter- oder Suchwechsel
-        listStable = !changed && filters === filterKey && searchText === searchShown;
+        // für animateRemoved: nur Änderungen der Liste selbst (Daten, Suche) animieren, nicht Ansichts- oder Filterwechsel
+        listStable = !changed && filters === filterKey;
         viewKey = key;
         viewDepth = depth;
         filterKey = filters;
-        searchShown = searchText;
         if (!app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
         viewAnim = [
           ...(viewFrom ? fadeIn([...app.children].slice(0, 10), viewFrom, viewStart, VIEW_MS, VIEW_STAGGER_MS) : []),
@@ -5178,9 +5176,10 @@
         ];
       }
       /**
-       * Verschwindet ein Auftrag aus der Liste (Disponent hakt ihn ab und „Abgehakte ausblenden“ ist an, Daten vom Server,
-       * Filter nach Änderung des Zustands …), blendet seine Karte aus: eine Kopie der alten Karte schwebt an ihrer Stelle
-       * (fixed, ohne Einfluss auf das Layout) und verschwindet; die übrigen Karten gleiten an ihren neuen Platz (FLIP).
+       * Ändert sich die Liste selbst (Disponent hakt einen Auftrag ab und „Abgehakte ausblenden“ ist an, Daten vom Server,
+       * Suche), blenden verschwindende Karten aus: eine Kopie der alten Karte schwebt an ihrer Stelle (fixed, ohne Einfluss
+       * auf das Layout) und verschwindet; die übrigen Karten gleiten an ihren neuen Platz (FLIP), neue Karten blenden ein.
+       * Je Änderung höchstens 12 Karten, der Rest wechselt ohne Animation.
        * snapshotList() merkt sich vor dem Neuzeichnen die sichtbaren Karten samt Position, animateRemoved() vergleicht danach.
        */
       function snapshotList() {
@@ -5196,8 +5195,14 @@
         const now = new Map();
         for (const n of app.querySelectorAll('[data-list] > [data-k]')) now.set(n.dataset.k, n);
         if (!now.size && !app.querySelector('[data-list]')) return;
-        const gone = [...snap].filter(([k]) => !now.has(k));
-        if (!gone.length || gone.length > 12) return;
+        const gone = [...snap].filter(([k]) => !now.has(k)).slice(0, 12),
+          fresh = [...now]
+            .filter(([k, n]) => {
+              const r = n.getBoundingClientRect();
+              return !snap.has(k) && r.bottom > 0 && r.top < innerHeight;
+            })
+            .slice(0, 12);
+        if (!gone.length && !fresh.length) return;
         const easing = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
         for (const [, { node, rect }] of gone) {
           Object.assign(node.style, {
@@ -5237,7 +5242,15 @@
             n.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 260, easing })
           );
         }
-        viewAnim = [...(viewAnim || []), ...slides];
+        const appear = fresh.map(([, n], i) =>
+          n.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], {
+            duration: 220,
+            delay: i * 20,
+            easing,
+            fill: 'backwards'
+          })
+        );
+        viewAnim = [...(viewAnim || []), ...slides, ...appear];
       }
       // ---- Ansichten: draw() wählt je Zustand genau eine aus ----
 
