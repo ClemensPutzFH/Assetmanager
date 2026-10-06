@@ -160,6 +160,25 @@ addColumn('usr', 'team_lock', 'INTEGER NOT NULL DEFAULT 0');
 const sql = {
   getMeta: db.prepare('SELECT v FROM meta WHERE k=?'),
   setMeta: db.prepare('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v'),
+  delMeta: db.prepare('DELETE FROM meta WHERE k=?'),
+  teamCounts: db.prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team'),
+  ordersFullTeam: db.prepare('SELECT * FROM orders WHERE del=0 AND team=?'),
+  ergebnisTeam: db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>? AND team=?'),
+  ergebnisAll: db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>?'),
+  ordersSince: db.prepare('SELECT * FROM orders WHERE seq>?'),
+  ordersSinceLive: db.prepare('SELECT * FROM orders WHERE seq>? AND del=0'),
+  msgsTeam: db.prepare(
+    'SELECT m.id, m.text, m.at, (SELECT 1 FROM mack a WHERE a.id=m.id AND a.did=?) ack FROM msg m WHERE m.team=? AND m.closed=0 AND m.at>?'
+  ),
+  msgsAll: db.prepare(
+    'SELECT m.id, m.team, m.text, m.at, m.closed, (SELECT COUNT(*) FROM mack a WHERE a.id=m.id) acks FROM msg m WHERE m.at>?'
+  ),
+  devsByTeam: db.prepare(
+    'SELECT team, COUNT(*) n, SUM(sub IS NOT NULL) p FROM dev WHERE team IS NOT NULL AND seen>? GROUP BY team'
+  ),
+  marksSince: db.prepare('SELECT auftrag,v,at,seq FROM dmark WHERE seq>?'),
+  marksSinceLive: db.prepare('SELECT auftrag,v,at,seq FROM dmark WHERE seq>? AND v=1'),
+  pruefOne: db.prepare('SELECT items FROM pruef WHERE auftrag=?'),
   maxSeq: db.prepare(
     'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas)'
   ),
@@ -256,13 +275,32 @@ const sql = {
   )
 };
 // Wert aus der Tabelle meta lesen (JSON) bzw. null
+// Zwischenspeicher: meta wird bei jedem Abgleich gelesen (JSON parsen), ändert sich aber selten
+const metaCache = new Map();
 const getMeta = k => {
-  const r = sql.getMeta.get(k);
-  return r ? JSON.parse(r.v) : null;
+  if (metaCache.has(k)) return metaCache.get(k);
+  const r = sql.getMeta.get(k),
+    value = r ? JSON.parse(r.v) : null;
+  metaCache.set(k, value);
+  return value;
 };
 // Wert in meta speichern; null löscht den Eintrag
-const setMeta = (k, v) =>
-  v == null ? db.prepare('DELETE FROM meta WHERE k=?').run(k) : sql.setMeta.run(k, JSON.stringify(v));
+const setMeta = (k, v) => {
+  metaCache.set(k, v ?? null);
+  return v == null ? sql.delMeta.run(k) : sql.setMeta.run(k, JSON.stringify(v));
+};
+// Katalog (Aufträge, Prüflisten) geändert: Teamliste/Meta werden neu aufgebaut. usersVer: Benutzerliste geändert.
+let catalogVer = 1,
+  usersVer = Date.now();
+// Teamliste [[Team, Anzahl]] – wird nur neu berechnet, wenn sich der Katalog (Aufträge) geändert hat
+let teamsCache = { v: 0, list: [] };
+const teamsList = () => {
+  if (teamsCache.v !== catalogVer) teamsCache = { v: catalogVer, list: sql.teamCounts.all().map(r => [r.team, r.n]) };
+  return teamsCache.list;
+};
+// vorbereitete Anweisung merken (SQL-Text -> Statement), damit dynamische Abfragen nicht bei jedem Aufruf neu übersetzt werden
+const prepCache = new Map();
+const prep = text => prepCache.get(text) || (prepCache.set(text, db.prepare(text)), prepCache.get(text));
 // fortlaufende Änderungsnummer: jede Änderung zählt hoch; Geräte holen nur Zeilen mit seq > ihrem Stand
 // (beim Start: die größte Nummer, die in der Datenbank vorkommt)
 let changeSeq = Math.max(+getMeta('seq') || 0, sql.maxSeq.get().m || 0); // fortlaufende Änderungsnummer
@@ -350,19 +388,37 @@ for (const sig of ['SIGINT', 'SIGTERM'])
     process.exit(0);
   });
 
-// ---------- Live-Benachrichtigung (SSE) ----------
+// ---------- Live-Verteilung (Server-Sent Events) ----------
+// Jede Änderung zählt `changeSeq` genau um 1 hoch und wird danach mit ihrer Nummer `sq` angekündigt (announce). Die Geräte
+// bekommen sofort – ohne eigene Anfrage – das Nötige:
+//   { s }        Änderung betrifft dieses Gerät nicht (z. B. anderes Team): es merkt sich nur die neue Nummer
+//   { s, d }     Änderung samt Daten (Ergebnis eines Auftrags, Haken des Disponenten): das Gerät übernimmt sie direkt
+//   { s, n: 1 }  Änderung betrifft das Gerät, ist aber größer (Upload, Nachricht, Gaswarngerät …): das Gerät gleicht ab
+// Reißt die Kette ab (ein Gerät verpasst eine Nummer), gleicht es mit /api/sync ab – dort bleibt alles wie bisher.
+// Clients: { res, kind: 'dispo' (Disponent mit Token, sieht alles) | 'team' (Monteur mit Token, nur sein Team) | 'anon' (ohne Anmeldung
+// bzw. ältere App: bekommt bei jeder Änderung { s, n: 1 }), team }
 const sseClients = new Set();
-let notifyTimer = null;
-// meldet allen verbundenen Geräten die neue Änderungsnummer (gebündelt, höchstens alle 150 ms)
-const notifyClients = () => {
-  if (notifyTimer) return;
-  notifyTimer = setTimeout(() => {
-    notifyTimer = null;
-    for (const c of sseClients) c.write(`data: ${changeSeq}\n\n`);
-  }, 150);
-};
+/**
+ * scope: 'all' (alle Geräte betroffen) | 'dispo' (nur Disponenten) | { team } (dieses Team und Disponenten)
+ * delta: optionale Daten, die betroffene Geräte direkt übernehmen (siehe oben)
+ */
+function announce(sq, scope = 'all', delta = null) {
+  if (!sseClients.size) return;
+  const ping = `data: ${JSON.stringify({ s: sq })}\n\n`,
+    sync = `data: ${JSON.stringify({ s: sq, n: 1 })}\n\n`,
+    data = delta ? `data: ${JSON.stringify({ s: sq, d: delta })}\n\n` : sync;
+  for (const c of sseClients) {
+    if (c.res.writableLength > 262144) {
+      c.res.destroy(); // Gerät liest nicht mehr (hängende Verbindung): nicht endlos Daten aufstauen
+      continue;
+    }
+    const relevant =
+      c.kind === 'dispo' || scope === 'all' || (scope !== 'dispo' && c.kind === 'team' && scope.team === c.team);
+    c.res.write(c.kind === 'anon' ? sync : relevant ? data : ping);
+  }
+}
 setInterval(() => {
-  for (const c of sseClients) c.write(': ping\n\n');
+  for (const c of sseClients) c.res.write(': ping\n\n');
 }, 25000).unref();
 
 // ---------- Hilfsfunktionen ----------
@@ -437,6 +493,11 @@ const safeEqual = (a, b) => {
 };
 // Fehlversuche je IP (und Bereich): nach 5 Fehlversuchen 10 Minuten gesperrt
 const loginFailures = new Map();
+// abgelaufene Einträge (älter als 10 Minuten) regelmäßig entfernen, damit die Liste nicht endlos wächst
+setInterval(() => {
+  const limit = Date.now() - 600e3;
+  for (const [key, f] of loginFailures) if (f.t < limit) loginFailures.delete(key);
+}, 600e3).unref();
 // Gültigkeit der Anmelde-Tokens: Disponent 12 Stunden, Upload (scope 'up:') 30 Minuten
 const DISPO_TOKEN_MS = 12 * 3600e3,
   UPLOAD_TOKEN_MS = 30 * 60e3;
@@ -764,7 +825,7 @@ const orderFields = r => ({
 /**
  * Alle Aufrufe unter /api/. Reihenfolge = Zugriffsstufen: zuerst offene Aufrufe (Anmeldung, Abgleich, Prüfobjekte,
  * Ergebnis, Push), dann – nach der Prüfung des Disponenten-Tokens – die Aufrufe des Disponenten.
- * Jede Änderung zählt `changeSeq` hoch und ruft notifyClients() auf.
+ * Jede Änderung zählt `changeSeq` hoch und wird mit announce() live verteilt.
  */
 async function handleApi(req, res, url) {
   const pathname = url.pathname,
@@ -779,8 +840,20 @@ async function handleApi(req, res, url) {
       'X-Accel-Buffering': 'no'
     });
     res.write('retry: 3000\n\n');
-    sseClients.add(res);
-    req.on('close', () => sseClients.delete(res));
+    // Wer ist das? Disponent (PIN-Token) sieht alle Ankündigungen mit Daten, ein angemeldeter Monteur nur die seines Teams
+    // (bei festem Team immer des eigenen); ohne Anmeldung (ältere App) gibt es nur den Hinweis „bitte abgleichen“
+    const client = { res, kind: 'anon', team: '' };
+    if (isDispo(req)) client.kind = 'dispo';
+    else {
+      const user = userFromRequest(req);
+      if (user) {
+        client.kind = 'team';
+        client.team = clipString(params.get('team'), 100);
+        if (!teamAllowed(user, client.team)) client.team = user.team || '';
+      }
+    }
+    sseClients.add(client);
+    req.on('close', () => sseClients.delete(client));
     return;
   }
   // Monteur: SAP-User + Passwort (+ Geräte-ID) -> Token und Benutzerdaten (Name, Team)
@@ -862,36 +935,28 @@ async function handleApi(req, res, url) {
       ...(kicked ? { kicked: true } : {}),
       ...(me ? { me: meOf(me) } : {}),
       ...locateField(),
-      teams: db
-        .prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team')
-        .all()
-        .map(r => [r.team, r.n]),
+      teams: teamsList(),
       meta: { upload: getMeta('upload'), pruef: getMeta('pruef') },
       orders: [],
       ergebnis: []
     };
     if (team !== '-') {
-      for (const r of db.prepare('SELECT * FROM orders WHERE seq>?' + (full ? ' AND del=0' : '')).all(from)) {
+      // erster Abgleich eines Monteurs: nur die Aufträge des Teams lesen (nicht die ganze Tabelle)
+      const orderRows =
+        full && team ? sql.ordersFullTeam.all(team) : (full ? sql.ordersSinceLive : sql.ordersSince).all(from);
+      for (const r of orderRows) {
         if (!r.del && (!team || r.team === team)) out.orders.push(orderFields(r));
         else if (!full) out.orders.push({ auftrag: r.auftrag, del: 1 }); // gelöscht oder in anderes Team verschoben
       }
-      const rows = team
-        ? db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>? AND team=?').all(from, team)
-        : db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>?').all(from);
+      const rows = team ? sql.ergebnisTeam.all(from, team) : sql.ergebnisAll.all(from);
       out.ergebnis = rows.map(r => ({ a: r.auftrag, doc: JSON.parse(r.doc), sq: r.seq }));
       const lim = Date.now() - MESSAGE_HOURS * 3600e3;
       if (team)
-        out.msgs = db
-          .prepare(
-            'SELECT m.id, m.text, m.at, (SELECT 1 FROM mack a WHERE a.id=m.id AND a.did=?) ack FROM msg m WHERE m.team=? AND m.closed=0 AND m.at>?'
-          )
+        out.msgs = sql.msgsTeam
           .all(clipString(params.get('did'), 64), team, lim)
           .map(r => ({ id: r.id, team, text: r.text, at: r.at, ack: !!r.ack }));
       else {
-        out.msgs = db
-          .prepare(
-            'SELECT m.id, m.team, m.text, m.at, m.closed, (SELECT COUNT(*) FROM mack a WHERE a.id=m.id) acks FROM msg m WHERE m.at>?'
-          )
+        out.msgs = sql.msgsAll
           .all(Date.now() - 24 * 3600e3)
           .map(r => ({
             id: r.id,
@@ -902,22 +967,20 @@ async function handleApi(req, res, url) {
             acks: r.acks
           }));
         out.devs = Object.fromEntries(
-          db
-            .prepare(
-              'SELECT team, COUNT(*) n, SUM(sub IS NOT NULL) p FROM dev WHERE team IS NOT NULL AND seen>? GROUP BY team'
-            )
-            .all(Date.now() - 30 * 864e5)
-            .map(r => [r.team, [r.n, r.p]])
+          sql.devsByTeam.all(Date.now() - 30 * 864e5).map(r => [r.team, [r.n, r.p]])
         );
         out.cfg = { nag: NAG_INTERVAL_MIN, hours: MESSAGE_HOURS };
-        out.users = sql.usrNames.all().map(r => [r.sap, r.name]); // SAP-User -> Name (für „bewertet von“)
+        // SAP-User -> Name (für „bewertet von“): nur wenn sich die Liste geändert hat (uv = Stand des Geräts)
+        if (params.get('uv') !== String(usersVer)) {
+          out.users = sql.usrNames.all().map(r => [r.sap, r.name]);
+          out.uv = usersVer;
+        }
       }
       // Gaswarngerät-Bestätigungen der letzten 60 Tage: Monteur nur die des eigenen Teams, Disponent alle
       const gasFrom = dayOf(Date.now() - 60 * 864e5);
       out.gas = team ? sql.gasSinceTeam.all(from, gasFrom, team) : sql.gasSince.all(from, gasFrom);
       if (!team)
-        out.marks = db
-          .prepare('SELECT auftrag,v,at,seq FROM dmark WHERE seq>?' + (full ? ' AND v=1' : ''))
+        out.marks = (full ? sql.marksSinceLive : sql.marksSince)
           .all(from)
           .map(r => ({ a: r.auftrag, v: r.v, at: r.at, sq: r.seq })); // nur Disponentenansicht
     }
@@ -942,7 +1005,7 @@ async function handleApi(req, res, url) {
       team = params.get('team'),
       since = +params.get('since') || 0;
     if (a) {
-      const r = db.prepare('SELECT items FROM pruef WHERE auftrag=?').get(a);
+      const r = sql.pruefOne.get(a);
       return sendJson(req, res, 200, { list: r ? JSON.parse(r.items) : [] });
     }
     if (team) {
@@ -996,6 +1059,15 @@ async function handleApi(req, res, url) {
       }
       changeSeq++;
       sql.upErg.run(match[1], d.team, JSON.stringify(d), changeSeq, user.sap);
+      // Protokoll im selben Schreibvorgang (ein Festschreiben statt zwei)
+      logAct(
+        'ergebnis',
+        user.sap,
+        user.did,
+        d.team,
+        match[1],
+        `${d.ok} OK, ${d.nx} Nicht OK, ${d.n - d.ok - d.nx} offen` + (d.min != null ? `, Zeit ${d.min} Min` : '')
+      );
       return { sq: changeSeq };
     });
     if (r.bad) return sendJson(req, res, 400, { error: r.bad });
@@ -1005,15 +1077,7 @@ async function handleApi(req, res, url) {
         doc: r.cur ? JSON.parse(r.cur.doc) : null,
         sq: r.cur ? r.cur.seq : 0
       });
-    logAct(
-      'ergebnis',
-      user.sap,
-      user.did,
-      d.team,
-      match[1],
-      `${d.ok} OK, ${d.nx} Nicht OK, ${d.n - d.ok - d.nx} offen` + (d.min != null ? `, Zeit ${d.min} Min` : '')
-    );
-    notifyClients();
+    announce(r.sq, { team: d.team }, { k: 'e', a: match[1], doc: d });
     return sendJson(req, res, 200, { ok: true, sq: r.sq });
   }
   // Push: öffentlicher Schlüssel, Gerät/Team/Abo melden, Bestätigen
@@ -1062,7 +1126,7 @@ async function handleApi(req, res, url) {
       sql.upDev.run(did, role, team, sub, now, clipString(req.headers['user-agent'], 200), now, userSap);
       if (role !== 'monteur') sql.clearLoc.run(did); // abgemeldet oder nicht (mehr) Monteur -> kein Standort
     });
-    notifyClients();
+    announce(changeSeq, 'dispo'); // nur der Disponent sieht Geräte und Zähler
     return sendJson(req, res, 200, { ok: true });
   }
   if (pathname === '/api/push/resub' && method === 'POST') {
@@ -1113,7 +1177,7 @@ async function handleApi(req, res, url) {
         changeSeq++;
       });
       logAct('ack', owner && owner.usr, did, owner && owner.team, id);
-      notifyClients();
+      announce(changeSeq, { team: owner && owner.team });
     }
     return sendJson(req, res, 200, { ok: true });
   }
@@ -1150,7 +1214,7 @@ async function handleApi(req, res, url) {
     });
     if (added) {
       logAct('gas', user.sap, did, team, day);
-      notifyClients();
+      announce(changeSeq, { team });
     }
     const row = sql.getGas.get(day, team);
     return sendJson(req, res, 200, {
@@ -1176,7 +1240,7 @@ async function handleApi(req, res, url) {
       sql.closeTeamMsg.run(changeSeq, team);
       id = Number(sql.addMsg.run(team, text, at, changeSeq).lastInsertRowid);
     });
-    notifyClients();
+    announce(changeSeq, { team });
     return sendJson(req, res, 200, { ok: true, id, pushed: await sendReminders({ id, team, text, at }) });
   }
   if (pathname === '/api/msg/close' && method === 'POST') {
@@ -1185,7 +1249,7 @@ async function handleApi(req, res, url) {
       changeSeq++;
       sql.closeMsg.run(changeSeq, id);
     });
-    notifyClients();
+    announce(changeSeq);
     return sendJson(req, res, 200, { ok: true });
   }
   // Geräteübersicht: alle Geräte, die in den letzten 30 Tagen aktiv waren (jüngste zuerst); `now` = Serverzeit für „vor … Min“
@@ -1200,7 +1264,7 @@ async function handleApi(req, res, url) {
           locateRound++;
           changeSeq++;
         });
-        notifyClients(); // alle Geräte gleichen sofort ab und erfahren von der Abfrage
+        announce(changeSeq); // alle Geräte gleichen sofort ab und erfahren von der Abfrage
       }
     }
     const devices = sql.listDevs.all(Date.now() - 30 * 864e5).map(r => ({
@@ -1243,7 +1307,7 @@ async function handleApi(req, res, url) {
         if (found) changeSeq++; // neue Änderungsnummer -> alle Geräte gleichen sofort ab, das betroffene erfährt es so gleich
       });
     if (!found) return sendJson(req, res, 404, { error: 'Gerät nicht gefunden' });
-    notifyClients();
+    announce(changeSeq);
     return sendJson(req, res, 200, { ok: true });
   }
   // ---- Benutzerverwaltung (Disponent) ----
@@ -1277,6 +1341,7 @@ async function handleApi(req, res, url) {
     if (sql.getUsr.get(sap)) return sendJson(req, res, 409, { error: 'Diesen SAP-User gibt es schon' });
     const now = Date.now();
     sql.addUsr.run(sap, last, first, team, hashPassword(MONTEUR_PASSWORD), now, now, lock);
+    usersVer++;
     logAct('user_new', null, null, team, sap, `${first} ${last}${lock ? ' (Team fest)' : ''}`);
     return sendJson(req, res, 200, { ok: true });
   }
@@ -1304,6 +1369,7 @@ async function handleApi(req, res, url) {
         lock = body.lock === undefined ? row.team_lock : body.lock ? 1 : 0;
       if (!last) return sendJson(req, res, 400, { error: 'Bitte den Nachnamen angeben' });
       sql.editUsr.run(last, first, team, active, lock, sap);
+      usersVer++;
       logAct(
         'user_edit',
         null,
@@ -1317,7 +1383,7 @@ async function handleApi(req, res, url) {
         transaction(() => {
           changeSeq++;
         });
-        notifyClients();
+        announce(changeSeq);
       }
       return sendJson(req, res, 200, { ok: true });
     }
@@ -1327,6 +1393,7 @@ async function handleApi(req, res, url) {
         sql.unlinkDevs.run(sap);
         sql.delUsr.run(sap);
       });
+      usersVer++;
       logAct('user_del', null, null, row.team, sap, fullName(row));
       return sendJson(req, res, 200, { ok: true });
     }
@@ -1371,7 +1438,8 @@ async function handleApi(req, res, url) {
         for (const a of ids) sql.upMark.run(a, body.v ? 1 : 0, now, changeSeq);
         return changeSeq;
       });
-    notifyClients();
+    // Haken sehen nur Disponenten; bei sehr vielen Aufträgen gleichen sie lieber ab, statt die Liste mitzuschicken
+    announce(sq, 'dispo', ids.length <= 500 ? { k: 'm', ids, v: body.v ? 1 : 0, at: now } : null);
     return sendJson(req, res, 200, { ok: true, sq, at: now });
   }
   // Aufträge hochladen: ersetzt je enthaltenem Team alle Aufträge, die in der Datei fehlen (keep = nur ergänzen); fehlende werden als gelöscht markiert
@@ -1403,8 +1471,9 @@ async function handleApi(req, res, url) {
           changeSeq
         );
       setMeta('upload', { at: now, files: clipString(body.files), count: rows.length });
+      catalogVer++;
     });
-    notifyClients();
+    announce(changeSeq);
     return sendJson(req, res, 200, { ok: true });
   }
   if (pathname === '/api/orders' && method === 'DELETE') {
@@ -1412,8 +1481,9 @@ async function handleApi(req, res, url) {
       changeSeq++;
       sql.tombAll.run(Date.now(), changeSeq);
       setMeta('upload', null);
+      catalogVer++;
     });
-    notifyClients();
+    announce(changeSeq);
     return sendJson(req, res, 200, { ok: true });
   }
   if (pathname === '/api/pruef' && method === 'POST') {
@@ -1431,7 +1501,7 @@ async function handleApi(req, res, url) {
         orders: +body.orders | 0
       });
     });
-    notifyClients();
+    announce(changeSeq);
     return sendJson(req, res, 200, { ok: true });
   }
   if (pathname === '/api/pruef' && method === 'DELETE') {
@@ -1440,7 +1510,7 @@ async function handleApi(req, res, url) {
       sql.wipePruef.run(changeSeq);
       setMeta('pruef', null);
     });
-    notifyClients();
+    announce(changeSeq);
     return sendJson(req, res, 200, { ok: true });
   }
   return sendJson(req, res, 404, { error: 'Unbekannt' });
@@ -1449,7 +1519,11 @@ async function handleApi(req, res, url) {
 // ---------- Version der Oberfläche: ändert sich index.html oder sw.js, laden die Geräte neu ----------
 let versionCache = { k: '', v: '' };
 // aktuelle Version der Oberfläche (Hash von index.html + sw.js; wird nur neu berechnet, wenn sich die Dateien ändern)
+let versionCheckedAt = 0;
 function appVersion() {
+  // höchstens alle 2 Sekunden die Dateien prüfen (der Abgleich fragt die Version bei jedem Aufruf ab)
+  if (Date.now() - versionCheckedAt < 2000 && versionCache.v) return versionCache.v;
+  versionCheckedAt = Date.now();
   const files = ['index.html', 'sw.js'].map(n => path.join(PUBLIC_DIR, n)),
     stamp = files
       .map(f => {

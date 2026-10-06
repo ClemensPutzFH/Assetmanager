@@ -44,7 +44,7 @@ Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zus
 ## Wie die Geräte abgleichen
 - Der Server vergibt bei jeder Änderung eine fortlaufende Nummer. Geräte holen nur Änderungen seit ihrer letzten Nummer, nach einer Eingabe also wenige hundert Byte.
 - Monteure bekommen nur Aufträge und Ergebnisse ihres Teams, Disponenten alles. Die Haken des Disponenten (abgehakte Aufträge) gehen nur an die Disponentenansicht.
-- Änderungen kommen **live** per Server-Sent Events (`/api/events`) bei allen offenen Geräten an, ohne ständiges Nachfragen. Zusätzlich fragt jedes Gerät alle 30 Sekunden nach.
+- Änderungen kommen **live** per Server-Sent Events (`/api/events`) bei den betroffenen Geräten an, siehe Abschnitt „Live-Abgleich und Leistung“.
 - Antworten und Dateien werden vom Server selbst per gzip komprimiert.
 - Excel-Dateien werden im Browser in einem Hintergrund-Thread gelesen und geschrieben, die Oberfläche bleibt bedienbar.
 
@@ -121,3 +121,10 @@ Prüflose: Auftrag, Kurztext des Prüfobjektes.
 - **Start/Ende:** „Ende“ rundet immer **auf die nächsthöhere Viertelstunde auf** (mindestens 15 Min; genau 30:00 Min bleibt 30, 30:01 wird 45). Die Meldung nach dem Speichern weist darauf hin.
 - **Beginn (Uhrzeit)** wird ebenfalls auf Viertelstunden gerundet, und zwar **auf- und abgerundet** zur nächsten Viertelstunde (07:07 → 07:00, 07:08 → 07:15). Das gilt für „Jetzt“, für getippte Werte (beim Verlassen des Feldes bzw. beim Speichern) und für „Start/Ende“ (Beginn = Zeitpunkt von „Start“, gerundet; die Dauer wird aus der tatsächlichen Laufzeit aufgerundet). Rundet es über Mitternacht, wird 23:45 genommen. Der Server lehnt andere Beginn-Zeiten ab.
 - **Ältere Zeiten** ohne Viertelstunden-Raster bleiben unverändert, auch wenn danach Prüfobjekte bewertet werden. Öffnet der Monteur das Formular, steht dort die auf die nächste Viertelstunde aufgerundete Dauer; erst beim Speichern ändert sie sich.
+
+## Live-Abgleich und Leistung
+
+- **Jede Änderung hat eine Nummer** (`changeSeq`, jeweils +1). Der Server kündigt sie sofort über die Live-Verbindung an, und zwar **gezielt**: Das Gerät bekommt die Daten direkt mit (`{s, d}`: Ergebnis eines Auftrags, Haken des Disponenten), wenn es die Änderung betrifft – der Disponent immer, ein Monteur nur für sein Team. Betrifft sie ein anderes Team, merkt sich das Gerät nur die Nummer (`{s}`, wenige Bytes). Größere Änderungen (Upload, Nachricht, Gaswarngerät, Team/Benutzer geändert) lösen einen normalen Abgleich aus (`{s, n:1}`).
+- **Lückenlos und selbstheilend:** Ein Gerät übernimmt eine Änderung nur, wenn sie die nächste Nummer ist, die es erwartet (`syncSeq + 1`). Fehlt eine (Verbindung weg, Server neu gestartet, App im Hintergrund), gleicht es mit `/api/sync` ab und holt alles nach. Die Live-Verbindung wird per `fetch` gelesen (Anmeldung als Header, nicht in der URL), baut sich nach 3 Sekunden neu auf und wird erneuert, wenn 60 Sekunden lang nicht einmal der Ping (alle 25 s) ankommt. Als Sicherheitsnetz gleicht jedes Gerät zusätzlich alle 90 Sekunden ab (30 Sekunden, solange die Live-Verbindung fehlt).
+- **Messung (150 Monteur-Geräte, 60 Änderungen):** vorher 150 Abgleich-Anfragen und ca. 86 KB je Änderung, 88 ms Serverrechenzeit, 232 ms bis alle Geräte des Teams den Stand hatten – jetzt **0 Abgleich-Anfragen**, 5 ms Serverrechenzeit, 12 ms. Mit 400 Geräten: 8 ms je Änderung, 18 ms Verteilung.
+- **Weitere Maßnahmen:** vorbereitete SQL-Anweisungen statt Übersetzen bei jeder Anfrage; Teamliste, Meta und App-Version werden zwischengespeichert; der erste Abgleich eines Monteurs liest nur sein Team; die Namensliste (Disponent) kommt nur bei Änderung; Protokoll und Ergebnis werden gemeinsam festgeschrieben; hängende Verbindungen werden abgebaut. In der App: Neuzeichnen nur bei echter Änderung, mehrere Änderungen werden zu einem Zeichnen gebündelt (bei großen Listen mit wachsender Wartezeit), Auftragsstatus und Auftragsliste werden zwischengespeichert.

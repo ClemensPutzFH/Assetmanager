@@ -1600,7 +1600,7 @@
        *
        * DATENFLUSS
        *   Server (SQLite) <-> poll(): holt nur Änderungen seit der Änderungsnummer `syncSeq`; der Server meldet Änderungen
-       *   live per EventSource (listenForServerEvents). Der Stand liegt zusätzlich in IndexedDB (loadCache/saveCache) ->
+       *   live per Server-Sent Events (syncLive/onLive). Der Stand liegt zusätzlich in IndexedDB (loadCache/saveCache) ->
        *   die App startet sofort und funktioniert offline. Eingaben des Monteurs landen zuerst im `outbox`
        *   (auch in localStorage) und werden von sendPending() gesendet – bei fehlendem Netz automatisch später erneut.
        *   Gleichzeitige Änderungen auf zwei Geräten: der Server gewinnt (HTTP 409, siehe sendPending).
@@ -1664,6 +1664,11 @@
         resultSeq = new Map(),
         // checklistDiskCache: { team, seq, map } – Prüfobjekt-Listen des eigenen Teams, in IndexedDB (siehe prefetchChecklists)
         checklistDiskCache = null,
+        // lastPollAt: Zeitpunkt des letzten Abgleichs · lastSyncSig: Kennung der letzten Abgleich-Antwort (zum Erkennen von Änderungen) ·
+        // userNamesVer: Stand der Namensliste (der Server schickt sie nur, wenn sie sich geändert hat)
+        lastPollAt = 0,
+        lastSyncSig = '',
+        userNamesVer = '',
         // pollAgain: während eines Abgleichs wurde ein weiterer angefordert -> danach genau einmal nachholen
         pollAgain = false,
         // dispoToken: Bearer-Token nach erfolgreicher PIN-Eingabe des Disponenten
@@ -2434,9 +2439,17 @@
        *   op = Anzahl noch offener Prüfobjekte; nx > 0 (Nicht OK) gilt unabhängig davon – ein Auftrag kann
        *   „Nicht OK“ UND erledigt (oder in Arbeit) sein.
        */
+      // Ergebnisse ändern sich nie „von innen“ (jede Änderung ist ein neues Objekt) -> der Status wird je Ergebnis nur einmal berechnet
+      const statusCache = new WeakMap(),
+        STATUS_NONE = { st: 'offen', ok: 0, n: 0, nx: 0, op: 0, nok: [] };
       const orderStatus = order => {
         const result = resultOf(order.auftrag);
-        if (!result) return { st: 'offen', ok: 0, n: 0, nx: 0, op: 0, nok: [] };
+        if (!result) return STATUS_NONE;
+        let status = statusCache.get(result);
+        if (!status) statusCache.set(result, (status = computeOrderStatus(result)));
+        return status;
+      };
+      const computeOrderStatus = result => {
         const openCount = Math.max(0, (result.n | 0) - (result.ok | 0) - (result.nx | 0));
         return {
           ...result,
@@ -3283,6 +3296,7 @@
               userToken = '';
               saveUser();
               loginError = 'Bitte melde dich erneut an.';
+              syncLive();
               render();
             }
           } else if (response.status === 401 && payload.up) {
@@ -3292,6 +3306,7 @@
           } else if (response.status === 401 && dispoToken) {
             dispoToken = '';
             dispoUnlocked = false;
+            syncLive();
             render();
           }
           throw e;
@@ -3438,6 +3453,8 @@
         const key = cacheKeyForSession();
         if (!key || (session.role === 'monteur' && !userToken)) return; // Monteure sehen erst nach der Anmeldung Daten
         isPolling = true;
+        lastPollAt = Date.now();
+        syncLive(); // Live-Verbindung passend zu Rolle/Team/Anmeldung
         try {
           if (key !== cacheKey) {
             cacheKey = key;
@@ -3447,14 +3464,18 @@
           const team = session.role === 'monteur' ? session.team || '-' : '';
           const response = await api(
             'GET',
-            `/api/sync?since=${syncSeq}&team=${urlEncode(team)}&did=${deviceId}`,
+            `/api/sync?since=${syncSeq}&team=${urlEncode(team)}&did=${deviceId}&uv=${userNamesVer}`,
             undefined,
             20000
           );
           serverReachable = true;
           if (response.ver) checkAppVersion(response.ver);
           if (response.gday) gasDay = response.gday;
-          if (response.users) userNames = new Map(response.users); // Disponent: SAP-User -> Name
+          // Disponent: SAP-User -> Name (kommt nur, wenn sich die Liste geändert hat)
+          if (response.users) {
+            userNames = new Map(response.users);
+            userNamesVer = response.uv;
+          }
           // Monteur: Name, Team und Teamsperre laut Benutzerverwaltung. Ändert der Disponent das Team (oder sperrt er den
           // Teamwechsel, während der Monteur in einem anderen Team ist), gilt das sofort
           if (response.me && userInfo && userInfo.sap === response.me.sap) {
@@ -3522,8 +3543,18 @@
                 if (openOrder) openOrderDetail(openOrder);
               }
             }
+            // neu zeichnen nur, wenn sich für diese Ansicht etwas geändert hat (nicht bei jedem Abgleich)
+            const sig = JSON.stringify([response.teams, response.meta, response.msgs, response.devs, response.cfg, !!response.users]),
+              viewChanged =
+                response.full ||
+                sig !== lastSyncSig ||
+                (response.orders && response.orders.length) ||
+                (response.ergebnis && response.ergebnis.length) ||
+                (response.gas && response.gas.length) ||
+                (response.marks && response.marks.length);
+            lastSyncSig = sig;
             const a = document.activeElement;
-            if (editIndex === null && !(a && a.dataset && a.dataset.nr)) render();
+            if (viewChanged && editIndex === null && !(a && a.dataset && a.dataset.nr)) render();
           }
           if (outboxOffline && !outbox.size) outboxOffline = false;
           if (outbox.size) sendAllPending();
@@ -3576,19 +3607,136 @@
         } catch (e) {}
         prefetching = false;
       }
-      // Live-Hinweis vom Server (Server-Sent Events): bei jeder Änderung sofort poll() aufrufen
-      function listenForServerEvents() {
+      /**
+       * Live-Verbindung zum Server (Server-Sent Events, per fetch gelesen, damit die Anmeldung als Header mitgeht). Jede Änderung
+       * kommt mit ihrer Nummer: ist es die nächste, die das Gerät erwartet (syncSeq + 1), wird sie direkt übernommen – ohne
+       * eigene Anfrage. Betrifft sie dieses Gerät nicht (anderes Team), wird nur die Nummer gemerkt. Alles andere (Lücke, größere
+       * Änderung, laufender Abgleich) löst einen normalen Abgleich aus (poll). Reißt die Verbindung ab, verbindet sich die App neu
+       * (nach 3 s; hängt sie stumm, nach 60 s ohne Lebenszeichen) und gleicht danach ab.
+       * live.key: für wen die Verbindung gilt ('d' Disponent | 'm:<Team>' Monteur | '' keine) · live.ok: Verbindung steht
+       */
+      const live = { key: '', ctrl: null, timer: null, last: 0, ok: false };
+      const liveKey = () =>
+        session.role === 'dispo' ? (dispoToken ? 'd' : '') : session.role === 'monteur' && userToken ? 'm:' + (session.team || '') : '';
+      function stopLive() {
+        clearTimeout(live.timer);
+        live.timer = null;
+        const ctrl = live.ctrl;
+        live.ctrl = null;
+        live.ok = false;
+        if (ctrl) ctrl.abort();
+      }
+      // stellt sicher, dass die Verbindung zu Rolle, Team und Anmeldung passt (günstig, darf oft aufgerufen werden)
+      function syncLive() {
+        const key = liveKey();
+        if (key === live.key) {
+          if (key && !live.ctrl && !live.timer) connectLive();
+          return;
+        }
+        stopLive();
+        live.key = key;
+        if (key) connectLive();
+      }
+      async function connectLive() {
+        if (typeof ReadableStream === 'undefined') return; // ohne Streaming bleibt der Abgleich alle 30 Sekunden
+        const ctrl = new AbortController(),
+          key = live.key;
+        live.ctrl = ctrl;
+        live.last = Date.now();
         try {
-          const es = new EventSource('/api/events');
-          es.onmessage = () => poll();
-          es.onopen = () => poll();
+          const res = await fetch('/api/events?team=' + urlEncode(session.team || ''), {
+            headers: {
+              ...(dispoToken ? { Authorization: 'Bearer ' + dispoToken } : {}),
+              ...(userToken ? { 'X-User-Token': userToken } : {})
+            },
+            signal: ctrl.signal
+          });
+          if (!res.ok || !res.body) throw new Error('live ' + res.status);
+          live.ok = true;
+          poll(); // Verbindung steht: Stand abgleichen (verpasste Änderungen nachholen)
+          const reader = res.body.getReader(),
+            decoder = new TextDecoder();
+          let buffer = '';
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            live.last = Date.now();
+            buffer += decoder.decode(value, { stream: true });
+            let end;
+            while ((end = buffer.indexOf('\n\n')) >= 0) {
+              const block = buffer.slice(0, end);
+              buffer = buffer.slice(end + 2);
+              if (block.startsWith('data:'))
+                try {
+                  onLive(JSON.parse(block.slice(5)));
+                } catch (e) {}
+            }
+          }
         } catch (e) {}
+        live.ok = false;
+        if (live.ctrl === ctrl) {
+          live.ctrl = null;
+          live.timer = setTimeout(() => {
+            live.timer = null;
+            if (live.key === key) connectLive();
+          }, 3000);
+        }
+      }
+      // Lebenszeichen prüfen: der Server schickt alle 25 s einen Ping – kommt 60 s lang nichts, ist die Verbindung tot
+      setInterval(() => {
+        if (live.ctrl && Date.now() - live.last > 60000) live.ctrl.abort();
+      }, 20000);
+      // liveRenderDelay: Wartezeit bis zum Neuzeichnen nach einer Live-Änderung – wächst mit der Dauer des letzten Zeichnens, damit
+      // viele Änderungen (große Liste, Disponent) höchstens etwa ein Fünftel der Rechenzeit belegen
+      let liveRenderTimer = null,
+        liveSaveTimer = null,
+        liveDirty = false,
+        liveRenderDelay = 80;
+      // Ankündigung vom Server (siehe announce() in server.js): { s: Nummer, d?: Daten, n?: 1 = bitte abgleichen }
+      function onLive(m) {
+        if (!(m.s > syncSeq)) return; // schon bekannt (z. B. durch einen Abgleich)
+        if (m.s !== syncSeq + 1 || m.n || isPolling) return poll(); // Lücke, größere Änderung oder Abgleich läuft: normal abgleichen
+        syncSeq = m.s;
+        const d = m.d;
+        if (!d) return; // betrifft dieses Gerät nicht
+        if (d.k === 'e') {
+          if (m.s > (resultSeq.get(d.a) || 0)) {
+            results.set(d.a, d.doc);
+            resultSeq.set(d.a, m.s);
+          }
+        } else if (d.k === 'm') for (const a of d.ids) marks.set(a, { v: d.v, at: d.at, sq: m.s });
+        // höchstens alle 80 ms neu zeichnen (mehrere Änderungen auf einmal -> ein Zeichnen), Cache höchstens alle 3 s schreiben
+        liveDirty = true;
+        if (!liveRenderTimer) liveRenderTimer = setTimeout(renderLive, liveRenderDelay);
+        if (!liveSaveTimer)
+          liveSaveTimer = setTimeout(() => {
+            liveSaveTimer = null;
+            saveCache();
+          }, 3000);
+      }
+      function renderLive() {
+        liveRenderTimer = null;
+        const a = document.activeElement;
+        // nicht mitten in einer Eingabe und nicht im Hintergrund (dann beim Zurückkehren, siehe visibilitychange)
+        if (document.hidden || editIndex !== null || (a && a.dataset && a.dataset.nr)) return;
+        liveDirty = false;
+        const t0 = performance.now();
+        render();
+        liveRenderDelay = Math.min(1000, Math.max(80, Math.round((performance.now() - t0) * 4)));
       }
 
       // ---- Auftragslisten ----
       // alle Aufträge (mit Team) als flache Liste
-      const allOrders = () =>
-        [...ordersByTeam.values()].flatMap(c => c.rows.map(r => ({ ...r, team: c.team })));
+      // (die Liste wird nur neu gebaut, wenn sich ordersByTeam geändert hat; sie darf nicht verändert werden)
+      let allOrdersCache = { src: null, list: [] };
+      const allOrders = () => {
+        if (allOrdersCache.src !== ordersByTeam)
+          allOrdersCache = {
+            src: ordersByTeam,
+            list: [...ordersByTeam.values()].flatMap(c => c.rows.map(r => ({ ...r, team: c.team })))
+          };
+        return allOrdersCache.list;
+      };
       // [[Team, Anzahl]] sortiert
       const teamCounts = () => teamList.map(([t, n]) => [t, n]).sort((a, b) => naturalCompare(a[0], b[0]));
       // ---- Abhaken (nur Disponent) ----
@@ -5369,6 +5517,7 @@
         deviceRenameId = null;
         deviceLogoutArmed = null;
         saveSession();
+        syncLive(); // Live-Verbindung gilt immer nur für Rolle, Team und Anmeldung des Geräts
         render();
         scrollTo(0, 0); // neue Ansicht (Start, Team, Liste) beginnt oben, nicht an der Scroll-Stelle der vorherigen
         poll();
@@ -7807,13 +7956,17 @@
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
           if (outbox.size) sendAllPending();
+          // nach dem Hintergrund ist die Verbindung oft stumm tot: neu aufbauen, wenn lange nichts kam
+          if (live.ctrl && Date.now() - live.last > 45000) live.ctrl.abort();
+          syncLive();
+          if (liveDirty) renderLive();
           poll();
         }
       });
-      // Sicherheitsnetz: alle 30 Sekunden abgleichen; normalerweise kommt der Hinweis live vom Server
+      // Sicherheitsnetz: steht die Live-Verbindung, reicht ein Abgleich alle 90 Sekunden, sonst alle 30
       setInterval(() => {
-        if (!document.hidden) poll();
-      }, 30000); // Sicherheitsnetz; normalerweise kommt der Hinweis live vom Server
+        if (!document.hidden && Date.now() - lastPollAt > (live.ok ? 90000 : 30000) - 2000) poll();
+      }, 15000);
       // Geräteübersicht offen: alle 20 Sekunden neu laden (nicht während ein Spitzname getippt wird)
       setInterval(() => {
         if (
@@ -7831,7 +7984,7 @@
         prefetchChecklists();
         pushSync(false);
       });
-      listenForServerEvents();
+      syncLive();
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').catch(() => {});
         // Push angekommen / bestätigt -> sofort abgleichen
