@@ -26,7 +26,7 @@
  *   Upload/Löschen   zusätzlich Header „X-Upload-Token“ (Token nach Upload-PIN-Eingabe, 30 min)
  *
  * EINSTELLUNGEN (Umgebungsvariablen)
- *   MONTEUR_PASSWORD (Startpasswort aller Monteur-Benutzer, Standard siehe unten) ·
+ *   MONTEUR_PASSWORD (Startpasswort aller Monteur-Benutzer, Standard siehe unten) · DB_SYNC=FULL (Festschreiben wie bisher, siehe unten) ·
  *   PORT, HOST · DATA_DIR · TIMEZONE (bestimmt, wann für die Gaswarngerät-Bestätigung ein neuer Tag beginnt) · DISPO_PIN, UPLOAD_PIN (unbedingt ändern!) · NAG_MIN, MSG_HOURS · PUSH_CONTACT, PUSH_HOSTS ·
  *   TRUST_PROXY=1 (hinter Proxy: echte Client-IP) · DB_JOURNAL=DELETE · TLS_CERT + TLS_KEY oder TLS_PFX (+ TLS_PASS) ·
  *   HTTP_REDIRECT_PORT
@@ -88,9 +88,14 @@ fs.mkdirSync(path.join(DATA_DIR, 'backups'), { recursive: true });
 
 // ---------- Datenbank ----------
 // Schema: siehe Kopfkommentar. Die Spalte `seq` enthält die Änderungsnummer der letzten Änderung der Zeile (Grundlage des Abgleichs).
+// Festschreiben: Im WAL-Modus genügt `synchronous=NORMAL` – ein Absturz der App oder des Servers verliert nichts, nur bei einem
+// Stromausfall/Systemabsturz kann die allerletzte Änderung fehlen (die Datenbank bleibt in jedem Fall heil). Das spart bei jedem
+// Speichern das Warten auf die Festplatte. DB_SYNC=FULL stellt die maximale Sicherheit wieder her (ohne WAL gilt immer FULL).
+const JOURNAL = process.env.DB_JOURNAL === 'DELETE' ? 'DELETE' : 'WAL',
+  SYNCHRONOUS = JOURNAL === 'WAL' && process.env.DB_SYNC !== 'FULL' ? 'NORMAL' : 'FULL';
 const db = new DatabaseSync(path.join(DATA_DIR, 'data.db'));
 db.exec(`
-PRAGMA journal_mode=${process.env.DB_JOURNAL === 'DELETE' ? 'DELETE' : 'WAL'}; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+PRAGMA journal_mode=${JOURNAL}; PRAGMA synchronous=${SYNCHRONOUS}; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS orders(auftrag TEXT PRIMARY KEY, team TEXT NOT NULL, tp TEXT, art TEXT, plz TEXT, str TEXT, kurz TEXT, start TEXT, ende TEXT,
   del INTEGER NOT NULL DEFAULT 0, ts INTEGER, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS orders_seq ON orders(seq);
@@ -1653,7 +1658,7 @@ server.on('error', e => {
 });
 server.listen(PORT, HOST, () =>
   console.log(
-    `Läuft auf ${TLS ? 'https' : 'http'}://localhost:${PORT}  (Daten: ${path.join(DATA_DIR, 'data.db')})`
+    `Läuft auf ${TLS ? 'https' : 'http'}://localhost:${PORT}  (Daten: ${path.join(DATA_DIR, 'data.db')}, ${JOURNAL}/synchronous=${SYNCHRONOUS}, ${db.prepare('PRAGMA synchronous').get().synchronous === 1 ? 'NORMAL aktiv' : 'FULL aktiv'})`
   )
 );
 if (TLS) {

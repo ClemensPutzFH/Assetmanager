@@ -402,6 +402,14 @@
       .tmr {
         margin-bottom: 12px;
       }
+      /* Liste: „Weitere Aufträge anzeigen“ am Ende */
+      .more {
+        text-align: center;
+        margin: 6px 0 16px;
+      }
+      .more button {
+        min-width: 16rem;
+      }
       /* Benutzer: Link-Schaltfläche (.lk), Benutzerzeile (.uline) und Karten der Benutzerverwaltung (.ucard) */
       button.lk {
         border: none;
@@ -4045,20 +4053,56 @@
       }
       // Liste der Aufträge als Kartenraster (gefiltert nach Suche, sortiert nach Auftragsnummer, höchstens 300 Karten)
       function orderList(rows, showTeam) {
-        const filtered = rows.filter(matchesSearch).sort((a, b) => naturalCompare(a.auftrag, b.auftrag));
+        const filtered = rows.filter(matchesSearch).sort((a, b) => naturalCompare(a.auftrag, b.auftrag)),
+          total = Math.min(filtered.length, LIST_MAX);
+        // Karten werden in Portionen gezeichnet (LIST_CHUNK), weitere kommen beim Scrollen dazu: so bleibt das Neuzeichnen auch bei
+        // langen Listen schnell. Ändert sich Filter, Suche oder Ansicht, beginnt die Liste wieder mit der ersten Portion.
+        const sig = [teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab].join('|');
+        if (sig !== listSig) {
+          listSig = sig;
+          listLimit = LIST_CHUNK;
+        }
+        const shown = Math.min(total, listLimit);
+        if (moreObserver) moreObserver.disconnect();
+        moreObserver = null;
         const container = el('div', {});
         container.append(
           el('p', { class: 'mu' }, filtered.length === 1 ? '1 Auftrag' : `${filtered.length} Aufträge`),
           el(
             'div',
             { class: 'grid', 'data-list': '1' },
-            filtered.slice(0, 300).map(r => orderCard(r, showTeam))
+            filtered.slice(0, shown).map(r => orderCard(r, showTeam))
           )
         );
-        if (filtered.length > 300)
-          container.append(el('p', { class: 'mu' }, 'Nur die ersten 300 angezeigt – Suche nutzen.'));
+        if (shown < total) {
+          const loadMore = () => {
+            if (listLimit >= total) return;
+            listLimit += LIST_CHUNK;
+            render();
+          };
+          const more = el('div', { class: 'more' }, el('button', { onclick: loadMore }, `Weitere Aufträge anzeigen (${shown} von ${total})`));
+          container.append(more);
+          // beim Scrollen kurz vor dem Ende automatisch nachladen
+          if (typeof IntersectionObserver !== 'undefined') {
+            moreObserver = new IntersectionObserver(
+              entries => {
+                if (entries.some(e => e.isIntersecting)) loadMore();
+              },
+              { rootMargin: '800px 0px' }
+            );
+            moreObserver.observe(more);
+          }
+        }
+        if (filtered.length > LIST_MAX)
+          container.append(el('p', { class: 'mu' }, `Nur die ersten ${LIST_MAX} angezeigt – Suche nutzen.`));
         return container;
       }
+      // Karten je Portion / höchstens je Liste; listLimit = aktuell gezeichnete Anzahl, listSig = Kennung von Filter/Suche/Ansicht
+      const LIST_CHUNK = 60,
+        LIST_MAX = 300;
+      let listLimit = LIST_CHUNK,
+        listSig = '',
+        moreObserver = null;
       // ---- Vergleich (Disponent): Aufträge-Excel (Original) gegen den Export dieser App ----
       // Es gelten nur zwei Regeln. „Erledigt“ bedeutet hier: vom Disponenten abgehakt (Spalte „Abgehakt am“ im Export).
       //   · nicht abgehakt -> der Auftrag muss in der Aufträge-Excel stehen
