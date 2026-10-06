@@ -1598,7 +1598,8 @@
        * DATENFORMATE
        *   Auftrag        { auftrag, team, tp (Techn. Platz), art, plz, str, kurz, start, ende }
        *   Prüfobjekte    Liste von Kurztexten je Auftrag (aus dem Prüflos-Excel)
-       *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von?, u? } je Auftrag (u = SAP-User, der zuletzt gespeichert hat – setzt der Server):
+       *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von?, u?, tu? } je Auftrag (u = SAP-User, der zuletzt gespeichert hat,
+       *                  tu = SAP-User, der die Zeit zurückgemeldet hat – beide setzt der Server):
        *                    n = Anzahl Prüfobjekte, ok / nx = Anzahl OK / Nicht OK,
        *                    s = Status-String, ein Zeichen je Prüfobjekt: 'o' OK, 'x' Nicht OK, '-' offen,
        *                    nok = [{ i: Index, t: Kurztext, m: Text des Monteurs }],
@@ -2240,6 +2241,7 @@
               'Dauer (Min)',
               'Dauer (Std)',
               'Zeit zurückgemeldet am',
+              'Zeit zurückgemeldet von',
               'Nicht OK – Prüfobjekt → Text',
               'Hinweis',
               'Abgehakt am',
@@ -2293,6 +2295,7 @@
               status.min != null ? status.min : null,
               status.min != null ? Math.round((status.min / 60) * 100) / 100 : null,
               status.tat ? new Date(status.tat).toLocaleString('de-AT') : null,
+              status.tu ? userLabel(status.tu) : null,
               status.nok.map(z => (z.m ? `${z.t} → ${z.m}` : z.t)).join(' | '),
               stale ? 'Prüfliste seit der Bewertung geändert' : '',
               markState(order.auftrag)
@@ -2660,7 +2663,11 @@
               ? `Durchgeführt am ${formatIsoDate(performedDate(result)) || '–'}${result.von ? ' · ab ' + result.von + ' Uhr' : ''} · Dauer ${formatMinutes(result.min)}`
               : 'Noch keine Zeit zurückgemeldet.'
           ),
-          result && result.u && el('p', { class: 'mu' }, '👤 Zuletzt gespeichert von ' + userLabel(result.u))
+          hasTime && result.tu && el('p', { class: 'mu' }, '👤 Zeit zurückgemeldet von ' + userLabel(result.tu)),
+          result &&
+            result.u &&
+            result.u !== result.tu &&
+            el('p', { class: 'mu' }, '👤 Zuletzt gespeichert von ' + userLabel(result.u))
         );
         if (hasTime && !timeComplete(result))
           timePanel.append(
@@ -3588,7 +3595,11 @@
             result &&
             result.min != null &&
             result.tat &&
-            el('div', { class: 'mu' }, 'Rückgemeldet: ' + formatDateTime(result.tat)),
+            el(
+              'div',
+              { class: 'mu' },
+              'Rückgemeldet: ' + formatDateTime(result.tat) + (result.tu ? ' · von ' + userLabel(result.tu) : '')
+            ),
           clickable &&
             showTeam &&
             orderStatus(order).nx > 0 &&

@@ -956,6 +956,18 @@ async function handleApi(req, res, url) {
     const r = await inBatch(() => {
       const cur = sql.getErg.get(match[1]);
       if (base !== null && (cur ? cur.seq : 0) !== base) return { cur: cur || null };
+      // Zeitrückmeldung (tu = SAP-User, der sie gemacht hat): bleibt die Zeit unverändert, bleibt auch der bisherige Benutzer
+      // (z. B. wenn ein anderer Monteur nur Prüfobjekte bewertet); neue oder geänderte Zeit gehört dem speichernden Benutzer
+      if (d.min != null) {
+        let prev = null;
+        try {
+          prev = cur && JSON.parse(cur.doc);
+        } catch {}
+        const unchanged = prev && prev.min === d.min && prev.tat === d.tat && prev.dat === d.dat && prev.von === d.von;
+        if (unchanged) {
+          if (prev.tu) d.tu = prev.tu;
+        } else d.tu = user.sap;
+      }
       changeSeq++;
       sql.upErg.run(match[1], d.team, JSON.stringify(d), changeSeq, user.sap);
       return { sq: changeSeq };
