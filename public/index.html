@@ -1418,9 +1418,59 @@
           background-position: 0 50%;
         }
       }
+      /* ---- Bedienung: sanfte Rückmeldung bei Tippen/Hover (Seitenwechsel: siehe animateView) ---- */
+      button,
+      select,
+      .chip,
+      .fpick {
+        transition:
+          background-color 0.15s,
+          border-color 0.15s,
+          color 0.15s,
+          filter 0.15s,
+          transform 0.12s,
+          box-shadow 0.15s,
+          opacity 0.15s;
+      }
+      button:not(:disabled):active,
+      .fpick:active {
+        transform: scale(0.96);
+        filter: brightness(0.92);
+      }
+      .chip.on {
+        box-shadow: 0 1px 4px color-mix(in srgb, var(--ac) 35%, transparent);
+      }
+      @media (hover: hover) {
+        .card.cl {
+          transition:
+            border-color 0.15s,
+            transform 0.15s,
+            box-shadow 0.15s;
+        }
+        .card.cl:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+        }
+        .card.cl:active {
+          transform: scale(0.99);
+        }
+      }
       @media (prefers-reduced-motion: reduce) {
         .sk {
           animation: none;
+        }
+        button,
+        select,
+        .chip,
+        .fpick,
+        .card.cl {
+          transition: none;
+        }
+        button:not(:disabled):active,
+        .fpick:active,
+        .card.cl:hover,
+        .card.cl:active {
+          transform: none;
         }
       }
       /* ---- Signatur unten rechts: immer sichtbar, Größe unabhängig von der Schriftgröße (px statt rem) ---- */
@@ -4991,6 +5041,8 @@
        * Eingabefelds (data-keep) wieder her. Alle Änderungen am Zustand enden mit einem Aufruf von render().
        */
       function render() {
+        if (viewAnim) viewAnim.forEach(a => a.cancel()); // laufende Einblendung beenden, bevor die Positionen gemessen werden
+        viewAnim = null;
         const focused = document.activeElement,
           keepKey = focused && focused.dataset && focused.dataset.keep,
           caret = keepKey ? focused.selectionStart : 0,
@@ -5013,6 +5065,52 @@
             } catch (e) {}
           }
         }
+        animateView();
+      }
+      // Einblendung beim Seitenwechsel: nur wenn sich die Ansicht ändert (Rolle, Team, Dispo-Tab, Auftrag auf/zu), nicht bei
+      // jedem Neuzeichnen. Läuft nach der Scroll-Korrektur (die Verschiebung würde sonst die Messung verfälschen).
+      // Auftrag öffnen: von rechts, schließen: von links, sonst von unten; die Blöcke kommen leicht gestaffelt.
+      // Zeichnet render() während der Einblendung neu (z. B. wenn Daten eintreffen), läuft sie an der gleichen Stelle weiter.
+      // viewAnim: laufende Animationen · viewKey / viewDepth: zuletzt gezeigte Ansicht und ob ein Auftrag offen war ·
+      // viewFrom / viewStart: Startposition und Startzeit der letzten Einblendung
+      const VIEW_MS = 260,
+        VIEW_STAGGER_MS = 25;
+      let viewAnim = null,
+        viewKey = null,
+        viewDepth = 0,
+        viewFrom = '',
+        viewStart = 0;
+      function animateView() {
+        const key = openOrder
+            ? 'o'
+            : [session.role, session.team, dispoUnlocked, session.role === 'dispo' ? dispoTab : ''].join('|'),
+          depth = openOrder ? 1 : 0,
+          changed = viewKey !== null && key !== viewKey,
+          now = performance.now();
+        if (changed) {
+          viewFrom =
+            depth > viewDepth ? 'translateX(28px)' : depth < viewDepth ? 'translateX(-28px)' : 'translateY(10px)';
+          viewStart = now;
+        }
+        viewKey = key;
+        viewDepth = depth;
+        const elapsed = now - viewStart,
+          blocks = [...app.children].slice(0, 10);
+        if (
+          !app.animate ||
+          !viewFrom ||
+          elapsed > VIEW_MS + blocks.length * VIEW_STAGGER_MS ||
+          matchMedia('(prefers-reduced-motion: reduce)').matches
+        )
+          return;
+        viewAnim = blocks.map((n, i) =>
+          n.animate([{ opacity: 0, transform: viewFrom }, { opacity: 1, transform: 'none' }], {
+            duration: VIEW_MS,
+            delay: i * VIEW_STAGGER_MS - elapsed,
+            easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+            fill: 'backwards'
+          })
+        );
       }
       // ---- Ansichten: draw() wählt je Zustand genau eine aus ----
 
