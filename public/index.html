@@ -4934,6 +4934,7 @@
         deviceLogoutArmed = null;
         saveSession();
         render();
+        scrollTo(0, 0); // neue Ansicht (Start, Team, Liste) beginnt oben, nicht an der Scroll-Stelle der vorherigen
         poll();
         prefetchChecklists();
         pushSync(false);
