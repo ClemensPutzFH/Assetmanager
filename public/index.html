@@ -92,6 +92,10 @@
         scroll-padding-top: calc(var(--toph, 52px) + 8px);
         overflow-anchor: none;
       }
+      /* Schriftgröße ändern: alle rem-Größen wachsen/schrumpfen weich (Klasse nur kurz, siehe changeFontScale) */
+      html.fz-anim {
+        transition: font-size 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
       body {
         margin: 0;
         background: var(--bg);
@@ -1737,7 +1741,10 @@
         document.documentElement.style.fontSize =
           session.role === 'monteur' && fontScale !== 1 ? 16 * fontScale + 'px' : '';
       };
-      // eine Stufe größer (+1) oder kleiner (-1), im Gerät gespeichert
+      // eine Stufe größer (+1) oder kleiner (-1), im Gerät gespeichert. Die Schrift gleitet in FONT_ANIM_MS auf die neue
+      // Größe; währenddessen hält ein Anker die Liste an derselben Bildschirmstelle (sonst wandert sie beim Wachsen weg).
+      const FONT_ANIM_MS = 300;
+      let fontAnimTimer = null;
       const changeFontScale = direction => {
         const index = FONT_SCALES.indexOf(fontScale) + direction;
         if (index < 0 || index >= FONT_SCALES.length) return;
@@ -1745,7 +1752,32 @@
         try {
           localStorage.setItem('fz', fontScale);
         } catch (e) {}
+        const animate = !matchMedia('(prefers-reduced-motion: reduce)').matches,
+          anchors = animate && scrollY >= 1 ? viewportAnchors() : [];
+        if (animate) {
+          document.documentElement.classList.add('fz-anim');
+          clearTimeout(fontAnimTimer);
+          fontAnimTimer = setTimeout(() => document.documentElement.classList.remove('fz-anim'), FONT_ANIM_MS + 50);
+        }
         render();
+        if (!anchors.length) return;
+        let held = true;
+        const stop = () => (held = false),
+          end = performance.now() + FONT_ANIM_MS + 50;
+        addEventListener('touchstart', stop, { once: true, passive: true });
+        addEventListener('wheel', stop, { once: true, passive: true });
+        const hold = () => {
+          for (const [key, top] of anchors) {
+            const n = app.querySelector('[data-k="' + key + '"]');
+            if (n) {
+              const d = n.getBoundingClientRect().top - top;
+              if (Math.abs(d) >= 1) scrollBy(0, d);
+              break;
+            }
+          }
+          if (held && performance.now() < end) requestAnimationFrame(hold);
+        };
+        requestAnimationFrame(hold);
       };
       // Schaltflächen „A−“ / „A+“; sperren an den Enden der Skala
       const fontScaleButtons = () => {
