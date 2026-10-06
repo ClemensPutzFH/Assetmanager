@@ -5082,7 +5082,8 @@
           // ganz oben bleibt die Seite oben: kommt dort später etwas dazu (Hinweise, Fortschrittskarte, geladene Liste),
           // würde der Anker die Seite sonst um deren Höhe nach unten schieben
           savedAnchors = scrollY < 1 ? [] : viewportAnchors(),
-          listSnap = snapshotList();
+          listSnap = snapshotList(),
+          okBefore = okSnapshot();
         draw();
         for (const [key, top] of savedAnchors) {
           const n = app.querySelector('[data-k="' + key + '"]');
@@ -5103,6 +5104,7 @@
         }
         animateView();
         animateRemoved(listSnap);
+        animateOkPops(okBefore);
       }
       // Einblendung beim Seitenwechsel: nur wenn sich die Ansicht ändert (Rolle, Team, Dispo-Tab, Auftrag auf/zu), nicht bei
       // jedem Neuzeichnen. Läuft nach der Scroll-Korrektur (die Verschiebung würde sonst die Messung verfälschen).
@@ -5174,6 +5176,55 @@
             LIST_STAGGER_MS
           )
         ];
+      }
+      /**
+       * Kleine Rückmeldung, wenn ein Prüfobjekt auf OK gesetzt wird: der OK-Button füllt sich grün und federt einmal leicht
+       * (ca. 0,3 s, ohne Layoutänderung). okSnapshot() merkt sich vor dem Neuzeichnen, welche Buttons schon „on“ waren;
+       * neu gesetzte (auch durch „Alle offenen OK“ oder einen Abgleich) werden animiert, nur im selben Auftrag.
+       * okPops: Prüfobjekt (data-k) -> Startzeit; so läuft die Animation weiter, wenn gleich danach nochmal gezeichnet wird.
+       */
+      const OK_POP_MS = 320;
+      const okPops = new Map();
+      let okOrder = null;
+      function okSnapshot() {
+        return {
+          order: openOrder ? openOrder.auftrag : null,
+          shown: app.querySelector('.it[data-k]') !== null, // Prüfliste war schon sichtbar (nicht erst beim Laden)
+          on: new Set([...app.querySelectorAll('.it[data-k] .ok.on')].map(n => n.closest('.it').dataset.k))
+        };
+      }
+      function animateOkPops(before) {
+        const now = performance.now(),
+          sameOrder = !!openOrder && before.shown && before.order === openOrder.auftrag && okOrder === openOrder.auftrag;
+        okOrder = openOrder ? openOrder.auftrag : null;
+        if (!sameOrder) okPops.clear();
+        if (!app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        let n = 0;
+        for (const b of app.querySelectorAll('.it[data-k] .ok.on')) {
+          const key = b.closest('.it').dataset.k;
+          if (sameOrder && !before.on.has(key) && !okPops.has(key)) okPops.set(key, now + n++ * 40);
+        }
+        const anims = [];
+        for (const [key, start] of okPops) {
+          const elapsed = now - start;
+          if (elapsed > OK_POP_MS) {
+            okPops.delete(key);
+            continue;
+          }
+          const b = app.querySelector(`.it[data-k="${key}"] .ok.on`);
+          if (!b) continue;
+          anims.push(
+            b.animate(
+              [
+                { backgroundColor: 'var(--card)', transform: 'scale(0.96)' },
+                { transform: 'scale(1.03)', offset: 0.6 },
+                { backgroundColor: 'var(--ok)', transform: 'none' }
+              ],
+              { duration: OK_POP_MS, delay: -elapsed, easing: 'ease-out', fill: 'backwards' }
+            )
+          );
+        }
+        viewAnim = [...(viewAnim || []), ...anims];
       }
       /**
        * Ändert sich die Liste selbst (Disponent hakt einen Auftrag ab und „Abgehakte ausblenden“ ist an, Daten vom Server,
