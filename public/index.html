@@ -3549,6 +3549,15 @@
         const t = searchText.trim().toLowerCase();
         return !t || [r.auftrag, r.kurz, r.str, r.plz, r.tp].join(' ').toLowerCase().includes(t);
       };
+      // Arbeitszeit eines Ergebnisses als Text: „06.10.2026, 08:00–08:40 Uhr“ (Ende = Beginn + Dauer; über Mitternacht „+1 Tag“)
+      const workSpanText = r => {
+        const date = formatIsoDate(performedDate(r)),
+          m = /^(\d{2}):(\d{2})$/.exec(r.von || '');
+        if (!m) return (date || '–') + ' (Beginn fehlt)';
+        const end = +m[1] * 60 + +m[2] + r.min,
+          clock = t => String(Math.floor(t / 60) % 24).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
+        return `${date || '–'}, ${r.von}–${clock(end)} Uhr${end >= 1440 ? ' (+1 Tag)' : ''}`;
+      };
       /**
        * Karte eines Auftrags (Liste und Detailkopf). clickable = true: antippbar, öffnet den Auftrag (merkt die
        * Scroll-Position und legt einen History-Eintrag für die Zurück-Taste an). showTeam: Team-Etikett und – für den
@@ -3591,6 +3600,10 @@
           order.tp && el('div', { class: 'mu' }, 'Techn. Platz: ' + order.tp),
           (order.start || order.ende) &&
             el('div', { class: 'mu' }, 'Termin: ' + [order.start, order.ende].filter(Boolean).join(' – ')),
+          isDispo &&
+            result &&
+            result.min != null &&
+            el('div', { class: 'mu' }, el('b', {}, '⏱ Dauer: ' + formatMinutes(result.min)), ' · ' + workSpanText(result)),
           isDispo &&
             result &&
             result.min != null &&
