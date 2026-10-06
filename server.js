@@ -14,14 +14,19 @@
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
  *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
- *   gas       tägliche Bestätigung des Gaswarngeräts je Team (Tag, Team, Uhrzeit, Gerät) – wird nur angefügt, nie geändert
+ *   gas       tägliche Bestätigung des Gaswarngeräts je Team (Tag, Team, Uhrzeit, Gerät, Benutzer) – wird nur angefügt, nie geändert
+ *   usr       Benutzer der Monteure (SAP-User, Name, Team, Passwort als scrypt-Hash); beim ersten Start aus users.json befüllt
+ *   act       Protokoll: wer (Benutzer, Gerät) hat wann was getan (Anmeldung, Ergebnis, Gaswarngerät, Bestätigung, Benutzerverwaltung)
  *
  * ZUGRIFFSSTUFEN
- *   offen            Anmeldung, Abgleich, Prüfobjekte lesen, Ergebnis speichern, Push-Anmeldung, Bestätigen
+ *   offen            Anmeldung (Monteur: SAP-User + Passwort, Disponent: PIN), Nachricht bestätigen, Push-Erneuerung, Standort
+ *   Monteur          Header „X-User-Token“ (Token nach der Anmeldung, 60 Tage): Abgleich, Prüfobjekte lesen, Ergebnis speichern,
+ *                    Gaswarngerät bestätigen, Push-Anmeldung als Monteur
  *   Disponent        Header „Authorization: Bearer <Token>“ (Token nach PIN-Eingabe, 12 h)
  *   Upload/Löschen   zusätzlich Header „X-Upload-Token“ (Token nach Upload-PIN-Eingabe, 30 min)
  *
  * EINSTELLUNGEN (Umgebungsvariablen)
+ *   MONTEUR_PASSWORD (Startpasswort aller Monteur-Benutzer, Standard siehe unten) ·
  *   PORT, HOST · DATA_DIR · TIMEZONE (bestimmt, wann für die Gaswarngerät-Bestätigung ein neuer Tag beginnt) · DISPO_PIN, UPLOAD_PIN (unbedingt ändern!) · NAG_MIN, MSG_HOURS · PUSH_CONTACT, PUSH_HOSTS ·
  *   TRUST_PROXY=1 (hinter Proxy: echte Client-IP) · DB_JOURNAL=DELETE · TLS_CERT + TLS_KEY oder TLS_PFX (+ TLS_PASS) ·
  *   HTTP_REDIRECT_PORT
@@ -48,6 +53,8 @@ const PORT = +process.env.PORT || 3000,
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DISPO_PIN = String(process.env.DISPO_PIN || '2510'); // PIN der Disponenten – per Umgebungsvariable ändern!
 const UPLOAD_PIN = String(process.env.UPLOAD_PIN || '1025'); // zusätzlicher PIN für Upload & Löschen – per Umgebungsvariable ändern!
+// Startpasswort aller Monteur-Benutzer (beim Anlegen und beim „Passwort zurücksetzen“) – per Umgebungsvariable ändern!
+const MONTEUR_PASSWORD = String(process.env.MONTEUR_PASSWORD || 'Fernwärme1');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 // Zeitzone, nach der „heute“ für die Gaswarngerät-Bestätigung gilt (um Mitternacht beginnt ein neuer Tag)
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Vienna';
@@ -104,7 +111,24 @@ CREATE TABLE IF NOT EXISTS mack(id INTEGER NOT NULL, did TEXT NOT NULL, at INTEG
 -- (weicht ab, wenn ohne Netz bestätigt wurde), did = bestätigendes Gerät. Je Tag und Team zählt die erste Bestätigung.
 CREATE TABLE IF NOT EXISTS gas(day TEXT NOT NULL, team TEXT NOT NULL, at INTEGER NOT NULL, rec INTEGER NOT NULL, did TEXT, seq INTEGER NOT NULL, PRIMARY KEY(day, team));
 CREATE INDEX IF NOT EXISTS gas_seq ON gas(seq);
+-- Benutzer der Monteure: sap = SAP-User (Großbuchstaben, Anmeldename), pw = „Salt:Hash“ (scrypt), pw_at = Zeitpunkt der letzten
+-- Passwortänderung (frühere Anmeldungen werden ungültig), active = 0 sperrt den Benutzer, login_at = letzte Anmeldung
+CREATE TABLE IF NOT EXISTS usr(sap TEXT PRIMARY KEY, last TEXT NOT NULL, first TEXT NOT NULL DEFAULT '', team TEXT, pw TEXT NOT NULL,
+  pw_at INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, created INTEGER, login_at INTEGER);
+-- Protokoll: kind = login | login_fail | ergebnis | gas | ack | user_new | user_edit | user_del | user_reset; usr = SAP-User (leer bei Disponent)
+CREATE TABLE IF NOT EXISTS act(id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, usr TEXT, did TEXT, team TEXT, kind TEXT NOT NULL, ref TEXT, info TEXT);
+CREATE INDEX IF NOT EXISTS act_usr ON act(usr, at);
 `);
+// Spalte nachrüsten, falls eine ältere Datenbank sie noch nicht hat
+const addColumn = (table, column, type) => {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column))
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+};
+// Benutzer, der etwas getan hat: dev.usr = angemeldeter Benutzer des Geräts, die übrigen = wer bestätigt/bewertet hat
+addColumn('dev', 'usr', 'TEXT');
+addColumn('gas', 'usr', 'TEXT');
+addColumn('mack', 'usr', 'TEXT');
+addColumn('ergebnis', 'usr', 'TEXT');
 // Ältere Datenbanken haben in `dev` noch nicht alle Spalten: beim Start ergänzen. Bisherige Geräte mit Team waren Monteure.
 {
   const have = new Set(
@@ -141,7 +165,7 @@ const sql = {
     'INSERT INTO dmark(auftrag,v,at,seq) VALUES(?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET v=excluded.v, at=excluded.at, seq=excluded.seq'
   ),
   upErg: db.prepare(
-    'INSERT INTO ergebnis(auftrag,team,doc,seq) VALUES(?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET team=excluded.team, doc=excluded.doc, seq=excluded.seq'
+    'INSERT INTO ergebnis(auftrag,team,doc,seq,usr) VALUES(?,?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET team=excluded.team, doc=excluded.doc, seq=excluded.seq, usr=excluded.usr'
   ),
   tombTeam: db.prepare(
     'UPDATE orders SET del=1, ts=?, seq=? WHERE team=? AND del=0 AND auftrag NOT IN (SELECT value FROM json_each(?))'
@@ -157,17 +181,17 @@ const sql = {
   ),
   wipePruef: db.prepare("UPDATE pruef SET items='[]', seq=? WHERE items<>'[]'"),
   getErg: db.prepare('SELECT doc, seq FROM ergebnis WHERE auftrag=?'),
-  getDev: db.prepare('SELECT role, team, sub, kick FROM dev WHERE did=?'),
+  getDev: db.prepare('SELECT role, team, sub, kick, usr FROM dev WHERE did=?'),
   seenDev: db.prepare('UPDATE dev SET seen=? WHERE did=?'),
   // „zuletzt aktiv“ nur dann schreiben, wenn der letzte Eintrag älter als eine Minute ist (nicht bei jedem Abgleich)
   touchDev: db.prepare('UPDATE dev SET seen=? WHERE did=? AND (seen IS NULL OR seen<?)'),
   getKick: db.prepare('SELECT kick, kick_at FROM dev WHERE did=?'),
   // meldet das Gerät an/um/ab (Rolle, Team, Push-Abo) und hebt eine angeforderte Abmeldung auf; Spitzname bleibt erhalten
   upDev: db.prepare(
-    'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick) VALUES(?,?,?,?,?,?,?,0) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0'
+    'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick,usr) VALUES(?,?,?,?,?,?,?,0,?) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0, usr=excluded.usr'
   ),
   listDevs: db.prepare(
-    'SELECT did, name, role, team, sub IS NOT NULL AS push, seen, first, ua, kick, loc_lat, loc_lon, loc_acc, loc_at, loc_err FROM dev WHERE seen>? ORDER BY seen DESC'
+    "SELECT d.did, d.name, d.role, d.team, d.sub IS NOT NULL AS push, d.seen, d.first, d.ua, d.kick, d.loc_lat, d.loc_lon, d.loc_acc, d.loc_at, d.loc_err, d.usr, trim(u.first || ' ' || u.last) AS uname FROM dev d LEFT JOIN usr u ON u.sap=d.usr WHERE d.seen>? ORDER BY d.seen DESC"
   ),
   // letzter Standort bzw. Fehler (nur das Neueste, kein Verlauf); nur für angemeldete Monteur-Geräte
   setLoc: db.prepare(
@@ -180,7 +204,7 @@ const sql = {
   // Ausloggen: das Gerät ist sofort abgemeldet (Rolle, Team, Standort weg); `kick` merkt vor, dass es das beim nächsten
   // Kontakt auch selbst erfährt (Startbildschirm), `kick_at` entwertet seine bisherigen Tokens
   kickDev: db.prepare(
-    'UPDATE dev SET kick=1, kick_at=?, role=NULL, team=NULL, loc_lat=NULL, loc_lon=NULL, loc_acc=NULL, loc_err=NULL, loc_at=NULL WHERE did=?'
+    'UPDATE dev SET kick=1, kick_at=?, role=NULL, team=NULL, usr=NULL, loc_lat=NULL, loc_lon=NULL, loc_acc=NULL, loc_err=NULL, loc_at=NULL WHERE did=?'
   ),
   dupSub: db.prepare('UPDATE dev SET sub=NULL WHERE sub=? AND did<>?'),
   dropSub: db.prepare('UPDATE dev SET sub=NULL WHERE did=?'),
@@ -189,24 +213,38 @@ const sql = {
   closeTeamMsg: db.prepare('UPDATE msg SET closed=1, seq=? WHERE team=? AND closed=0'),
   closeMsg: db.prepare('UPDATE msg SET closed=1, seq=? WHERE id=?'),
   activeMsgs: db.prepare('SELECT id, team, text, at FROM msg WHERE closed=0 AND at>?'),
-  ack: db.prepare('INSERT OR IGNORE INTO mack(id,did,at) VALUES(?,?,?)'),
+  ack: db.prepare('INSERT OR IGNORE INTO mack(id,did,at,usr) VALUES(?,?,?,?)'),
   nagDevs: db.prepare(
     'SELECT did, sub FROM dev WHERE team=? AND sub IS NOT NULL AND did NOT IN (SELECT did FROM mack WHERE id=?)'
   ),
   hasTeam: db.prepare('SELECT 1 FROM orders WHERE team=? LIMIT 1'),
   getGas: db.prepare('SELECT day, team, at, rec, seq FROM gas WHERE day=? AND team=?'),
-  addGas: db.prepare('INSERT OR IGNORE INTO gas(day,team,at,rec,did,seq) VALUES(?,?,?,?,?,?)'),
-  // Bestätigungen seit Änderungsnummer ab (mit Spitzname des Geräts); für Monteure nur die des eigenen Teams
+  addGas: db.prepare('INSERT OR IGNORE INTO gas(day,team,at,rec,did,seq,usr) VALUES(?,?,?,?,?,?,?)'),
+  // Bestätigungen seit Änderungsnummer ab (mit Spitzname des Geräts und Benutzer); für Monteure nur die des eigenen Teams
   gasSince: db.prepare(
-    'SELECT g.day d, g.team t, g.at, g.rec, g.seq sq, v.name n FROM gas g LEFT JOIN dev v ON v.did=g.did WHERE g.seq>? AND g.day>=? ORDER BY g.day, g.team'
+    "SELECT g.day d, g.team t, g.at, g.rec, g.seq sq, v.name n, g.usr u, trim(w.first || ' ' || w.last) un FROM gas g LEFT JOIN dev v ON v.did=g.did LEFT JOIN usr w ON w.sap=g.usr WHERE g.seq>? AND g.day>=? ORDER BY g.day, g.team"
   ),
   gasSinceTeam: db.prepare(
     'SELECT day d, team t, at, rec, seq sq FROM gas WHERE seq>? AND day>=? AND team=? ORDER BY day'
   ),
   // gesamtes Protokoll für den CSV-Export
   gasAll: db.prepare(
-    'SELECT g.day, g.team, g.at, g.rec, v.name, substr(g.did, -4) did FROM gas g LEFT JOIN dev v ON v.did=g.did ORDER BY g.day DESC, g.team'
+    "SELECT g.day, g.team, g.at, g.rec, v.name, substr(g.did, -4) did, g.usr, trim(w.first || ' ' || w.last) uname FROM gas g LEFT JOIN dev v ON v.did=g.did LEFT JOIN usr w ON w.sap=g.usr ORDER BY g.day DESC, g.team"
   ),
+  // Benutzer und Protokoll
+  getUsr: db.prepare('SELECT * FROM usr WHERE sap=?'),
+  listUsr: db.prepare(
+    'SELECT sap, last, first, team, active, created, login_at, (SELECT MAX(seen) FROM dev WHERE usr=usr.sap) seen, (SELECT COUNT(*) FROM dev WHERE usr=usr.sap) devs FROM usr ORDER BY team, last, first'
+  ),
+  addUsr: db.prepare('INSERT INTO usr(sap,last,first,team,pw,pw_at,active,created) VALUES(?,?,?,?,?,?,1,?)'),
+  editUsr: db.prepare('UPDATE usr SET last=?, first=?, team=?, active=? WHERE sap=?'),
+  pwUsr: db.prepare('UPDATE usr SET pw=?, pw_at=? WHERE sap=?'),
+  loginUsr: db.prepare('UPDATE usr SET login_at=? WHERE sap=?'),
+  delUsr: db.prepare('DELETE FROM usr WHERE sap=?'),
+  unlinkDevs: db.prepare('UPDATE dev SET usr=NULL WHERE usr=?'),
+  usrNames: db.prepare("SELECT sap, trim(first || ' ' || last) name FROM usr ORDER BY last, first"),
+  addAct: db.prepare('INSERT INTO act(at,usr,did,team,kind,ref,info) VALUES(?,?,?,?,?,?,?)'),
+  listAct: db.prepare('SELECT at, did, team, kind, ref, info FROM act WHERE usr=? ORDER BY id DESC LIMIT ?'),
   msgState: db.prepare(
     'SELECT closed, at, (SELECT 1 FROM mack a WHERE a.id=msg.id AND a.did=?) ack FROM msg WHERE id=?'
   )
@@ -442,6 +480,110 @@ const isDispo = req => tokenValid((req.headers.authorization || '').replace(/^Be
 // Anfrage mit gültigem Upload-Token?
 const isUpload = req => tokenValid(req.headers['x-upload-token'], 'up:');
 
+// ---- Benutzer der Monteure (SAP-User + Passwort) ----
+const USER_TOKEN_MS = 60 * 864e5; // Anmeldung bleibt 60 Tage gültig (die Monteure sollen nicht täglich tippen müssen)
+// SAP-User: nur Buchstaben und Ziffern, gespeichert in Großbuchstaben (Anmeldung ohne Beachtung der Schreibweise)
+const normalizeSap = v => String(v ?? '').trim().toUpperCase();
+const validSap = v => /^[A-Z0-9]{2,20}$/.test(v);
+// Passwort-Hash „Salt:Hash“ (scrypt); Unicode wird normalisiert, damit „ä“ auf jedem Gerät gleich ankommt
+const hashPassword = (password, salt = crypto.randomBytes(16)) =>
+  salt.toString('hex') + ':' + crypto.scryptSync(String(password).normalize('NFC'), salt, 32).toString('hex');
+const passwordMatches = (password, stored) => {
+  const [salt, hash] = String(stored || '').split(':');
+  if (!salt || !hash) return false;
+  return safeEqual(hashPassword(password, Buffer.from(salt, 'hex')), stored);
+};
+// Anzeigename: „Vorname Nachname“
+const fullName = u => (String(u.first || '') + ' ' + String(u.last || '')).trim();
+// Protokolleintrag (wer, auf welchem Gerät, wann, was); Disponent-Aktionen ohne Benutzer
+const logAct = (kind, usr, did, team, ref, info) => {
+  try {
+    sql.addAct.run(Date.now(), usr || null, did || null, team || null, kind, ref == null ? null : clipString(ref, 100), info == null ? null : clipString(info, 300));
+  } catch (e) {
+    console.error('Protokoll fehlgeschlagen:', e.message);
+  }
+};
+// Token des Monteurs: „<Ablauf>.<Geräte-ID oder ->.<SAP-User>.<Signatur>“
+const userTokenFor = (sap, did) => {
+  const expiresAt = Date.now() + USER_TOKEN_MS,
+    d = did || '-';
+  return `${expiresAt}.${d}.${sap}.${sign('u:' + expiresAt + '.' + d + '.' + sap)}`;
+};
+/**
+ * Prüft den Monteur-Token (Header X-User-Token): Signatur und Ablauf stimmen, der Benutzer existiert und ist nicht gesperrt,
+ * das Passwort wurde seit der Anmeldung nicht geändert und das Gerät wurde nicht ausgeloggt. Gibt { sap, did, name, team }
+ * oder null zurück.
+ */
+function userFromRequest(req) {
+  const parts = String(req.headers['x-user-token'] || '').split('.');
+  if (parts.length !== 4) return null;
+  const [e, d, sap, sig] = parts;
+  if (!(+e > Date.now() && validSap(sap) && safeEqual(sign('u:' + e + '.' + d + '.' + sap), sig))) return null;
+  const row = sql.getUsr.get(sap);
+  if (!row || !row.active || +e - USER_TOKEN_MS < row.pw_at) return null;
+  if (d !== '-' && deviceKickedAt(d) > +e - USER_TOKEN_MS) return null;
+  return { sap, did: d === '-' ? '' : d, name: fullName(row), team: row.team };
+}
+// Anmeldung eines Monteurs: nach 5 Fehlversuchen je Benutzer und IP sowie 40 je IP (gemeinsames WLAN) 10 Minuten gesperrt
+function userLogin(ip, sapInput, password) {
+  const keys = ['ul:' + sapInput + ':' + ip, 'ui:' + ip],
+    limits = [5, 40],
+    now = Date.now();
+  const failures = keys.map(k => {
+    const f = loginFailures.get(k) || { n: 0, t: now };
+    if (now - f.t > 600e3) {
+      f.n = 0;
+      f.t = now;
+    }
+    return f;
+  });
+  if (failures.some((f, i) => f.n >= limits[i])) return { locked: true };
+  const row = validSap(sapInput) ? sql.getUsr.get(sapInput) : null;
+  // gleiche Rechenzeit, ob der Benutzer existiert oder nicht (kein Hinweis, welche Namen es gibt)
+  const ok = passwordMatches(password, row ? row.pw : hashPassword('x')) && !!row && !!row.active;
+  if (ok) {
+    loginFailures.delete(keys[0]);
+    return { row };
+  }
+  failures.forEach((f, i) => {
+    f.n++;
+    loginFailures.set(keys[i], f);
+  });
+  return { bad: true };
+}
+
+// Benutzer beim ersten Start aus users.json (Team, Nachname, Vorname, SAP-User) anlegen, alle mit dem Startpasswort.
+// Danach pflegt der Disponent sie in der App; die Datei wird nicht noch einmal eingelesen.
+if (!getMeta('usersSeeded')) {
+  let list = [];
+  try {
+    list = JSON.parse(fs.readFileSync(path.join(__dirname, 'users.json'), 'utf8'));
+  } catch (e) {
+    console.error('users.json konnte nicht gelesen werden:', e.message);
+  }
+  list = (Array.isArray(list) ? list : []).filter(u => u && validSap(normalizeSap(u.sap)) && u.last);
+  if (list.length) {
+    const now = Date.now();
+    transaction(() => {
+      for (const u of list)
+        if (!sql.getUsr.get(normalizeSap(u.sap)))
+          sql.addUsr.run(
+            normalizeSap(u.sap),
+            clipString(u.last, 60),
+            clipString(u.first, 60),
+            clipString(u.team, 100) || null,
+            hashPassword(MONTEUR_PASSWORD),
+            now,
+            now
+          );
+    });
+    setMeta('usersSeeded', true);
+    console.log(`${list.length} Benutzer aus users.json angelegt (Startpasswort: siehe MONTEUR_PASSWORD).`);
+  }
+}
+// Protokoll nach 400 Tagen aufräumen
+db.prepare('DELETE FROM act WHERE at<?').run(Date.now() - 400 * 864e5);
+
 // ---- Web Push (RFC 8291 Verschlüsselung + RFC 8292 VAPID), nur Node-Bordmittel ----
 let vapid = getMeta('vapid');
 if (!vapid) {
@@ -625,6 +767,25 @@ async function handleApi(req, res, url) {
     req.on('close', () => sseClients.delete(res));
     return;
   }
+  // Monteur: SAP-User + Passwort (+ Geräte-ID) -> Token und Benutzerdaten (Name, Team)
+  if (pathname === '/api/user/login' && method === 'POST') {
+    const body = await readBody(req, 1e4),
+      sap = normalizeSap(body.user),
+      did = validDeviceId(body.did),
+      result = userLogin(ip, sap, String(body.password ?? '').slice(0, 200));
+    if (result.locked)
+      return sendJson(req, res, 429, { error: 'Zu viele Fehlversuche – bitte 10 Minuten warten.' });
+    if (!result.row) {
+      logAct('login_fail', null, did, null, sap.slice(0, 20));
+      return sendJson(req, res, 403, { error: 'SAP-User oder Passwort falsch.' });
+    }
+    sql.loginUsr.run(Date.now(), sap);
+    logAct('login', sap, did, result.row.team);
+    return sendJson(req, res, 200, {
+      token: userTokenFor(sap, did),
+      user: { sap, name: fullName(result.row), team: result.row.team }
+    });
+  }
   // Disponent: PIN (+ Geräte-ID) -> Token
   if (pathname === '/api/login' && method === 'POST') {
     const body = await readBody(req, 1e4),
@@ -638,6 +799,10 @@ async function handleApi(req, res, url) {
     const since = +params.get('since') || 0,
       team = params.get('team') || '',
       did = validDeviceId(params.get('did'));
+    // Monteure (team=<Name> oder „-“) brauchen die Anmeldung mit SAP-User, der Gesamtstand (kein Team) ist dem Disponenten vorbehalten
+    const me = team ? userFromRequest(req) : null;
+    if (team && !me) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
+    if (!team && !isDispo(req)) return sendJson(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
     // Gerät bekannt? Dann „zuletzt aktiv“ festhalten und melden, ob der Disponent es abgemeldet hat (kicked)
     let kicked = false;
     if (did) {
@@ -654,6 +819,7 @@ async function handleApi(req, res, url) {
         ver: appVersion(),
         gday: dayOf(Date.now()),
         ...(kicked ? { kicked: true } : {}),
+        ...(me ? { me: { sap: me.sap, name: me.name, team: me.team } } : {}),
         ...locateField()
       });
     const full = since === 0 || since > changeSeq || since < minSeq,
@@ -664,6 +830,7 @@ async function handleApi(req, res, url) {
       ver: appVersion(),
       gday: dayOf(Date.now()),
       ...(kicked ? { kicked: true } : {}),
+      ...(me ? { me: { sap: me.sap, name: me.name, team: me.team } } : {}),
       ...locateField(),
       teams: db
         .prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team')
@@ -713,6 +880,7 @@ async function handleApi(req, res, url) {
             .map(r => [r.team, [r.n, r.p]])
         );
         out.cfg = { nag: NAG_INTERVAL_MIN, hours: MESSAGE_HOURS };
+        out.users = sql.usrNames.all().map(r => [r.sap, r.name]); // SAP-User -> Name (für „bewertet von“)
       }
       // Gaswarngerät-Bestätigungen der letzten 60 Tage: Monteur nur die des eigenen Teams, Disponent alle
       const gasFrom = dayOf(Date.now() - 60 * 864e5);
@@ -727,6 +895,8 @@ async function handleApi(req, res, url) {
   }
   // Prüfobjekte lesen: ?a=<Auftrag> liefert eine Liste, ?team=<Team>&since=<Nr> alle geänderten Listen des Teams
   if (pathname === '/api/pruef' && method === 'GET') {
+    if (!isDispo(req) && !userFromRequest(req))
+      return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
     const a = params.get('a'),
       team = params.get('team'),
       since = +params.get('since') || 0;
@@ -752,14 +922,17 @@ async function handleApi(req, res, url) {
   if ((match = pathname.match(/^\/api\/ergebnis\/(\d{1,20})$/)) && method === 'PUT') {
     // _b = Stand (Änderungsnummer), auf dem die Eingabe beruht. Hat inzwischen ein anderes Gerät gespeichert, gewinnt der Server:
     // die Eingabe wird abgelehnt (409) und das Gerät bekommt den aktuellen Stand zurück. Ohne _b (alte App-Version): wie bisher.
+    const user = userFromRequest(req);
+    if (!user) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
     const body = await readBody(req, 1e6),
       d = cleanResultDoc(match[1], body),
       base = body._b == null ? null : Number(body._b);
+    d.u = user.sap; // wer das Ergebnis zuletzt gespeichert hat (kommt aus der Anmeldung, nicht vom Gerät)
     const r = await inBatch(() => {
       const cur = sql.getErg.get(match[1]);
       if (base !== null && (cur ? cur.seq : 0) !== base) return { cur: cur || null };
       changeSeq++;
-      sql.upErg.run(match[1], d.team, JSON.stringify(d), changeSeq);
+      sql.upErg.run(match[1], d.team, JSON.stringify(d), changeSeq, user.sap);
       return { sq: changeSeq };
     });
     if (r.sq == null)
@@ -768,6 +941,14 @@ async function handleApi(req, res, url) {
         doc: r.cur ? JSON.parse(r.cur.doc) : null,
         sq: r.cur ? r.cur.seq : 0
       });
+    logAct(
+      'ergebnis',
+      user.sap,
+      user.did,
+      d.team,
+      match[1],
+      `${d.ok} OK, ${d.nx} Nicht OK, ${d.n - d.ok - d.nx} offen` + (d.min != null ? `, Zeit ${d.min} Min` : '')
+    );
     notifyClients();
     return sendJson(req, res, 200, { ok: true, sq: r.sq });
   }
@@ -780,6 +961,13 @@ async function handleApi(req, res, url) {
       // Rolle des Geräts: 'monteur' | 'dispo' | null (abgemeldet); ältere Apps melden nur das Team -> Monteur
       role = body.role === 'dispo' || body.role === 'monteur' ? body.role : team ? 'monteur' : null;
     if (!did) return sendJson(req, res, 400, { error: 'Ungültige Geräte-ID' });
+    // Monteur-Geräte gehören zu einem angemeldeten Benutzer (dev.usr); abgemeldete und Disponenten-Geräte zu keinem
+    let userSap = null;
+    if (role === 'monteur') {
+      const user = userFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
+      userSap = user.sap;
+    }
     let sub = null;
     if (body.sub) {
       const ep = clipString(body.sub.endpoint, 1000),
@@ -797,7 +985,7 @@ async function handleApi(req, res, url) {
     }
     const old = sql.getDev.get(did),
       now = Date.now();
-    if (old && old.role === role && old.team === team && old.sub === sub && !old.kick) {
+    if (old && old.role === role && old.team === team && old.sub === sub && !old.kick && (old.usr || null) === userSap) {
       sql.seenDev.run(now, did);
       return sendJson(req, res, 200, { ok: true });
     }
@@ -806,7 +994,7 @@ async function handleApi(req, res, url) {
     transaction(() => {
       changeSeq++;
       if (sub) sql.dupSub.run(sub, did);
-      sql.upDev.run(did, role, team, sub, now, clipString(req.headers['user-agent'], 200), now);
+      sql.upDev.run(did, role, team, sub, now, clipString(req.headers['user-agent'], 200), now, userSap);
       if (role !== 'monteur') sql.clearLoc.run(did); // abgemeldet oder nicht (mehr) Monteur -> kein Standort
     });
     notifyClients();
@@ -854,10 +1042,12 @@ async function handleApi(req, res, url) {
       id = +body.id | 0,
       did = clipString(body.did, 64);
     if (!id || !/^[a-f0-9]{32}$/.test(did)) return sendJson(req, res, 400, { error: 'Ungültig' });
-    if (sql.ack.run(id, did, Date.now()).changes) {
+    const owner = sql.getDev.get(did);
+    if (sql.ack.run(id, did, Date.now(), (owner && owner.usr) || null).changes) {
       transaction(() => {
         changeSeq++;
       });
+      logAct('ack', owner && owner.usr, did, owner && owner.team, id);
       notifyClients();
     }
     return sendJson(req, res, 200, { ok: true });
@@ -874,6 +1064,8 @@ async function handleApi(req, res, url) {
   // 24 h alt oder in der Zukunft) werden durch die Serverzeit ersetzt. Je Tag und Team zählt die erste Bestätigung;
   // eine weitere (anderes Gerät, Doppel-Tipp) ändert nichts und bekommt die bestehende zurück.
   if (pathname === '/api/gas' && method === 'POST') {
+    const user = userFromRequest(req);
+    if (!user) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
     const body = await readBody(req, 1e4),
       did = validDeviceId(body.did),
       team = clipString(body.team, 100);
@@ -888,9 +1080,12 @@ async function handleApi(req, res, url) {
     transaction(() => {
       if (sql.getGas.get(day, team)) return;
       changeSeq++;
-      added = sql.addGas.run(day, team, at, now, did, changeSeq).changes > 0;
+      added = sql.addGas.run(day, team, at, now, did, changeSeq, user.sap).changes > 0;
     });
-    if (added) notifyClients();
+    if (added) {
+      logAct('gas', user.sap, did, team, day);
+      notifyClients();
+    }
     const row = sql.getGas.get(day, team);
     return sendJson(req, res, 200, {
       ok: true,
@@ -952,6 +1147,8 @@ async function handleApi(req, res, url) {
       first: r.first,
       ua: r.ua,
       kick: !!r.kick,
+      usr: r.usr, // angemeldeter Benutzer (SAP-User) und sein Name
+      uname: r.uname,
       lat: r.loc_lat,
       lon: r.loc_lon,
       acc: r.loc_acc,
@@ -982,6 +1179,74 @@ async function handleApi(req, res, url) {
     if (!found) return sendJson(req, res, 404, { error: 'Gerät nicht gefunden' });
     notifyClients();
     return sendJson(req, res, 200, { ok: true });
+  }
+  // ---- Benutzerverwaltung (Disponent) ----
+  // Liste aller Benutzer; Anmeldung und Geräte (zuletzt gesehen, Anzahl) zeigen, wer die App wirklich nutzt
+  if (pathname === '/api/users' && method === 'GET')
+    return sendJson(req, res, 200, {
+      users: sql.listUsr.all().map(r => ({
+        sap: r.sap,
+        last: r.last,
+        first: r.first,
+        team: r.team,
+        active: !!r.active,
+        created: r.created,
+        loginAt: r.login_at,
+        seen: r.seen,
+        devs: r.devs
+      })),
+      now: Date.now()
+    });
+  // Benutzer anlegen: Nachname, Vorname, SAP-User, Team; das Passwort ist das Startpasswort
+  if (pathname === '/api/users' && method === 'POST') {
+    const body = await readBody(req, 1e4),
+      sap = normalizeSap(body.sap),
+      last = clipString(body.last, 60).trim(),
+      first = clipString(body.first, 60).trim(),
+      team = clipString(body.team, 100).trim() || null;
+    if (!validSap(sap)) return sendJson(req, res, 400, { error: 'SAP-User: 2–20 Buchstaben/Ziffern' });
+    if (!last) return sendJson(req, res, 400, { error: 'Bitte den Nachnamen angeben' });
+    if (sql.getUsr.get(sap)) return sendJson(req, res, 409, { error: 'Diesen SAP-User gibt es schon' });
+    const now = Date.now();
+    sql.addUsr.run(sap, last, first, team, hashPassword(MONTEUR_PASSWORD), now, now);
+    logAct('user_new', null, null, team, sap, `${first} ${last}`);
+    return sendJson(req, res, 200, { ok: true });
+  }
+  let userMatch;
+  if ((userMatch = pathname.match(/^\/api\/users\/([A-Za-z0-9]{2,20})(\/reset|\/log)?$/))) {
+    const sap = normalizeSap(userMatch[1]),
+      row = sql.getUsr.get(sap);
+    if (!row) return sendJson(req, res, 404, { error: 'Benutzer nicht gefunden' });
+    // Protokoll des Benutzers (die letzten 100 Einträge)
+    if (userMatch[2] === '/log' && method === 'GET')
+      return sendJson(req, res, 200, { log: sql.listAct.all(sap, 100) });
+    // Passwort auf das Startpasswort zurücksetzen: bisherige Anmeldungen des Benutzers werden ungültig
+    if (userMatch[2] === '/reset' && method === 'POST') {
+      sql.pwUsr.run(hashPassword(MONTEUR_PASSWORD), Date.now(), sap);
+      logAct('user_reset', null, null, row.team, sap);
+      return sendJson(req, res, 200, { ok: true });
+    }
+    // Name, Team, Sperre ändern (der SAP-User selbst bleibt)
+    if (!userMatch[2] && method === 'PUT') {
+      const body = await readBody(req, 1e4),
+        last = clipString(body.last ?? row.last, 60).trim(),
+        first = clipString(body.first ?? row.first, 60).trim(),
+        team = (body.team === undefined ? row.team : clipString(body.team, 100).trim()) || null,
+        active = body.active === undefined ? row.active : body.active ? 1 : 0;
+      if (!last) return sendJson(req, res, 400, { error: 'Bitte den Nachnamen angeben' });
+      sql.editUsr.run(last, first, team, active, sap);
+      logAct('user_edit', null, null, team, sap, `${first} ${last}${active ? '' : ' (gesperrt)'}`);
+      return sendJson(req, res, 200, { ok: true });
+    }
+    // Benutzer löschen: seine Anmeldungen enden sofort, die Verknüpfung der Geräte wird gelöst (Protokoll bleibt)
+    if (!userMatch[2] && method === 'DELETE') {
+      transaction(() => {
+        sql.unlinkDevs.run(sap);
+        sql.delUsr.run(sap);
+      });
+      logAct('user_del', null, null, row.team, sap, fullName(row));
+      return sendJson(req, res, 200, { ok: true });
+    }
   }
   if (pathname === '/api/login-upload' && method === 'POST') {
     const body = await readBody(req, 1e4),

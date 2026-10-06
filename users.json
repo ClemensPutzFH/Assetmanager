@@ -1,0 +1,308 @@
+[
+ {
+  "team": "FW-IH01",
+  "last": "Reichhart",
+  "first": "Alexander",
+  "sap": "33NX"
+ },
+ {
+  "team": "FW-IH01",
+  "last": "Spät",
+  "first": "Hans",
+  "sap": "34AH"
+ },
+ {
+  "team": "FW-IH02",
+  "last": "Hodosi",
+  "first": "Patrick",
+  "sap": "33SN"
+ },
+ {
+  "team": "FW-IH02",
+  "last": "Scharf",
+  "first": "Christoph",
+  "sap": "3SCCKD"
+ },
+ {
+  "team": "FW-IH03",
+  "last": "Cordunianu",
+  "first": "Daniel",
+  "sap": "3CODAN"
+ },
+ {
+  "team": "FW-IH03",
+  "last": "Predler",
+  "first": "Matthias",
+  "sap": "34AL"
+ },
+ {
+  "team": "FW-IH04",
+  "last": "Ernst",
+  "first": "Florian",
+  "sap": "33ZW"
+ },
+ {
+  "team": "FW-IH04",
+  "last": "Haas",
+  "first": "Philipp",
+  "sap": "3HXY"
+ },
+ {
+  "team": "FW-IH05",
+  "last": "Frank",
+  "first": "Michael",
+  "sap": "3FGE"
+ },
+ {
+  "team": "FW-IH05",
+  "last": "Necsulescu",
+  "first": "Christopher",
+  "sap": "3NB7"
+ },
+ {
+  "team": "FW-IH05",
+  "last": "Vasic",
+  "first": "Rikardo",
+  "sap": "3VARIK"
+ },
+ {
+  "team": "FW-IH06",
+  "last": "Jaramillo",
+  "first": "Nicolas",
+  "sap": "3JANID"
+ },
+ {
+  "team": "FW-IH06",
+  "last": "Rösner-Makovszky",
+  "first": "Gerhard",
+  "sap": "33MV"
+ },
+ {
+  "team": "FW-IH07",
+  "last": "Maierhofer",
+  "first": "Georg",
+  "sap": "33WN"
+ },
+ {
+  "team": "FW-IH07",
+  "last": "Pirron",
+  "first": "Alexander",
+  "sap": "34IT"
+ },
+ {
+  "team": "FW-IH08",
+  "last": "Altundag",
+  "first": "Hamza",
+  "sap": "3ALHAM"
+ },
+ {
+  "team": "FW-IH08",
+  "last": "Duben",
+  "first": "Andreas",
+  "sap": "32BS"
+ },
+ {
+  "team": "FW-IH08",
+  "last": "Schill",
+  "first": "Christian",
+  "sap": "3SCCKC"
+ },
+ {
+  "team": "FW-IH09",
+  "last": "Bralic",
+  "first": "Lukas",
+  "sap": "3BRLUN"
+ },
+ {
+  "team": "FW-IH09",
+  "last": "Hofer",
+  "first": "Johann",
+  "sap": "34EM"
+ },
+ {
+  "team": "FW-IH09",
+  "last": "Hofstetter",
+  "first": "Martin",
+  "sap": "3H1M"
+ },
+ {
+  "team": "FW-IH10",
+  "last": "Kriklan",
+  "first": "Christian",
+  "sap": "33MX"
+ },
+ {
+  "team": "FW-IH10",
+  "last": "Namjesky",
+  "first": "Markus",
+  "sap": "33TA"
+ },
+ {
+  "team": "FW-IH11",
+  "last": "Fuchs",
+  "first": "Marcel",
+  "sap": "3FUMAZ"
+ },
+ {
+  "team": "FW-IH11",
+  "last": "Jurasits",
+  "first": "Alexander",
+  "sap": "3JUALE"
+ },
+ {
+  "team": "FW-IH12",
+  "last": "Lazic",
+  "first": "Veljko",
+  "sap": "3LAVEL"
+ },
+ {
+  "team": "FW-IH12",
+  "last": "Madl",
+  "first": "Markus",
+  "sap": "33MY"
+ },
+ {
+  "team": "FW-IH12",
+  "last": "Mattes",
+  "first": "Dominic",
+  "sap": "3M2A"
+ },
+ {
+  "team": "FW-IH13",
+  "last": "Englisch",
+  "first": "Sebastian",
+  "sap": "3XNSED"
+ },
+ {
+  "team": "FW-IH13",
+  "last": "Böhm",
+  "first": "Andreas",
+  "sap": "3BOAN3"
+ },
+ {
+  "team": "FW-IH13",
+  "last": "Odabas",
+  "first": "Sahin",
+  "sap": "3ODSAH"
+ },
+ {
+  "team": "FW-IH14",
+  "last": "Franz",
+  "first": "Jan",
+  "sap": "3FRJAO"
+ },
+ {
+  "team": "FW-IH14",
+  "last": "Waidhofer",
+  "first": "Samuel",
+  "sap": "3WASAM"
+ },
+ {
+  "team": "FW-IH15",
+  "last": "Lattenmayer",
+  "first": "Philipp",
+  "sap": "3LAPHM"
+ },
+ {
+  "team": "FW-IH15",
+  "last": "Theilinger",
+  "first": "Martin",
+  "sap": "32WI"
+ },
+ {
+  "team": "Springer",
+  "last": "Apltauer",
+  "first": "Werner",
+  "sap": "31UB"
+ },
+ {
+  "team": "Springer",
+  "last": "Bajramaj",
+  "first": "Denis",
+  "sap": "3BADEQ"
+ },
+ {
+  "team": "Springer",
+  "last": "Buchner",
+  "first": "Andreas",
+  "sap": "31WI"
+ },
+ {
+  "team": "Springer",
+  "last": "Celerin",
+  "first": "Christian",
+  "sap": "31SK"
+ },
+ {
+  "team": "Springer",
+  "last": "Hafner",
+  "first": "Johann",
+  "sap": "32MU"
+ },
+ {
+  "team": "Springer",
+  "last": "Ibrahim",
+  "first": "Amin",
+  "sap": "3IBAMJ"
+ },
+ {
+  "team": "Springer",
+  "last": "McQuillan",
+  "first": "Hans Christian",
+  "sap": "33YR"
+ },
+ {
+  "team": "Springer",
+  "last": "Preiß",
+  "first": "Maximilian",
+  "sap": "3PRMA6"
+ },
+ {
+  "team": "Springer",
+  "last": "Salomon",
+  "first": "Martin",
+  "sap": "31MP"
+ },
+ {
+  "team": "Springer",
+  "last": "Sellner",
+  "first": "Leon",
+  "sap": "3SELEP"
+ },
+ {
+  "team": "Springer",
+  "last": "Wacha",
+  "first": "Raphael",
+  "sap": "3WARAP"
+ },
+ {
+  "team": "Springer",
+  "last": "Wolfgang",
+  "first": "Werner",
+  "sap": "32FE"
+ },
+ {
+  "team": "FW-IHMT",
+  "last": "Gieger",
+  "first": "Julius",
+  "sap": "3GVO"
+ },
+ {
+  "team": "FW-IHMT",
+  "last": "Meisl",
+  "first": "Peter",
+  "sap": "3MLP"
+ },
+ {
+  "team": "FW-IHMT",
+  "last": "Trenker",
+  "first": "Thomas",
+  "sap": "33TO"
+ },
+ {
+  "team": "FW-IHMT",
+  "last": "Woller",
+  "first": "Friedrich",
+  "sap": "31LC"
+ }
+]

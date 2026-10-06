@@ -402,6 +402,60 @@
       .tmr {
         margin-bottom: 12px;
       }
+      /* Benutzer: Link-Schaltfläche (.lk), Benutzerzeile (.uline) und Karten der Benutzerverwaltung (.ucard) */
+      button.lk {
+        border: none;
+        background: none;
+        color: var(--act);
+        padding: 0;
+        text-decoration: underline;
+        font-size: inherit;
+      }
+      .uline {
+        margin: -4px 0 10px;
+      }
+      .ulog {
+        margin: 6px 0 0;
+        padding-left: 0;
+        list-style: none;
+        max-height: 14rem;
+        overflow: auto;
+      }
+      .ulog li {
+        font-size: 0.8125rem;
+        color: var(--mu);
+        padding: 2px 0;
+      }
+      .ucard.off {
+        opacity: 0.7;
+      }
+      .ufm label {
+        display: block;
+        font-size: 0.875rem;
+        color: var(--mu);
+        margin: 8px 0 2px;
+      }
+      .ufm input[type='text'],
+      .lgn input {
+        font: inherit;
+        color: var(--tx);
+        background: var(--card);
+        border: 1px solid var(--bd);
+        border-radius: 10px;
+        padding: 10px 12px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .lgn label {
+        display: block;
+        font-size: 0.875rem;
+        color: var(--mu);
+        margin: 10px 0 2px;
+      }
+      .lgn button {
+        width: 100%;
+        margin-top: 14px;
+      }
       .tmr p {
         margin: 6px 0;
       }
@@ -1532,7 +1586,7 @@
        * DATENFORMATE
        *   Auftrag        { auftrag, team, tp (Techn. Platz), art, plz, str, kurz, start, ende }
        *   Prüfobjekte    Liste von Kurztexten je Auftrag (aus dem Prüflos-Excel)
-       *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von? } je Auftrag:
+       *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von?, u? } je Auftrag (u = SAP-User, der zuletzt gespeichert hat – setzt der Server):
        *                    n = Anzahl Prüfobjekte, ok / nx = Anzahl OK / Nicht OK,
        *                    s = Status-String, ein Zeichen je Prüfobjekt: 'o' OK, 'x' Nicht OK, '-' offen,
        *                    nok = [{ i: Index, t: Kurztext, m: Text des Monteurs }],
@@ -1723,6 +1777,34 @@
       try {
         markedFilter = localStorage.getItem('dha') || '';
       } catch (e) {}
+      // ---- Benutzer (Monteur-Anmeldung mit SAP-User + Passwort) ----
+      // userToken: Anmelde-Token des Servers (Header X-User-Token) · userInfo: { sap, name, team (Standardteam laut Benutzerverwaltung),
+      // last (zuletzt gewähltes Team) } · userNames: SAP-User -> Name (Disponent, für „bewertet von“) ·
+      // loginUser / loginPass / loginError / loginBusy: Eingaben und Zustand der Anmeldeseite
+      let userToken = '',
+        userInfo = null,
+        userNames = new Map(),
+        loginUser = '',
+        loginPass = '',
+        loginError = '',
+        loginBusy = false;
+      try {
+        userToken = localStorage.getItem('utk') || '';
+        userInfo = JSON.parse(localStorage.getItem('usr') || 'null');
+      } catch (e) {}
+      if (!userInfo || !userInfo.sap) {
+        userToken = '';
+        userInfo = null;
+      }
+      const saveUser = () => {
+        try {
+          userToken ? localStorage.setItem('utk', userToken) : localStorage.removeItem('utk');
+          userInfo ? localStorage.setItem('usr', JSON.stringify(userInfo)) : localStorage.removeItem('usr');
+        } catch (e) {}
+      };
+      // Name zu einem SAP-User (Disponent kennt alle Namen, sonst nur der SAP-User selbst)
+      const userLabel = sap =>
+        !sap ? '' : userNames.get(sap) ? `${userNames.get(sap)} (${sap})` : userInfo && userInfo.sap === sap ? `${userInfo.name} (${sap})` : sap;
       // session: { role: 'monteur' | 'dispo' | null, team } – wird im Gerät gespeichert
       let session = { role: null, team: null };
       try {
@@ -2148,7 +2230,8 @@
               'Zeit zurückgemeldet am',
               'Nicht OK – Prüfobjekt → Text',
               'Hinweis',
-              'Abgehakt am'
+              'Abgehakt am',
+              'Zuletzt gespeichert von'
             ]
           ];
           const checklistRows = [
@@ -2203,7 +2286,8 @@
               markState(order.auftrag)
                 ? new Date(marks.get(order.auftrag).at).toLocaleString('de-AT') +
                   (markState(order.auftrag) === 2 ? ' (danach geändert)' : '')
-                : null
+                : null,
+              status.u ? userLabel(status.u) : null
             ]);
             items.forEach((t, i) => {
               const itemMark = valid ? status.s[i] : '-',
@@ -2563,7 +2647,8 @@
             hasTime
               ? `Durchgeführt am ${formatIsoDate(performedDate(result)) || '–'}${result.von ? ' · ab ' + result.von + ' Uhr' : ''} · Dauer ${formatMinutes(result.min)}`
               : 'Noch keine Zeit zurückgemeldet.'
-          )
+          ),
+          result && result.u && el('p', { class: 'mu' }, '👤 Zuletzt gespeichert von ' + userLabel(result.u))
         );
         if (hasTime && !timeComplete(result))
           timePanel.append(
@@ -2907,6 +2992,8 @@
             toast(
               `⚠ Auftrag ${orderNo} wurde gleichzeitig auf einem anderen Gerät geändert. Es gilt der Stand vom Server – deine letzte Eingabe wurde nicht übernommen.`
             );
+          } else if (e && e.status === 401 && e.data && e.data.login) {
+            // Anmeldung abgelaufen: die Eingabe bleibt gesichert und geht nach der erneuten Anmeldung hinaus
           } else if (e && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) {
             // dauerhafter Fehler: Eingabe verwerfen und Fehler anzeigen
             outbox.delete(orderNo);
@@ -2995,7 +3082,8 @@
             headers: {
               'Content-Type': 'application/json',
               ...(dispoToken ? { Authorization: 'Bearer ' + dispoToken } : {}),
-              ...(uploadToken ? { 'X-Upload-Token': uploadToken } : {})
+              ...(uploadToken ? { 'X-Upload-Token': uploadToken } : {}),
+              ...(userToken ? { 'X-User-Token': userToken } : {})
             },
             body: body === undefined ? undefined : JSON.stringify(body),
             signal: abortController.signal
@@ -3015,7 +3103,15 @@
           const e = new Error(payload.error || 'Fehler ' + response.status);
           e.status = response.status;
           e.data = payload;
-          if (response.status === 401 && payload.up) {
+          if (response.status === 401 && payload.login) {
+            // Monteur-Anmeldung fehlt/abgelaufen (oder Benutzer gesperrt/gelöscht, Passwort geändert, Gerät ausgeloggt)
+            if (userToken) {
+              userToken = '';
+              saveUser();
+              loginError = 'Bitte melde dich erneut an.';
+              render();
+            }
+          } else if (response.status === 401 && payload.up) {
             // Upload-PIN fehlt/abgelaufen -> nur Upload-PIN neu abfragen
             uploadToken = '';
             render();
@@ -3166,7 +3262,7 @@
           return;
         }
         const key = cacheKeyForSession();
-        if (!key) return;
+        if (!key || (session.role === 'monteur' && !userToken)) return; // Monteure sehen erst nach der Anmeldung Daten
         isPolling = true;
         try {
           if (key !== cacheKey) {
@@ -3184,6 +3280,25 @@
           serverReachable = true;
           if (response.ver) checkAppVersion(response.ver);
           if (response.gday) gasDay = response.gday;
+          if (response.users) userNames = new Map(response.users); // Disponent: SAP-User -> Name
+          // Monteur: Name/Team laut Benutzerverwaltung; ändert der Disponent das Team des Benutzers, gilt es sofort
+          if (response.me && userInfo && userInfo.sap === response.me.sap) {
+            const me = response.me,
+              teamChanged = userInfo.team !== me.team;
+            if (userInfo.name !== me.name || teamChanged) {
+              userInfo.name = me.name;
+              userInfo.team = me.team;
+              if (teamChanged && session.role === 'monteur' && me.team) {
+                session.team = me.team;
+                userInfo.last = me.team;
+                saveSession();
+                pollAgain = true;
+                pushSync(false);
+              }
+              saveUser();
+              render();
+            }
+          }
           // der Disponent hat dieses Gerät ausgeloggt
           if (response.kicked) forcedLogout();
           // der Disponent hat die Geräteübersicht offen und fragt Standorte ab (locate = Nummer der Abfragerunde)
@@ -3255,7 +3370,7 @@
             serverReachable = false;
             showGasCheck();
           }
-          else if (!/^Nicht angemeldet/.test(e.message || '')) errorMsg = errorMessageOf(e);
+          else if (!/^(Nicht angemeldet|Bitte anmelden)/.test(e.message || '')) errorMsg = errorMessageOf(e);
         }
         isPolling = false;
         if (pollAgain) {
@@ -4591,7 +4706,8 @@
                           'span',
                           {},
                           '✓ ' + timeText(record.at) + ' Uhr',
-                          record.n && el('span', { class: 'mu' }, ' · ' + record.n)
+                          (record.un || record.u || record.n) &&
+                            el('span', { class: 'mu' }, ' · ' + (record.un ? `${record.un} (${record.u})` : record.u || record.n))
                         )
                       : el('span', {}, '⚠ nicht bestätigt')
                   )
@@ -4613,11 +4729,13 @@
           const rows = (await api('GET', '/api/gas')).rows;
           // Zellen, die mit = + - @ beginnen, würde Excel als Formel lesen
           const cell = v => '"' + String(v ?? '').replace(/^([=+\-@])/, "'$1").replace(/"/g, '""') + '"';
-          const lines = [['Datum', 'Team', 'Bestätigt um', 'Gerät', 'Beim Server eingegangen um']].concat(
+          const lines = [['Datum', 'Team', 'Bestätigt um', 'Benutzer', 'SAP-User', 'Gerät', 'Beim Server eingegangen um']].concat(
             rows.map(r => [
               r.day.split('-').reverse().join('.'),
               r.team,
               new Date(r.at).toLocaleTimeString('de-AT'),
+              r.uname || '',
+              r.usr || '',
               (r.name ? r.name + ' ' : '') + '(…' + (r.did || '') + ')',
               Math.abs(r.rec - r.at) > 120e3 ? new Date(r.rec).toLocaleString('de-AT') : ''
             ])
@@ -5034,6 +5152,10 @@
       // und startet Abgleich, Vorab-Laden und Push-Anmeldung.
       const switchRole = (role, team) => {
         session = { role, team: team || null };
+        if (role === 'monteur' && team && userInfo) {
+          userInfo.last = team; // beim nächsten Einstieg gleich wieder dieses Team
+          saveUser();
+        }
         searchText = '';
         teamFilter = '';
         deviceTeamFilter = '';
@@ -5112,6 +5234,9 @@
        * die Abmeldung erledigt. Danach kann man sich wieder anmelden.
        */
       function forcedLogout() {
+        userToken = '';
+        userInfo = null;
+        saveUser();
         switchRole(null);
         infoMsg = 'Dieses Gerät wurde vom Disponenten abgemeldet.';
         render();
@@ -5725,7 +5850,19 @@
       function drawRoleChoice() {
         app.append(
           el('h1', {}, 'Aufträge'),
-          el('button', { class: 'big', onclick: () => switchRole('monteur') }, '🔧 Ich bin Monteur'),
+          el(
+            'button',
+            {
+              class: 'big',
+              onclick: () => {
+                // angemeldet: gleich weiter (zuletzt gewähltes Team), sonst zur Anmeldung
+                switchRole('monteur', userToken && userInfo ? userInfo.last || userInfo.team || undefined : undefined);
+                const n = app.querySelector('[data-keep="lu"]');
+                if (n) n.focus();
+              }
+            },
+            '🔧 Ich bin Monteur'
+          ),
           el(
             'button',
             {
@@ -5737,8 +5874,103 @@
               }
             },
             '📋 Ich bin Disponent'
+          ),
+          userToken &&
+            userInfo &&
+            el(
+              'p',
+              { class: 'mu' },
+              `👤 Angemeldet als ${userInfo.name} (${userInfo.sap}) · `,
+              el('button', { class: 'lk', onclick: userLogout }, 'Abmelden')
+            )
+        );
+      }
+
+      // Anmeldung der Monteure: SAP-User + Passwort (POST /api/user/login). Danach wird das Team aus der Benutzerverwaltung gewählt.
+      function drawMonteurLogin(back) {
+        const submit = async () => {
+          const user = loginUser.trim(),
+            password = loginPass;
+          if (loginBusy) return;
+          if (!user || !password) {
+            loginError = 'Bitte SAP-User und Passwort eingeben.';
+            render();
+            return;
+          }
+          loginBusy = true;
+          loginError = '';
+          render();
+          try {
+            const r = await api('POST', '/api/user/login', { user, password, did: deviceId });
+            userToken = r.token;
+            // erneute Anmeldung desselben Benutzers (abgelaufen): beim zuletzt gewählten Team bleiben, sonst Team laut Benutzerverwaltung
+            const last = userInfo && userInfo.sap === r.user.sap ? userInfo.last : null;
+            userInfo = { sap: r.user.sap, name: r.user.name, team: r.user.team, last };
+            saveUser();
+            loginPass = '';
+            loginBusy = false;
+            switchRole('monteur', last || r.user.team || undefined);
+          } catch (e) {
+            loginBusy = false;
+            loginPass = '';
+            loginError = e.net ? 'Keine Verbindung zum Server' : e.message || 'Anmeldung fehlgeschlagen.';
+            render();
+            const n = app.querySelector('[data-keep="lp"]');
+            if (n) n.focus();
+          }
+        };
+        app.append(
+          el('div', { class: 'bar' }, el('h1', {}, 'Anmelden'), back),
+          el(
+            'form',
+            {
+              class: 'card lgn',
+              onsubmit: e => {
+                e.preventDefault();
+                submit();
+              }
+            },
+            el('b', {}, 'Monteur-Anmeldung'),
+            el('label', { for: 'lgu' }, 'SAP-User'),
+            el('input', {
+              id: 'lgu',
+              type: 'text',
+              autocomplete: 'username',
+              autocapitalize: 'characters',
+              autocorrect: 'off',
+              spellcheck: 'false',
+              maxlength: '20',
+              'data-keep': 'lu',
+              value: loginUser || (userInfo && userInfo.sap) || '',
+              oninput: e => {
+                loginUser = e.target.value;
+              }
+            }),
+            el('label', { for: 'lgp' }, 'Passwort'),
+            el('input', {
+              id: 'lgp',
+              type: 'password',
+              autocomplete: 'current-password',
+              maxlength: '100',
+              'data-keep': 'lp',
+              value: loginPass,
+              oninput: e => {
+                loginPass = e.target.value;
+              }
+            }),
+            loginError && el('p', { class: 'mu er' }, loginError),
+            el('button', { class: 'pri', type: 'submit', disabled: loginBusy ? 'disabled' : null }, loginBusy ? 'Anmelden …' : 'Anmelden')
           )
         );
+      }
+      // Monteur abmelden: Token weg, Gerät nicht mehr dem Benutzer zugeordnet, zurück zum Start
+      function userLogout() {
+        userToken = '';
+        userInfo = null;
+        saveUser();
+        loginPass = '';
+        loginError = '';
+        switchRole(null);
       }
 
       // PIN-Eingabe des Disponenten (POST /api/login, automatisch nach der 4. Ziffer)
@@ -5751,6 +5983,7 @@
             dispoUnlocked = true;
             pinError = false;
             pushSync(false);
+            poll(); // der Gesamtstand ist erst nach der PIN-Eingabe abrufbar
           } catch (e) {
             pinError = e.net ? 'Keine Verbindung zum Server' : e.message || 'Falscher PIN';
           }
@@ -5783,8 +6016,12 @@
       }
 
       // Monteur: Team auswählen
-      function drawTeamPicker(back) {
+      function drawTeamPicker(back, missingTeam) {
         app.append(el('div', { class: 'bar' }, el('h1', {}, 'Dein Team'), back));
+        if (missingTeam)
+          app.append(
+            el('p', { class: 'mu' }, `Für „${missingTeam}“ gibt es derzeit keine Aufträge. Bitte wähle ein Team.`)
+          );
         const teamEntries = teamCounts();
         if (!dataReady) app.append(skeletonButtons(4));
         else if (!teamEntries.length)
@@ -5820,7 +6057,14 @@
               el('button', { onclick: () => switchRole('monteur') }, 'Team wechseln'),
               back
             )
-          )
+          ),
+          userInfo &&
+            el(
+              'p',
+              { class: 'mu uline' },
+              `👤 ${userInfo.name} (${userInfo.sap}) · `,
+              el('button', { class: 'lk', onclick: userLogout }, 'Abmelden')
+            )
         );
         // Daten laden noch (erster Start ohne Zwischenspeicher): Platzhalter statt einer leeren Liste
         if (!dataReady) {
@@ -6610,6 +6854,8 @@
                   { class: 'mu' },
                   (device.name ? kind + ' · ' : '') + 'Kennung …' + device.did.slice(-4)
                 ),
+                device.usr &&
+                  el('div', { class: 'mu' }, '👤 ' + (device.uname ? `${device.uname} (${device.usr})` : device.usr)),
                 el(
                   'div',
                   { class: 'mu' },
@@ -6717,7 +6963,389 @@
           )
         );
       }
-      // Disponent: Kopfzeile + Tabs (Übersicht, Fortschritt, Upload, Vergleich, Geräte) und je nach Tab die passende Ansicht
+      // ---- Benutzerverwaltung (Disponent) ----
+      // userList: Benutzer vom Server (null = noch nicht geladen) · userNow: Serverzeit · userSearch / userTeamFilter: Filter ·
+      // userEdit: SAP-User des Benutzers im Bearbeiten-Modus ('new' = neuer Benutzer) mit den Eingaben in userForm ·
+      // userError: Fehlertext des Formulars · userArmed: „del:<SAP>“ / „reset:<SAP>“ nach dem ersten Tipp (zweiter bestätigt) ·
+      // userLogFor / userLogRows: Benutzer, dessen Protokoll aufgeklappt ist, und dessen Einträge
+      let userList = null,
+        userListError = '',
+        userNow = 0,
+        userSearch = '',
+        userTeamFilter = '',
+        userEdit = null,
+        userForm = { sap: '', last: '', first: '', team: '', active: true },
+        userError = '',
+        userArmed = null,
+        userLogFor = null,
+        userLogRows = null;
+      // lädt die Benutzerliste (GET /api/users) und zeichnet neu
+      async function loadUsers() {
+        try {
+          const r = await api('GET', '/api/users');
+          userList = r.users;
+          userNow = r.now;
+          userListError = '';
+        } catch (e) {
+          userListError = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
+        }
+        render();
+      }
+      // speichert das Formular: neuer Benutzer (POST) oder Änderung (PUT); der SAP-User eines bestehenden Benutzers bleibt
+      async function saveUserForm() {
+        const isNew = userEdit === 'new',
+          form = { ...userForm, sap: userForm.sap.trim().toUpperCase() };
+        if (isNew && !/^[A-Z0-9]{2,20}$/.test(form.sap)) {
+          userError = 'SAP-User: 2–20 Buchstaben oder Ziffern.';
+          return render();
+        }
+        if (!form.last.trim()) {
+          userError = 'Bitte den Nachnamen eingeben.';
+          return render();
+        }
+        try {
+          await api(
+            isNew ? 'POST' : 'PUT',
+            isNew ? '/api/users' : '/api/users/' + encodeURIComponent(userEdit),
+            isNew
+              ? form
+              : { last: form.last, first: form.first, team: form.team, active: form.active }
+          );
+          userEdit = null;
+          userError = '';
+          infoMsg = isNew ? `Benutzer ${form.sap} angelegt – Startpasswort gilt.` : 'Benutzer gespeichert';
+        } catch (e) {
+          userError = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
+          return render();
+        }
+        await loadUsers();
+      }
+      // Passwort zurücksetzen / Benutzer löschen (je nach Aktion), danach Liste neu laden
+      async function userAction(kind, sap) {
+        userArmed = null;
+        try {
+          if (kind === 'reset') {
+            await api('POST', `/api/users/${encodeURIComponent(sap)}/reset`);
+            infoMsg = `Passwort von ${sap} auf das Startpasswort zurückgesetzt – bisherige Anmeldungen enden.`;
+          } else {
+            await api('DELETE', '/api/users/' + encodeURIComponent(sap));
+            infoMsg = `Benutzer ${sap} gelöscht.`;
+            if (userLogFor === sap) userLogFor = null;
+          }
+        } catch (e) {
+          errorMsg = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
+        }
+        await loadUsers();
+      }
+      // klappt das Protokoll eines Benutzers auf/zu
+      async function toggleUserLog(sap) {
+        if (userLogFor === sap) {
+          userLogFor = null;
+          return render();
+        }
+        userLogFor = sap;
+        userLogRows = null;
+        render();
+        try {
+          userLogRows = (await api('GET', `/api/users/${encodeURIComponent(sap)}/log`)).log;
+        } catch (e) {
+          userLogRows = [];
+          errorMsg = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
+        }
+        render();
+      }
+      const LOG_KINDS = {
+        login: 'Angemeldet',
+        ergebnis: 'Ergebnis gespeichert',
+        gas: 'Gaswarngerät bestätigt',
+        ack: 'Nachricht bestätigt'
+      };
+      /**
+       * Dispo-Tab „Benutzer“: alle Monteur-Benutzer (SAP-User, Name, Team) mit letzter Anmeldung und Geräten. Anlegen, Ändern
+       * (Name, Team, sperren), Passwort auf das Startpasswort zurücksetzen, Löschen (jeweils mit Rückfrage) und das Protokoll
+       * des Benutzers (Anmeldungen, Ergebnisse, Gaswarngerät, Bestätigungen).
+       */
+      function drawUsers() {
+        if (userList === null) {
+          app.append(userListError ? el('p', { class: 'mu er' }, userListError) : skeletonGrid(4));
+          return;
+        }
+        const teams = [...new Set([...userList.map(u => u.team).filter(Boolean), ...teamList.map(([t]) => t)])].sort(
+            naturalCompare
+          ),
+          query = userSearch.trim().toLowerCase(),
+          shown = userList.filter(
+            u =>
+              (!userTeamFilter || (userTeamFilter === '\u0000n' ? !u.team : u.team === userTeamFilter)) &&
+              (!query || `${u.first} ${u.last} ${u.sap}`.toLowerCase().includes(query))
+          ),
+          recent = userList.filter(u => u.loginAt && userNow - u.loginAt < 30 * 864e5).length;
+        const startNew = () => {
+          userEdit = 'new';
+          userForm = { sap: '', last: '', first: '', team: userTeamFilter && userTeamFilter !== '\u0000n' ? userTeamFilter : '', active: true };
+          userError = '';
+          render();
+          const n = app.querySelector('[data-keep="us"]');
+          if (n) n.focus();
+        };
+        const field = (label, key, extra = {}) => [
+          el('label', {}, label),
+          el('input', {
+            type: 'text',
+            value: userForm[key],
+            maxlength: key === 'sap' ? '20' : '60',
+            autocapitalize: key === 'sap' ? 'characters' : null,
+            autocomplete: 'off',
+            spellcheck: 'false',
+            oninput: e => {
+              userForm[key] = e.target.value;
+            },
+            ...extra
+          })
+        ];
+        const form = () =>
+          el(
+            'form',
+            {
+              class: 'ufm',
+              onsubmit: e => {
+                e.preventDefault();
+                saveUserForm();
+              }
+            },
+            userEdit === 'new' && field('SAP-User (Anmeldename)', 'sap', { 'data-keep': 'us' }),
+            field('Nachname', 'last'),
+            field('Vorname', 'first'),
+            field('Team', 'team', { list: 'uteams', placeholder: 'z. B. FW-IH01' }),
+            el('datalist', { id: 'uteams' }, teams.map(t => el('option', { value: t }))),
+            userEdit !== 'new' &&
+              el(
+                'label',
+                {},
+                el('input', {
+                  type: 'checkbox',
+                  checked: userForm.active ? 'checked' : null,
+                  onchange: e => {
+                    userForm.active = e.target.checked;
+                  }
+                }),
+                ' Benutzer ist aktiv (Haken weg = gesperrt)'
+              ),
+            userError && el('p', { class: 'mu er' }, userError),
+            el(
+              'div',
+              { class: 'ob' },
+              el('button', { class: 'sv', type: 'submit' }, 'Speichern'),
+              el(
+                'button',
+                {
+                  type: 'button',
+                  onclick: () => {
+                    userEdit = null;
+                    userError = '';
+                    render();
+                  }
+                },
+                'Abbrechen'
+              )
+            )
+          );
+        app.append(
+          el(
+            'div',
+            { class: 'card' },
+            el('b', {}, 'Benutzer'),
+            el(
+              'p',
+              { class: 'mu' },
+              `${userList.length} ${userList.length === 1 ? 'Benutzer' : 'Benutzer'} · ${recent} in den letzten 30 Tagen angemeldet`
+            ),
+            el(
+              'p',
+              { class: 'mu' },
+              'Alle Monteure melden sich mit ihrem SAP-User und dem Passwort an. Das Team hier wird beim Anmelden automatisch gewählt (der Monteur kann es danach wechseln). „Passwort zurücksetzen“ setzt das Startpasswort, alle bisherigen Anmeldungen des Benutzers enden dabei.'
+            ),
+            userEdit === 'new' ? form() : el('button', { class: 'pri', onclick: startNew }, '＋ Neuer Benutzer'),
+            userListError && el('p', { class: 'mu er' }, userListError)
+          ),
+          el(
+            'div',
+            { class: 'flt', 'data-k': 'fl' },
+            el('span', { class: 'mu' }, 'Team'),
+            el(
+              'select',
+              {
+                onchange: e => {
+                  userTeamFilter = e.target.value;
+                  userArmed = null;
+                  render();
+                }
+              },
+              el('option', { value: '' }, `Alle (${userList.length})`),
+              teams.map(t =>
+                el(
+                  'option',
+                  { value: t, ...(t === userTeamFilter ? { selected: 'selected' } : {}) },
+                  `${t} (${userList.filter(u => u.team === t).length})`
+                )
+              ),
+              userList.some(u => !u.team) &&
+                el(
+                  'option',
+                  { value: '\u0000n', ...(userTeamFilter === '\u0000n' ? { selected: 'selected' } : {}) },
+                  `Ohne Team (${userList.filter(u => !u.team).length})`
+                )
+            ),
+            userTeamFilter &&
+              el(
+                'button',
+                {
+                  class: 'rs',
+                  onclick: () => {
+                    userTeamFilter = '';
+                    render();
+                  }
+                },
+                '✕ Teamfilter aufheben'
+              )
+          ),
+          el(
+            'div',
+            { class: 'tools' },
+            el('input', {
+              type: 'search',
+              'data-keep': 'usr',
+              placeholder: 'Suchen (Name, SAP-User)',
+              value: userSearch,
+              oninput: e => {
+                userSearch = e.target.value;
+                render();
+              }
+            })
+          ),
+          !shown.length && el('p', { class: 'mu' }, 'Keine Benutzer gefunden.'),
+          el(
+            'div',
+            { class: 'grid', 'data-list': '1' },
+            shown.map(u => {
+              const editing = userEdit === u.sap;
+              return el(
+                'div',
+                { class: 'card ucard' + (u.active ? '' : ' off') },
+                el(
+                  'div',
+                  { class: 'row' },
+                  el('b', {}, `${u.first} ${u.last}`.trim()),
+                  el('span', { class: 'tag' }, u.sap),
+                  el('span', { class: 'tag ' + (u.team ? 'st-teil' : 'st-zf') }, '👥 ' + (u.team || 'kein Team')),
+                  !u.active && el('span', { class: 'tag st-nok' }, 'gesperrt')
+                ),
+                el(
+                  'div',
+                  { class: 'mu' },
+                  u.loginAt ? 'Zuletzt angemeldet ' + agoText(u.loginAt, userNow) : 'Noch nie angemeldet'
+                ),
+                el(
+                  'div',
+                  { class: 'mu' },
+                  u.devs
+                    ? `📱 ${u.devs} ${u.devs === 1 ? 'Gerät' : 'Geräte'}` + (u.seen ? ' · zuletzt aktiv ' + agoText(u.seen, userNow) : '')
+                    : '📱 kein Gerät'
+                ),
+                editing
+                  ? form()
+                  : el(
+                      'div',
+                      { class: 'ob dv-actions' },
+                      el(
+                        'button',
+                        {
+                          onclick: () => {
+                            userEdit = u.sap;
+                            userForm = { sap: u.sap, last: u.last, first: u.first, team: u.team || '', active: u.active };
+                            userError = '';
+                            userArmed = null;
+                            render();
+                          }
+                        },
+                        'Bearbeiten'
+                      ),
+                      userArmed === 'reset:' + u.sap
+                        ? [
+                            el('button', { class: 'er', onclick: () => userAction('reset', u.sap) }, 'Wirklich zurücksetzen?'),
+                            el(
+                              'button',
+                              {
+                                onclick: () => {
+                                  userArmed = null;
+                                  render();
+                                }
+                              },
+                              'Abbrechen'
+                            )
+                          ]
+                        : el(
+                            'button',
+                            {
+                              onclick: () => {
+                                userArmed = 'reset:' + u.sap;
+                                render();
+                              }
+                            },
+                            'Passwort zurücksetzen'
+                          ),
+                      el('button', { onclick: () => toggleUserLog(u.sap) }, userLogFor === u.sap ? 'Protokoll ausblenden' : 'Protokoll'),
+                      userArmed === 'del:' + u.sap
+                        ? [
+                            el('button', { class: 'er', onclick: () => userAction('del', u.sap) }, 'Wirklich löschen?'),
+                            el(
+                              'button',
+                              {
+                                onclick: () => {
+                                  userArmed = null;
+                                  render();
+                                }
+                              },
+                              'Abbrechen'
+                            )
+                          ]
+                        : el(
+                            'button',
+                            {
+                              class: 'er',
+                              onclick: () => {
+                                userArmed = 'del:' + u.sap;
+                                render();
+                              }
+                            },
+                            'Löschen'
+                          )
+                    ),
+                userLogFor === u.sap &&
+                  (userLogRows === null
+                    ? el('p', { class: 'mu' }, 'Lade …')
+                    : userLogRows.length
+                      ? el(
+                          'ul',
+                          { class: 'ulog' },
+                          userLogRows.map(l =>
+                            el(
+                              'li',
+                              {},
+                              `${formatDateTime(l.at)} · ${LOG_KINDS[l.kind] || l.kind}` +
+                                (l.ref ? ' · ' + (l.kind === 'ergebnis' ? 'Auftrag ' : '') + l.ref : '') +
+                                (l.info ? ' · ' + l.info : '') +
+                                (l.did ? ' · Gerät …' + l.did.slice(-4) : '')
+                            )
+                          )
+                        )
+                      : el('p', { class: 'mu' }, 'Noch keine Einträge.'))
+              );
+            })
+          )
+        );
+      }
+      // Disponent: Kopfzeile + Tabs (Übersicht, Fortschritt, Upload, Vergleich, Geräte, Benutzer) und je nach Tab die passende Ansicht
       function drawDispo(back) {
         app.append(
           el('div', { class: 'bar' }, el('h1', {}, 'Disponent'), back),
@@ -6796,9 +7424,29 @@
                 }
               },
               'Geräte'
+            ),
+            el(
+              'button',
+              {
+                class: dispoTab === 'us' ? 'on' : null,
+                onclick: () => {
+                  dispoTab = 'us';
+                  uploadToken = '';
+                  userEdit = null;
+                  userArmed = null;
+                  userLogFor = null;
+                  render();
+                  loadUsers();
+                }
+              },
+              'Benutzer'
             )
           )
         );
+        if (dispoTab === 'us') {
+          drawUsers();
+          return;
+        }
         if (dispoTab === 'dv') {
           drawDevices();
           return;
@@ -6843,8 +7491,23 @@
           drawDispoLogin(back);
           return;
         }
+        // Monteure müssen sich anmelden (SAP-User + Passwort); danach gilt das Team aus der Benutzerverwaltung
+        if (session.role === 'monteur' && !userToken) {
+          drawMonteurLogin(back);
+          return;
+        }
         if (session.role === 'monteur' && !session.team) {
           drawTeamPicker(back);
+          return;
+        }
+        // Team gibt es (noch) nicht bei den Aufträgen (z. B. „Springer“): Team wählen lassen
+        if (
+          session.role === 'monteur' &&
+          dataReady &&
+          teamList.length &&
+          !teamList.some(([t]) => t === session.team)
+        ) {
+          drawTeamPicker(back, session.team);
           return;
         }
         if (session.role === 'monteur') {
