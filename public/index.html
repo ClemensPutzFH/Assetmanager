@@ -402,8 +402,9 @@
       .tmr {
         margin-bottom: 12px;
       }
-      /* Liste: „Weitere Aufträge anzeigen“ am Ende */
+      /* Liste: Marke am Ende, bei deren Annäherung die Liste automatisch länger wird (ohne IntersectionObserver ein Button) */
       .more {
+        min-height: 1px;
         text-align: center;
         margin: 6px 0 16px;
       }
@@ -4080,15 +4081,21 @@
             listLimit += LIST_CHUNK;
             render();
           };
-          const more = el('div', { class: 'more' }, el('button', { onclick: loadMore }, `Weitere Aufträge anzeigen (${shown} von ${total})`));
+          // Unsichtbare Marke am Ende der Liste: kommt der Nutzer in ihre Nähe (1200 px davor), wird die Liste automatisch länger.
+          // Nur ohne IntersectionObserver (sehr alter Browser) gibt es stattdessen einen Button.
+          const more = el(
+            'div',
+            { class: 'more', 'aria-hidden': 'true' },
+            typeof IntersectionObserver === 'undefined' &&
+              el('button', { onclick: loadMore }, `Weitere Aufträge anzeigen (${shown} von ${total})`)
+          );
           container.append(more);
-          // beim Scrollen kurz vor dem Ende automatisch nachladen
           if (typeof IntersectionObserver !== 'undefined') {
             moreObserver = new IntersectionObserver(
               entries => {
                 if (entries.some(e => e.isIntersecting)) loadMore();
               },
-              { rootMargin: '800px 0px' }
+              { rootMargin: '1200px 0px' }
             );
             moreObserver.observe(more);
           }
