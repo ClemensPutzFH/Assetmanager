@@ -1809,7 +1809,8 @@
         dispoUnlocked = false,
         pinInput = '',
         pinError = false,
-        // dispoFiltersOpen: Filter der Dispo-Übersicht am Handy aufgeklappt · listSort: Sortierung der Listen ('nr' Nummer | 'termin' Termin)
+        // dispoFiltersOpen: Filter der Dispo-Übersicht am Handy aufgeklappt · listSort: Sortierung der Listen
+        // ('nr' Nummer | 'termin' Termin (Monteur) | 'rueck' Rückmeldung (Disponent))
         dispoFiltersOpen = false,
         listSort = 'nr',
         // timeFormOpen: Eingabefelder (Datum, Beginn, Dauer) der Zeitkarte aufgeklappt ·
@@ -4001,11 +4002,26 @@
           ? el('span', { class: 'tag st-nok' }, `⏰ überfällig seit ${plural(d.days)}`)
           : el('span', { class: 'tag st-zf' }, d.kind === 'today' ? '⏰ heute fällig' : `⏰ fällig in ${plural(d.days)}`);
       };
-      // Sortierung der Listen: nach Auftragsnummer oder nach Endtermin (früheste zuerst, ohne Termin zuletzt)
+      // Sortierung der Listen: Auftragsnummer (alle), Endtermin (Monteur: früheste zuerst, ohne Termin zuletzt) oder
+      // Rückmeldung (Disponent: zuletzt zurückgemeldete zuerst, ohne Rückmeldung zuletzt). Gespeichert ist die letzte Wahl;
+      // gilt sie in der aktuellen Rolle nicht, wird nach Nummer sortiert (sortMode).
+      const sortMode = () =>
+        session.role === 'dispo' ? (listSort === 'rueck' ? 'rueck' : 'nr') : listSort === 'termin' ? 'termin' : 'nr';
       const sortRows = rows => {
         const byNr = (a, b) => naturalCompare(a.auftrag, b.auftrag),
-          end = r => isoOfDate(r.ende) || '9999-99-99';
-        return rows.sort(listSort === 'termin' ? (a, b) => end(a).localeCompare(end(b)) || byNr(a, b) : byNr);
+          mode = sortMode(),
+          end = r => isoOfDate(r.ende) || '9999-99-99',
+          reported = r => {
+            const d = resultOf(r.auftrag);
+            return d && d.min != null && d.tat ? d.tat : 0;
+          };
+        return rows.sort(
+          mode === 'termin'
+            ? (a, b) => end(a).localeCompare(end(b)) || byNr(a, b)
+            : mode === 'rueck'
+              ? (a, b) => reported(b) - reported(a) || byNr(a, b)
+              : byNr
+        );
       };
       const sortChips = () =>
         el(
@@ -4014,12 +4030,12 @@
           el('span', { class: 'mu' }, 'Sortierung:'),
           [
             ['nr', 'Auftragsnummer'],
-            ['termin', 'Termin']
+            session.role === 'dispo' ? ['rueck', 'Rückmeldung (neueste zuerst)'] : ['termin', 'Termin']
           ].map(([k, l]) =>
             el(
               'button',
               {
-                class: 'chip' + (listSort === k ? ' on' : ''),
+                class: 'chip' + (sortMode() === k ? ' on' : ''),
                 onclick: () => {
                   listSort = k;
                   try {
@@ -4033,7 +4049,8 @@
           )
         );
       try {
-        if (localStorage.getItem('lsort') === 'termin') listSort = 'termin';
+        const saved = localStorage.getItem('lsort');
+        if (saved === 'termin' || saved === 'rueck') listSort = saved;
       } catch (e) {}
       // Suche: Text kommt in Auftrag, Kurztext, Straße, PLZ oder Technischem Platz vor
       const matchesSearch = r => {
@@ -4239,7 +4256,7 @@
           total = Math.min(filtered.length, LIST_MAX);
         // Karten werden in Portionen gezeichnet (LIST_CHUNK), weitere kommen beim Scrollen dazu: so bleibt das Neuzeichnen auch bei
         // langen Listen schnell. Ändert sich Filter, Suche oder Ansicht, beginnt die Liste wieder mit der ersten Portion.
-        const sig = [teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab, listSort].join('|');
+        const sig = [teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab, sortMode()].join('|');
         if (sig !== listSig) {
           listSig = sig;
           listLimit = LIST_CHUNK;
