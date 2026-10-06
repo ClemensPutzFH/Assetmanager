@@ -5015,6 +5015,24 @@
 
       // errorMsgSounded: Fehlermeldung, für die schon der Fehlerton gespielt wurde
       let errorMsgSounded = '';
+      // Info-Meldungen (nicht Fehler) verschwinden nach INFO_MS von selbst; Fortschrittsmeldungen („Lese Datei …“)
+      // bleiben, bis sie durch das Ergebnis ersetzt werden. infoShown/infoTimer: aktuell beobachtete Meldung samt Timer
+      const INFO_MS = 8000;
+      let infoShown = '',
+        infoTimer = null;
+      function scheduleInfoExpiry() {
+        if (infoMsg === infoShown) return;
+        infoShown = infoMsg;
+        clearTimeout(infoTimer);
+        if (!infoMsg || infoMsg.includes('…')) return;
+        const m = infoMsg;
+        infoTimer = setTimeout(() => {
+          if (infoMsg === m) {
+            infoMsg = '';
+            render();
+          }
+        }, INFO_MS);
+      }
       // Meldungen oben: Update-Hinweis, Fehler, Info, Rückgängig (Dispo), Offline-Hinweise
       function drawStatusBanners() {
         if (newVersion && !openOrder)
@@ -5038,6 +5056,7 @@
         }
         if (errorMsg) app.append(el('div', { class: 'msg er' }, errorMsg));
         if (infoMsg && !errorMsg) app.append(el('div', { class: 'msg' }, infoMsg));
+        scheduleInfoExpiry();
         if (undoInfo && session.role === 'dispo')
           app.append(
             el('div', { class: 'msg' }, undoInfo.txt, el('button', { onclick: undoLastMarks }, 'Rückgängig'))
