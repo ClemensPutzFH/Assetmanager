@@ -5047,7 +5047,9 @@
         const focused = document.activeElement,
           keepKey = focused && focused.dataset && focused.dataset.keep,
           caret = keepKey ? focused.selectionStart : 0,
-          savedAnchors = viewportAnchors();
+          // ganz oben bleibt die Seite oben: kommt dort später etwas dazu (Hinweise, Fortschrittskarte, geladene Liste),
+          // würde der Anker die Seite sonst um deren Höhe nach unten schieben
+          savedAnchors = scrollY < 1 ? [] : viewportAnchors();
         draw();
         for (const [key, top] of savedAnchors) {
           const n = app.querySelector('[data-k="' + key + '"]');
