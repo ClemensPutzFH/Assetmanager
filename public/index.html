@@ -5874,50 +5874,6 @@
         },
         true
       );
-      // „Alles OK“ und „Ja“ (Rückfrage) verschwinden beim Tippen sofort aus dem DOM (neu gezeichnet). Damit man trotzdem die
-      // gleiche kleine Rückmeldung wie beim OK-Button sieht, federt eine Kopie des Buttons an seiner Stelle und blendet aus
-      // (fixed, ohne Einfluss auf das Layout, nicht antippbar). Der „Ja“-Klick in den ersten 250 ms zählt nicht (siehe
-      // armAllOk) und löst daher auch nichts aus.
-      document.addEventListener(
-        'click',
-        e => {
-          const t = e.target instanceof Element ? e.target : e.target.parentElement,
-            btn = t && t.closest('button.allok, .cfm button.yes');
-          if (!btn || !app.contains(btn) || !btn.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-          if (btn.classList.contains('yes') && armAllOk && Date.now() - armAllOk < 250) return;
-          const r = btn.getBoundingClientRect(),
-            cs = getComputedStyle(btn),
-            ghost = btn.cloneNode(true);
-          // Aussehen mitnehmen: Stile wie „.cfm button.yes“ greifen außerhalb der Rückfrage nicht mehr
-          for (const prop of ['backgroundColor', 'color', 'border', 'borderRadius', 'font', 'padding', 'textAlign'])
-            ghost.style[prop] = cs[prop];
-          Object.assign(ghost.style, {
-            position: 'fixed',
-            left: r.left + 'px',
-            top: r.top + 'px',
-            width: r.width + 'px',
-            height: r.height + 'px',
-            margin: '0',
-            boxSizing: 'border-box',
-            pointerEvents: 'none',
-            zIndex: '4'
-          });
-          ghost.setAttribute('aria-hidden', 'true');
-          ghost.tabIndex = -1;
-          document.body.append(ghost);
-          ghost
-            .animate(
-              [
-                { transform: 'scale(0.96)', opacity: 1 },
-                { transform: 'scale(1.03)', opacity: 1, offset: 0.4 },
-                { transform: 'scale(1.06)', opacity: 0 }
-              ],
-              { duration: OK_POP_MS, easing: 'ease-out', fill: 'forwards' }
-            )
-            .finished.then(() => ghost.remove(), () => ghost.remove());
-        },
-        true
-      );
       // sichtbare data-k-Elemente samt Abstand zum oberen Rand, nach Wichtigkeit sortiert (Grundlage für die Scroll-Stabilität)
       function viewportAnchors() {
         const marked = app.querySelectorAll('[data-k]');
@@ -5954,8 +5910,11 @@
           // würde der Anker die Seite sonst um deren Höhe nach unten schieben
           savedAnchors = scrollY < 1 ? [] : viewportAnchors(),
           listSnap = snapshotList(),
-          okBefore = okSnapshot();
+          okBefore = okSnapshot(),
+          aokBefore = aokSnapshot();
         draw();
+        // „Alles OK“ ↔ Rückfrage ↔ weg: Platz vor der Scroll-Korrektur reservieren (sonst springt der Rest der Liste)
+        const aokRun = aokPrepare(aokBefore);
         for (const [key, top] of savedAnchors) {
           const n = app.querySelector('[data-k="' + key + '"]');
           if (n) {
@@ -5976,6 +5935,7 @@
         animateView();
         animateRemoved(listSnap);
         animateOkPops(okBefore);
+        if (aokRun) aokRun();
         // frisch gespeicherte Zeit: Zeitkarte leuchtet kurz grün auf
         if (timeFlash) {
           timeFlash = false;
@@ -6057,6 +6017,91 @@
             LIST_STAGGER_MS
           )
         ];
+      }
+      /**
+       * „Alles OK“ (Schaltfläche) und die Rückfrage „Ja, alle OK“ ersetzen sich gegenseitig bzw. verschwinden nach dem Tippen.
+       * Statt einer Kopie über dem neuen Inhalt (die ihn überdeckt) wird der Übergang im Fluss der Seite gezeigt:
+       *   Schaltfläche ↔ Rückfrage: das neue Element wächst/schrumpft weich von der alten auf die neue Höhe und blendet ein;
+       *   Rückfrage weg („Ja“, alle Prüfobjekte bewertet): das alte Element blendet aus, sein Platz schließt sich weich.
+       * aokSnapshot() merkt sich vor dem Neuzeichnen Art, Höhe (mit Rändern) und das alte Element; aokPrepare() reserviert den
+       * Platz sofort (vor der Scroll-Korrektur) und liefert die Funktion, die die Animation startet.
+       */
+      function aokSnapshot() {
+        const n = app.querySelector('[data-k="aok"]');
+        if (!n) return null;
+        const r = n.getBoundingClientRect(),
+          cs = getComputedStyle(n),
+          prev = n.previousElementSibling;
+        return {
+          node: n,
+          kind: n.classList.contains('cfm') ? 'cfm' : 'btn',
+          box: r.height,
+          h: r.height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0),
+          prev: prev && prev.dataset.k
+        };
+      }
+      // aokGhost: weggefallene Rückfrage, die gerade ausblendet (Kopie, Höhe samt Rändern, Element davor, Startzeit). Nach dem Speichern
+      // zeichnet die App meist gleich noch einmal: dann wird der Übergang an derselben Stelle fortgesetzt.
+      let aokGhost = null;
+      const AOK_MS = 260;
+      function aokPrepare(before) {
+        if (!app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+        const now = performance.now(),
+          easing = 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+          n = app.querySelector('[data-k="aok"]'),
+          kind = n ? (n.classList.contains('cfm') ? 'cfm' : 'btn') : null;
+        if (aokGhost && now - aokGhost.start > AOK_MS) aokGhost = null;
+        if (before && kind !== before.kind) {
+          if (n) {
+            // Schaltfläche <-> Rückfrage: das neue Element wächst/schrumpft von der alten auf die neue Höhe
+            aokGhost = null;
+            const natural = n.getBoundingClientRect().height;
+            Object.assign(n.style, { boxSizing: 'border-box', overflow: 'hidden', height: before.box + 'px' });
+            return () => {
+              const a = n.animate(
+                [
+                  { height: before.box + 'px', opacity: 0.2 },
+                  { height: natural + 'px', opacity: 1 }
+                ],
+                { duration: 240, easing }
+              );
+              a.onfinish = a.oncancel = () => {
+                n.style.boxSizing = n.style.overflow = n.style.height = '';
+              };
+            };
+          }
+          // Rückfrage ist weg: ihre Kopie blendet aus, der Platz schließt sich
+          if (before.prev) aokGhost = { node: before.node, h: before.h, prev: before.prev, start: now };
+        }
+        if (!aokGhost || n) return null;
+        const ghost = aokGhost,
+          prev = app.querySelector(`[data-k="${ghost.prev}"]`);
+        if (!prev) return null;
+        const elapsed = now - ghost.start;
+        ghost.node.style.pointerEvents = 'none';
+        ghost.node.setAttribute('aria-hidden', 'true');
+        const spacer = el(
+          'div',
+          { style: `overflow:hidden;height:${Math.max(0, Math.round(ghost.h * (1 - elapsed / AOK_MS)))}px` },
+          ghost.node
+        );
+        prev.after(spacer);
+        return () => {
+          ghost.node.getAnimations().forEach(a => a.cancel());
+          ghost.node.animate(
+            [
+              { opacity: 1, transform: 'none' },
+              { opacity: 0, transform: 'translateY(-8px)' }
+            ],
+            { duration: 200, delay: -elapsed, easing, fill: 'forwards' }
+          );
+          spacer.animate([{ height: ghost.h + 'px' }, { height: '0px' }], {
+            duration: AOK_MS,
+            delay: -elapsed,
+            easing,
+            fill: 'forwards'
+          }).onfinish = () => spacer.remove();
+        };
       }
       /**
        * Kleine Rückmeldung, wenn ein Prüfobjekt auf OK gesetzt wird: der OK-Button füllt sich grün und federt einmal leicht
