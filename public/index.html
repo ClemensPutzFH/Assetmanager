@@ -92,9 +92,11 @@
         scroll-padding-top: calc(var(--toph, 52px) + 8px);
         overflow-anchor: none;
       }
-      /* Schriftgröße ändern: alle rem-Größen wachsen/schrumpfen weich (Klasse nur kurz, siehe changeFontScale) */
-      html.fz-anim {
-        transition: font-size 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+      /* Schriftgröße ändern: die Seite wechselt sofort und blendet vom alten zum neuen Bild über (siehe changeFontScale).
+         font-size selbst wird bewusst nicht animiert – bei jedem Zwischenschritt würden Texte neu umbrechen und die Seite springen. */
+      ::view-transition-old(root),
+      ::view-transition-new(root) {
+        animation-duration: 0.22s;
       }
       body {
         margin: 0;
@@ -110,6 +112,9 @@
         max-width: 1440px;
         margin: 0 auto;
         padding: 8px max(16px, env(safe-area-inset-right)) 40px max(16px, env(safe-area-inset-left));
+        /* Einblendungen schieben Karten seitlich herein: der Überstand darf die Seite nicht breiter machen (sonst lässt sie
+           sich während der Animation seitlich verschieben und wackelt). clip statt hidden, damit „sticky“ weiter klappt. */
+        overflow-x: clip;
       }
       body[data-w='n'] main {
         max-width: 560px;
@@ -1969,10 +1974,11 @@
         document.documentElement.style.fontSize =
           session.role === 'monteur' && fontScale !== 1 ? 16 * fontScale + 'px' : '';
       };
-      // eine Stufe größer (+1) oder kleiner (-1), im Gerät gespeichert. Die Schrift gleitet in FONT_ANIM_MS auf die neue
-      // Größe; währenddessen hält ein Anker die Liste an derselben Bildschirmstelle (sonst wandert sie beim Wachsen weg).
-      const FONT_ANIM_MS = 300;
-      let fontAnimTimer = null;
+      // eine Stufe größer (+1) oder kleiner (-1), im Gerät gespeichert. Die Seite wird in einem Schritt neu gezeichnet; die
+      // Schaltflächen „A−“/„A+“ (data-k="fz") bleiben dabei an derselben Bildschirmstelle – auch ganz oben auf der Seite –,
+      // damit man gleich nochmal tippen kann und nichts wegspringt. Wo der Browser es kann (View Transitions), blendet das
+      // alte Bild zum neuen über; sonst (und bei „weniger Bewegung“) wechselt die Seite ohne Übergang.
+      // (font-size per CSS zu animieren, lässt Texte in jedem Zwischenschritt neu umbrechen: die Seite ruckelt und springt.)
       const changeFontScale = direction => {
         const index = FONT_SCALES.indexOf(fontScale) + direction;
         if (index < 0 || index >= FONT_SCALES.length) return;
@@ -1980,32 +1986,21 @@
         try {
           localStorage.setItem('fz', fontScale);
         } catch (e) {}
-        const animate = !matchMedia('(prefers-reduced-motion: reduce)').matches,
-          anchors = animate && scrollY >= 1 ? viewportAnchors() : [];
-        if (animate) {
-          document.documentElement.classList.add('fz-anim');
-          clearTimeout(fontAnimTimer);
-          fontAnimTimer = setTimeout(() => document.documentElement.classList.remove('fz-anim'), FONT_ANIM_MS + 50);
-        }
-        render();
-        if (!anchors.length) return;
-        let held = true;
-        const stop = () => (held = false),
-          end = performance.now() + FONT_ANIM_MS + 50;
-        addEventListener('touchstart', stop, { once: true, passive: true });
-        addEventListener('wheel', stop, { once: true, passive: true });
-        const hold = () => {
-          for (const [key, top] of anchors) {
-            const n = app.querySelector('[data-k="' + key + '"]');
-            if (n) {
-              const d = n.getBoundingClientRect().top - top;
-              if (Math.abs(d) >= 1) scrollBy(0, d);
-              break;
-            }
+        const redraw = () => {
+          lastTapKey = 'fz'; // der Tipp liegt beim Überblenden schon zurück (siehe click-Listener) – Anker selbst setzen
+          holdAtTop = true;
+          quietRender = true;
+          try {
+            render();
+          } finally {
+            lastTapKey = null;
+            holdAtTop = false;
+            quietRender = false;
           }
-          if (held && performance.now() < end) requestAnimationFrame(hold);
         };
-        requestAnimationFrame(hold);
+        if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches)
+          document.startViewTransition(redraw);
+        else redraw();
       };
       // Schaltflächen „A−“ / „A+“; sperren an den Enden der Skala
       const fontScaleButtons = () => {
@@ -2013,7 +2008,7 @@
           p = ` (aktuell ${Math.round(fontScale * 100)} %)`;
         return el(
           'div',
-          { class: 'fzg' + (fontScale !== 1 ? ' on' : ''), role: 'group', 'aria-label': 'Schriftgröße' },
+          { class: 'fzg' + (fontScale !== 1 ? ' on' : ''), role: 'group', 'aria-label': 'Schriftgröße', 'data-k': 'fz' },
           el(
             'button',
             {
@@ -5927,8 +5922,11 @@
       // Ansicht beim Neuzeichnen festhalten: Elemente mit data-k bleiben an derselben Bildschirmstelle – zuerst der angetippte
       // Bereich, sonst der nächstgelegene sichtbare. Das Scroll-Anchoring des Browsers ist aus (overflow-anchor:none): es springt,
       // wenn der gerade angetippte (fokussierte) Button beim Neuzeichnen ersetzt wird.
-      // lastTapKey = data-k des zuletzt angetippten Bereichs
-      let lastTapKey = null;
+      // lastTapKey = data-k des zuletzt angetippten Bereichs · holdAtTop: den Anker auch ganz oben festhalten (sonst bleibt
+      // die Seite dort oben) · quietRender: Neuzeichnen ohne Listen-Animation (Schriftgröße: alles ändert sich auf einmal)
+      let lastTapKey = null,
+        holdAtTop = false,
+        quietRender = false;
       document.addEventListener(
         'click',
         e => {
@@ -5967,6 +5965,17 @@
         else visible.sort((a, b) => (a[1] < barBottom) - (b[1] < barBottom)); // ohne Tipp: oberstes ganz sichtbares Element zuerst
         return visible;
       }
+      // Beim Tippen in der Suche wird die Seite bei wenigen Treffern kürzer als die Scroll-Stelle: der Browser zieht sie dann
+      // nach oben und das Suchfeld rutscht weg. Darum bleibt unter der Liste so viel Platz, wie nötig ist, um an der Stelle
+      // `y` zu bleiben (höchstens eine Bildschirmhöhe). Der Platz verschwindet beim nächsten Neuzeichnen ohne Eingabe.
+      // Das Messen erzwingt ein Layout (dabei wird die Scroll-Stelle gekappt) – deshalb danach wieder auf `y` setzen; es wird
+      // nichts dazwischen gezeichnet.
+      function keepScrollRoom(y) {
+        const lack = y + innerHeight - document.documentElement.scrollHeight;
+        if (lack <= 0 && scrollY === y) return;
+        if (lack > 0) app.style.paddingBottom = `calc(40px + ${Math.ceil(lack)}px)`;
+        if (scrollY !== y) scrollTo(0, y);
+      }
       /**
        * Zeichnet die Seite neu (draw) und stellt danach Scroll-Position (über die Anker) und Fokus/Cursor des
        * Eingabefelds (data-keep) wieder her. Alle Änderungen am Zustand enden mit einem Aufruf von render().
@@ -5980,11 +5989,14 @@
           caret = keepKey ? focused.selectionStart : 0,
           // ganz oben bleibt die Seite oben: kommt dort später etwas dazu (Hinweise, Fortschrittskarte, geladene Liste),
           // würde der Anker die Seite sonst um deren Höhe nach unten schieben
-          savedAnchors = scrollY < 1 ? [] : viewportAnchors(),
+          savedAnchors = scrollY < 1 && !holdAtTop ? [] : viewportAnchors(),
           listSnap = snapshotList(),
           okBefore = okSnapshot(),
           aokBefore = aokSnapshot();
+        const scrollBefore = scrollY;
+        app.style.paddingBottom = ''; // Platz vom letzten Tippen in der Suche (siehe keepScrollRoom) wieder freigeben
         draw();
+        if (keepKey) keepScrollRoom(scrollBefore);
         // „Alles OK“ ↔ Rückfrage ↔ weg: Platz vor der Scroll-Korrektur reservieren (sonst springt der Rest der Liste)
         const aokRun = aokPrepare(aokBefore);
         for (const [key, top] of savedAnchors) {
@@ -6005,7 +6017,7 @@
           }
         }
         animateView();
-        animateRemoved(listSnap);
+        if (!quietRender) animateRemoved(listSnap);
         animateOkPops(okBefore);
         if (aokRun) aokRun();
         // frisch gespeicherte Zeit: Zeitkarte leuchtet kurz grün auf
@@ -6115,7 +6127,10 @@
       // aokGhost: weggefallene Rückfrage, die gerade ausblendet (Kopie, Höhe samt Rändern, Element davor, Startzeit). Nach dem Speichern
       // zeichnet die App meist gleich noch einmal: dann wird der Übergang an derselben Stelle fortgesetzt.
       let aokGhost = null;
-      const AOK_MS = 260;
+      // Höhenänderungen mit sanftem Anlauf: eine stark vorgezogene Kurve (wie bei den Einblendungen) ließe die Seite im ersten
+      // Bild um ein Drittel der Höhe springen
+      const AOK_MS = 260,
+        AOK_EASE = 'cubic-bezier(0.4, 0, 0.2, 1)';
       function aokPrepare(before) {
         if (!app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
         const now = performance.now(),
@@ -6135,7 +6150,7 @@
                   { height: before.box + 'px', opacity: 0.2 },
                   { height: natural + 'px', opacity: 1 }
                 ],
-                { duration: 240, easing }
+                { duration: 240, easing: AOK_EASE }
               );
               a.onfinish = a.oncancel = () => {
                 n.style.boxSizing = n.style.overflow = n.style.height = '';
@@ -6152,12 +6167,17 @@
         const elapsed = now - ghost.start;
         ghost.node.style.pointerEvents = 'none';
         ghost.node.setAttribute('aria-hidden', 'true');
-        const spacer = el(
-          'div',
-          { style: `overflow:hidden;height:${Math.max(0, Math.round(ghost.h * (1 - elapsed / AOK_MS)))}px` },
-          ghost.node
-        );
+        const spacer = el('div', { style: `overflow:hidden;height:${Math.round(ghost.h)}px` }, ghost.node);
         prev.after(spacer);
+        // Die Höhen-Animation startet schon hier (nicht erst nach der Scroll-Korrektur in render()): die Korrektur misst dann
+        // die wirklich gezeigte Höhe. Würde sie eine errechnete Höhe messen, die von der Kurve abweicht, sprünge die Liste
+        // im nächsten Bild um den Unterschied.
+        spacer.animate([{ height: ghost.h + 'px' }, { height: '0px' }], {
+          duration: AOK_MS,
+          delay: -elapsed,
+          easing: AOK_EASE,
+          fill: 'forwards'
+        }).onfinish = () => spacer.remove();
         return () => {
           ghost.node.getAnimations().forEach(a => a.cancel());
           ghost.node.animate(
@@ -6167,12 +6187,6 @@
             ],
             { duration: 200, delay: -elapsed, easing, fill: 'forwards' }
           );
-          spacer.animate([{ height: ghost.h + 'px' }, { height: '0px' }], {
-            duration: AOK_MS,
-            delay: -elapsed,
-            easing,
-            fill: 'forwards'
-          }).onfinish = () => spacer.remove();
         };
       }
       /**
@@ -6273,8 +6287,11 @@
       function swapList(container, list) {
         if (viewAnim) viewAnim.forEach(a => a.cancel()); // laufende Verschiebungen beenden, bevor die Positionen gemessen werden
         viewAnim = null;
-        const snap = snapshotList();
+        const snap = snapshotList(),
+          scrollBefore = scrollY;
+        app.style.paddingBottom = ''; // vorher reservierten Platz freigeben (zwischen hier und dem Austausch wird nicht gemessen)
         container.replaceChildren(list);
+        keepScrollRoom(scrollBefore);
         animateRemoved(snap, true);
       }
       function animateRemoved(snap, force = false) {
