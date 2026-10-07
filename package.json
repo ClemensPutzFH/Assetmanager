@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Aufträge, Prüfobjekte und Rückmeldungen für Monteure und Disponenten – Daten in SQLite",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": { "start": "node server.js", "test:ui": "node tests/ui-stability.js" },
   "engines": { "node": ">=22.13" },
   "license": "UNLICENSED"
 }

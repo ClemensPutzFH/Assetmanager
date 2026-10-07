@@ -125,6 +125,7 @@
       }
       .bar {
         display: flex;
+        flex-wrap: wrap; /* bei großer Schrift auf schmalem Handy rutscht der Knopf unter die Überschrift, statt über den Rand zu ragen */
         gap: 8px;
         align-items: center;
         justify-content: space-between;
@@ -483,6 +484,13 @@
       .uline {
         margin: -4px 0 10px;
       }
+      /* Mit Benachrichtigungs-Hinweis/-Glocke kann die Zeile umbrechen: zwei Zeilen reservieren, damit die Seite nicht springt,
+         wenn die Glocke erscheint oder verschwindet */
+      @media (max-width: 600px) {
+        .uline.two {
+          min-height: 2.8em;
+        }
+      }
       .ulog {
         margin: 6px 0 0;
         padding-left: 0;
@@ -762,6 +770,9 @@
         background: #fff;
         padding: 4px 8px;
         border-radius: 6px;
+        /* Der weiße Hintergrund ragt über das Logo hinaus, ohne Platz zu brauchen: Kopfzeile und Seite bleiben beim
+           Umschalten Hell/Dunkel gleich hoch und breit (sonst springt alles um 2 px und das Logo ruckt) */
+        margin: -4px -8px;
       }
       .thm {
         margin-left: auto;
@@ -5919,23 +5930,38 @@
         render();
       }
       // ---- Zeichnen ----
+      // tabsLeft: Wisch-Stand der Tab-Leiste des Disponenten vor dem Neuzeichnen (null = es gab keine) · tabsShown: zuletzt
+      // zentrierter Tab · tabsSince: seit wann (ms), damit ein zweites Neuzeichnen das Gleiten fortsetzt
+      let tabsLeft = null,
+        tabsShown = null,
+        tabsSince = 0;
       // Ansicht beim Neuzeichnen festhalten: Elemente mit data-k bleiben an derselben Bildschirmstelle – zuerst der angetippte
       // Bereich, sonst der nächstgelegene sichtbare. Das Scroll-Anchoring des Browsers ist aus (overflow-anchor:none): es springt,
       // wenn der gerade angetippte (fokussierte) Button beim Neuzeichnen ersetzt wird.
-      // lastTapKey = data-k des zuletzt angetippten Bereichs · holdAtTop: den Anker auch ganz oben festhalten (sonst bleibt
-      // die Seite dort oben) · quietRender: Neuzeichnen ohne Listen-Animation (Schriftgröße: alles ändert sich auf einmal)
+      // lastTapKey = data-k des zuletzt angetippten Bereichs · lastTapCtl = Kennung des angetippten Bedienelements, wenn es in keinem
+      // data-k-Bereich liegt (siehe controlKey) – beides gilt TAP_MEMORY_MS lang: Aktionen mit Netzzugriff (Benutzer löschen,
+      // Gerät ausloggen …) zeichnen erst nach der Antwort des Servers neu, und auch dann soll der angetippte Bereich die Ansicht halten ·
+      // holdAtTop: den Anker auch ganz oben festhalten (sonst bleibt die Seite dort oben) ·
+      // quietRender: Neuzeichnen ohne Listen-Animation (Schriftgröße: alles ändert sich auf einmal)
+      const TAP_MEMORY_MS = 1500;
       let lastTapKey = null,
+        lastTapCtl = null,
+        tapTimer = 0,
         holdAtTop = false,
         quietRender = false;
       document.addEventListener(
         'click',
         e => {
           const t = e.target instanceof Element ? e.target : e.target.parentElement,
-            n = t && t.closest('[data-k]');
+            n = t && t.closest('[data-k]'),
+            control = t && t.closest('button, select, label, summary, [role="button"], [role="switch"]');
           lastTapKey = n ? n.dataset.k : null;
-          setTimeout(() => {
+          lastTapCtl = !n && control && app.contains(control) ? controlKey(control) : null;
+          clearTimeout(tapTimer);
+          tapTimer = setTimeout(() => {
             lastTapKey = null;
-          });
+            lastTapCtl = null;
+          }, TAP_MEMORY_MS);
           // iPhone: Tipp auf einen Button nimmt dem Eingabefeld den Fokus nicht -> sonst holt render() das Feld zurück (Tastatur, Sprung)
           const a = document.activeElement;
           if (openOrder && t && t.closest('button') && a && a.dataset && a.dataset.keep && app.contains(a))
@@ -5943,26 +5969,61 @@
         },
         true
       );
-      // sichtbare data-k-Elemente samt Abstand zum oberen Rand, nach Wichtigkeit sortiert (Grundlage für die Scroll-Stabilität)
+      // Kennung eines Bedienelements ohne data-k-Bereich: Art + Text (Ziffern zählen nicht, Zähler wie „(22)“ ändern sich) + Nummer
+      // unter gleichen + Anzahl gleicher. So findet render() den angetippten Knopf nach dem Neuzeichnen wieder und hält ihn an
+      // seiner Stelle. Ändert sich die Anzahl gleicher Knöpfe (der angetippte ist weg oder es kamen welche dazu), ist nicht sicher,
+      // welcher gemeint war: dann gilt die Kennung nicht, und ein anderer Anker hält die Seite (so wird kein falscher Nachbar
+      // festgehalten). Wiederholte Zeilen mit Knöpfen bekommen deshalb ein data-k. Die Kennung beginnt mit „~“ (data-k-Namen nie).
+      const controlText = c =>
+        (c.textContent || c.value || c.getAttribute('aria-label') || '').replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().slice(0, 40);
+      const sameControls = (tag, text) => [...app.querySelectorAll(tag)].filter(x => controlText(x) === text);
+      const controlKey = c => {
+        const text = controlText(c),
+          same = sameControls(c.tagName, text);
+        return '~' + c.tagName + '\u0001' + text + '\u0001' + same.indexOf(c) + '\u0001' + same.length;
+      };
+      // das Element zu einer Kennung: data-k-Name oder controlKey
+      function anchorNode(key) {
+        if (key[0] !== '~') return app.querySelector('[data-k="' + key + '"]');
+        const [tag, text, index, count] = key.slice(1).split('\u0001'),
+          same = sameControls(tag, text);
+        return same.length === +count ? same[+index] : null;
+      }
+      // sichtbare data-k-Elemente (und das angetippte Bedienelement) samt Abstand zum oberen Rand, nach Wichtigkeit sortiert
+      // (Grundlage für die Scroll-Stabilität)
       function viewportAnchors() {
-        const marked = app.querySelectorAll('[data-k]');
-        if (!marked.length) return [];
+        const marked = app.querySelectorAll('[data-k]'),
+          control = lastTapCtl ? anchorNode(lastTapCtl) : null;
+        if (!marked.length && !control) return [];
         const bar = app.querySelector('.bar.stk'),
           barBottom = (bar || topBar).getBoundingClientRect().bottom,
           visible = [];
-        let tapTop = null;
+        let tapTop = null,
+          tapped = null;
         for (const n of marked) {
           const r = n.getBoundingClientRect();
           if (n.dataset.k === lastTapKey) tapTop = r.top;
           if (r.bottom > barBottom && r.top < innerHeight) visible.push([n.dataset.k, r.top]);
         }
+        if (control) {
+          const r = control.getBoundingClientRect();
+          if (r.bottom > barBottom && r.top < innerHeight) {
+            tapped = [controlKey(control), r.top];
+            tapTop = r.top;
+          }
+        }
+        // Verschwindet der angetippte Bereich (z. B. ein Knopf, an dessen Stelle ein Formular tritt), bleibt ein Element OBERHALB
+        // des Tipps stehen und der neue Inhalt wächst nach unten. Hielte man das nächstgelegene Element fest, läge es oft darunter:
+        // die Seite scrollte dann um die Höhe des Formulars und das Formular erschiene oberhalb des Bildschirms.
         if (tapTop != null)
           visible.sort(
             (a, b) =>
               (a[0] !== lastTapKey) - (b[0] !== lastTapKey) ||
+              (a[1] > tapTop) - (b[1] > tapTop) ||
               Math.abs(a[1] - tapTop) - Math.abs(b[1] - tapTop)
           );
         else visible.sort((a, b) => (a[1] < barBottom) - (b[1] < barBottom)); // ohne Tipp: oberstes ganz sichtbares Element zuerst
+        if (tapped) visible.unshift(tapped);
         return visible;
       }
       // Beim Tippen in der Suche wird die Seite bei wenigen Treffern kürzer als die Scroll-Stelle: der Browser zieht sie dann
@@ -5976,6 +6037,13 @@
         if (lack > 0) app.style.paddingBottom = `calc(40px + ${Math.ceil(lack)}px)`;
         if (scrollY !== y) scrollTo(0, y);
       }
+      // Anker für render(): unterwegs auf der Seite alle sichtbaren, ganz oben (und ohne Tipp) keine; nur der angetippte Bereich
+      // bzw. das angetippte Bedienelement bleibt auch ganz oben an seiner Stelle (und die Schriftgröße-Schalter, siehe holdAtTop)
+      function anchorsToKeep() {
+        if (scrollY >= 1 || holdAtTop) return viewportAnchors();
+        if (lastTapKey == null && !lastTapCtl) return [];
+        return viewportAnchors().filter(([key]) => key === lastTapKey || key[0] === '~');
+      }
       /**
        * Zeichnet die Seite neu (draw) und stellt danach Scroll-Position (über die Anker) und Fokus/Cursor des
        * Eingabefelds (data-keep) wieder her. Alle Änderungen am Zustand enden mit einem Aufruf von render().
@@ -5984,23 +6052,29 @@
         syncLoginFields(); // Autofill-Werte der Anmeldeseite retten, bevor draw() die Felder neu aufbaut
         if (viewAnim) viewAnim.forEach(a => a.cancel()); // laufende Einblendung beenden, bevor die Positionen gemessen werden
         viewAnim = null;
+        const oldTabs = app.querySelector('.tabs');
+        tabsLeft = oldTabs ? oldTabs.scrollLeft : null;
         const focused = document.activeElement,
           keepKey = focused && focused.dataset && focused.dataset.keep,
           caret = keepKey ? focused.selectionStart : 0,
           // ganz oben bleibt die Seite oben: kommt dort später etwas dazu (Hinweise, Fortschrittskarte, geladene Liste),
-          // würde der Anker die Seite sonst um deren Höhe nach unten schieben
-          savedAnchors = scrollY < 1 && !holdAtTop ? [] : viewportAnchors(),
+          // würde der Anker die Seite sonst um deren Höhe nach unten schieben. Nur der angetippte Bereich wird auch dort gehalten
+          savedAnchors = anchorsToKeep(),
           listSnap = snapshotList(),
           okBefore = okSnapshot(),
-          aokBefore = aokSnapshot();
+          aokBefore = aokSnapshot(),
+          bannersBefore = bannerSnapshot();
         const scrollBefore = scrollY;
         app.style.paddingBottom = ''; // Platz vom letzten Tippen in der Suche (siehe keepScrollRoom) wieder freigeben
         draw();
+        // draw() baut die Seite stückweise auf und misst dabei zwischendurch (z. B. die Tab-Leiste des Disponenten). Dieses Layout
+        // der halbfertigen, kurzen Seite kappt die Scroll-Stelle auf 0 – ohne Anker bliebe die Seite dann oben hängen
+        if (scrollY !== scrollBefore) scrollTo(0, scrollBefore);
         if (keepKey) keepScrollRoom(scrollBefore);
         // „Alles OK“ ↔ Rückfrage ↔ weg: Platz vor der Scroll-Korrektur reservieren (sonst springt der Rest der Liste)
         const aokRun = aokPrepare(aokBefore);
         for (const [key, top] of savedAnchors) {
-          const n = app.querySelector('[data-k="' + key + '"]');
+          const n = anchorNode(key);
           if (n) {
             const d = n.getBoundingClientRect().top - top;
             if (Math.abs(d) >= 1) scrollBy(0, d);
@@ -6019,6 +6093,7 @@
         animateView();
         if (!quietRender) animateRemoved(listSnap);
         animateOkPops(okBefore);
+        if (!quietRender) animateBanners(bannersBefore, scrollBefore < 1);
         if (aokRun) aokRun();
         // frisch gespeicherte Zeit: Zeitkarte leuchtet kurz grün auf
         if (timeFlash) {
@@ -6045,6 +6120,9 @@
       let viewAnim = null,
         listStable = false,
         viewKey = null,
+        viewShell = null,
+        viewStatic = false,
+        viewChanged = false,
         viewDepth = 0,
         filterKey = '',
         viewFrom = '',
@@ -6064,9 +6142,8 @@
         );
       }
       function animateView() {
-        const key = openOrder
-            ? 'o'
-            : [session.role, session.team, dispoUnlocked, session.role === 'dispo' ? dispoTab : ''].join('|'),
+        const shell = openOrder ? 'o' : [session.role, session.team, dispoUnlocked].join('|'),
+          key = openOrder ? 'o' : shell + '|' + (session.role === 'dispo' ? dispoTab : ''),
           filters = [
             teamFilter,
             statusFilter,
@@ -6083,16 +6160,27 @@
           viewFrom =
             depth > viewDepth ? 'translateX(28px)' : depth < viewDepth ? 'translateX(-28px)' : 'translateY(10px)';
           viewStart = performance.now();
+          viewStatic = shell === viewShell; // nur der Dispo-Tab wechselt: Kopfzeile und Tab-Leiste bleiben stehen, nur der Inhalt blendet ein
           listStart = -1e9;
         } else if (viewKey !== null && filters !== filterKey) listStart = performance.now();
         // für animateRemoved: nur Änderungen der Liste selbst (Daten, Suche) animieren, nicht Ansichts- oder Filterwechsel
         listStable = !changed && filters === filterKey;
+        viewChanged = changed;
         viewKey = key;
+        viewShell = shell;
         viewDepth = depth;
         filterKey = filters;
         if (!app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
         viewAnim = [
-          ...(viewFrom ? fadeIn([...app.children].slice(0, 10), viewFrom, viewStart, VIEW_MS, VIEW_STAGGER_MS) : []),
+          ...(viewFrom
+            ? fadeIn(
+                [...app.children].filter(n => !(viewStatic && n.matches('.bar, .tabs'))).slice(0, 10),
+                viewFrom,
+                viewStart,
+                VIEW_MS,
+                VIEW_STAGGER_MS
+              )
+            : []),
           ...fadeIn(
             [...app.querySelectorAll('[data-list] > *')].slice(0, 12),
             'translateY(8px)',
@@ -6306,7 +6394,7 @@
               return !snap.has(k) && r.bottom > 0 && r.top < innerHeight;
             })
             .slice(0, 12);
-        if (!gone.length && !fresh.length) return;
+        // (auch ohne verschwundene/neue Karten: wächst eine Karte, gleiten die darunter an ihren neuen Platz, statt zu springen)
         const easing = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
         for (const [, { node, rect }] of gone) {
           Object.assign(node.style, {
@@ -6334,7 +6422,6 @@
             )
             .finished.then(() => node.remove(), () => node.remove());
         }
-        const slides = [];
         for (const [k, n] of now) {
           const before = snap.get(k);
           if (!before) continue;
@@ -6342,9 +6429,7 @@
             dx = before.rect.left - r.left,
             dy = before.rect.top - r.top;
           if (Math.abs(dx) + Math.abs(dy) < 1) continue;
-          slides.push(
-            n.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 260, easing })
-          );
+          n.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 260, easing });
         }
         const appear = fresh.map(([, n], i) =>
           n.animate([{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], {
@@ -6354,7 +6439,95 @@
             fill: 'backwards'
           })
         );
-        viewAnim = [...(viewAnim || []), ...slides, ...appear];
+        // Die Gleit-Animationen (oben) werden nicht in viewAnim gemerkt und bei einem weiteren Neuzeichnen nicht abgebrochen:
+        // gemessen wird die sichtbare Position (samt laufender Verschiebung), von dort gleitet die nächste Animation weiter –
+        // ein Abbruch ließe die Karten an ihr Ziel springen
+        viewAnim = [...(viewAnim || []), ...appear];
+      }
+      /**
+       * Hinweise oben auf der Seite (.msg direkt unter #app: Meldungen, Benachrichtigungs-Hinweis, Offline-Hinweis, Rückgängig …)
+       * erscheinen und verschwinden weich: sie wachsen aus der Höhe 0 auf bzw. schließen sich, statt dass die Seite um ihre Höhe
+       * springt – etwa wenn eine Info-Meldung nach 8 s von selbst abläuft oder der Hinweis mit ✕ weggetippt wird.
+       * Nur ganz oben auf der Seite (atTop): weiter unten hält der Anker die Ansicht ohnehin an derselben Stelle, dort erscheinen
+       * sie sofort. Bei einem Ansichtswechsel (blendet selbst ein) und beim ersten Zeichnen gibt es keine Extra-Animation.
+       * bannerGrow: Hinweis -> Startzeit, bannerGhosts: verschwundene Hinweise (Kopie, Höhe, Platz, Startzeit); beides läuft bei
+       * einem weiteren Neuzeichnen an derselben Stelle weiter (sonst spränge die Seite dort mitten in der Bewegung).
+       */
+      const BANNER_MS = 240;
+      let bannerReady = false,
+        bannerGrow = new Map(),
+        bannerGhosts = [];
+      const isBanner = n => n.classList.contains('msg'),
+        bannerKey = n => n.className + '|' + n.textContent;
+      function bannerSnapshot() {
+        return [...app.children]
+          .map((n, index) => {
+            if (!isBanner(n)) return null;
+            const cs = getComputedStyle(n);
+            return {
+              key: bannerKey(n),
+              node: n,
+              index,
+              h: n.getBoundingClientRect().height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0)
+            };
+          })
+          .filter(Boolean);
+      }
+      function animateBanners(before, atTop) {
+        const ready = bannerReady,
+          now = performance.now();
+        bannerReady = true;
+        bannerGhosts = bannerGhosts.filter(g => now - g.start < BANNER_MS);
+        for (const [key, start] of bannerGrow) if (now - start >= BANNER_MS) bannerGrow.delete(key);
+        if (!atTop || viewChanged || !ready || !app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          bannerGhosts = [];
+          bannerGrow.clear();
+          return;
+        }
+        const current = [...app.children].filter(isBanner),
+          currentKeys = new Set(current.map(bannerKey)),
+          beforeKeys = new Set(before.map(b => b.key));
+        // verschwundene Hinweise: Kopie blendet aus, ihr Platz schließt sich
+        for (const b of before) if (!currentKeys.has(b.key)) bannerGhosts.push({ ...b, start: now });
+        for (const g of bannerGhosts) {
+          if (currentKeys.has(g.key)) continue;
+          const elapsed = now - g.start,
+            spacer = el('div', { style: `overflow:hidden;height:${Math.round(g.h)}px` }, g.node);
+          g.node.style.pointerEvents = 'none';
+          g.node.setAttribute('aria-hidden', 'true');
+          app.insertBefore(spacer, app.children[Math.min(g.index, app.children.length)] || null);
+          spacer.animate([{ height: g.h + 'px' }, { height: '0px' }], {
+            duration: BANNER_MS,
+            delay: -elapsed,
+            easing: AOK_EASE,
+            fill: 'forwards'
+          }).onfinish = () => spacer.remove();
+          g.node.getAnimations().forEach(a => a.cancel());
+          g.node.animate([{ opacity: 1 }, { opacity: 0 }], { duration: BANNER_MS * 0.7, delay: -elapsed, easing: 'ease-out', fill: 'forwards' });
+        }
+        // neue Hinweise: wachsen aus der Höhe 0 auf
+        for (const n of current) {
+          const key = bannerKey(n);
+          if (!bannerGrow.has(key) && beforeKeys.has(key)) continue;
+          if (!bannerGrow.has(key)) bannerGrow.set(key, now);
+          const cs = getComputedStyle(n),
+            zero = { height: '0px', paddingTop: '0px', paddingBottom: '0px', marginTop: '0px', marginBottom: '0px', borderTopWidth: '0px', borderBottomWidth: '0px', opacity: 0 },
+            full = {
+              height: cs.height,
+              paddingTop: cs.paddingTop,
+              paddingBottom: cs.paddingBottom,
+              marginTop: cs.marginTop,
+              marginBottom: cs.marginBottom,
+              borderTopWidth: cs.borderTopWidth,
+              borderBottomWidth: cs.borderBottomWidth,
+              opacity: 1
+            };
+          n.style.overflow = 'hidden';
+          const a = n.animate([zero, full], { duration: BANNER_MS, delay: -(now - bannerGrow.get(key)), easing: AOK_EASE });
+          a.onfinish = a.oncancel = () => {
+            n.style.overflow = '';
+          };
+        }
       }
       // ---- Ansichten: draw() wählt je Zustand genau eine aus ----
 
@@ -6888,7 +7061,7 @@
             ? [
                 el(
                   'p',
-                  { class: 'mu uline' },
+                  { class: 'mu uline' + (pushStatusBanner() ? ' two' : '') },
                   `👤 ${userInfo.name} (${userInfo.sap})${userInfo.lock ? ' · 🔒 Team fest zugewiesen' : ''} · `,
                   el('button', { class: 'lk', onclick: userLogout }, 'Abmelden'),
                   ...(pushBell() ? [' · ', pushBell()] : [])
@@ -7731,7 +7904,7 @@
                 renaming = deviceRenameId === device.did;
               return el(
                 'div',
-                { class: 'card dv' + (device.role ? '' : ' off') },
+                { class: 'card dv' + (device.role ? '' : ' off'), 'data-k': 'd' + device.did },
                 el(
                   'div',
                   { class: 'row' },
@@ -8080,7 +8253,7 @@
         app.append(
           el(
             'div',
-            { class: 'card' },
+            { class: 'card', 'data-k': 'uh' },
             el('b', {}, 'Benutzer'),
             el(
               'p',
@@ -8158,7 +8331,7 @@
               const editing = userEdit === u.sap;
               return el(
                 'div',
-                { class: 'card ucard' + (u.active ? '' : ' off') },
+                { class: 'card ucard' + (u.active ? '' : ' off'), 'data-k': 'u' + u.sap },
                 el(
                   'div',
                   { class: 'row' },
@@ -8416,10 +8589,25 @@
             )
           )
         );
-        // aktiven Tab in die Mitte der wischbaren Leiste rücken (die Leiste wird bei jedem Zeichnen neu gebaut)
+        // aktiven Tab in die Mitte der wischbaren Leiste rücken (die Leiste wird bei jedem Zeichnen neu gebaut): sie gleitet dorthin
+        // und startet dabei am alten Stand statt zu springen; bleibt der Tab gleich, bleibt auch der Stand (man wischt vielleicht gerade)
         const tabBar = app.querySelector('.tabs'),
           activeTab = tabBar && tabBar.querySelector('button.on');
-        if (activeTab) tabBar.scrollLeft = activeTab.offsetLeft - (tabBar.clientWidth - activeTab.offsetWidth) / 2;
+        if (activeTab) {
+          const target = activeTab.offsetLeft - (tabBar.clientWidth - activeTab.offsetWidth) / 2;
+          if (tabsLeft === null) tabBar.scrollLeft = target;
+          else {
+            tabBar.scrollLeft = tabsLeft;
+            // gleitet zum neuen Tab; zeichnet die App währenddessen nochmal (Daten kommen), gleitet sie weiter statt stehenzubleiben
+            if (tabsShown !== dispoTab || performance.now() - tabsSince < 500)
+              tabBar.scrollTo({
+                left: target,
+                behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+              });
+          }
+          if (tabsShown !== dispoTab) tabsSince = performance.now();
+          tabsShown = dispoTab;
+        }
         if (dispoTab === 'us') {
           drawUsers();
           return;
