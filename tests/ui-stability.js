@@ -1038,6 +1038,7 @@ async function kindUploadChecks(browser, base, errors) {
   const cardsOf = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.textContent.replace(/\s+/g, ' ').slice(0, 300)));
   const reps = await cardsOf();
   report(reps.some(t => /65900001.*Vorgang 0010.*FW-IH01/.test(t)) && reps.some(t => /65900001.*Vorgang 0020.*FW-IH02/.test(t)), 'Dispo Übersicht: jeder Vorgang einer Reparatur ist ein eigener Auftrag (mit seinem Team)');
+  report(await page.evaluate(() => { const c = document.querySelector('#app [data-k="o65900008-0010"]'); return !!c && /im Verzug · 3 Tage/.test(c.textContent) && /\bdue\b/.test(c.className); }), 'Dispo Übersicht: Reparatur im Verzug ist hervorgehoben');
   report(reps.some(t => /65900001.*Vorgang 0010.*Testgasse 1/.test(t)), 'Dispo Übersicht: Auftrag und Vorgang sind zusammengesetzt (Adresse aus den Aufträgen)');
   const teamsSeen = await page.evaluate(() => [...document.querySelectorAll('#app select option')].map(o => o.textContent.trim().split(' ')[0]));
   report(!teamsSeen.some(t => /EXT$|\dP$/.test(t)) && !reps.some(t => /Vorgang 0030|Vorgang 0040|65900010/.test(t)), 'Dispo Übersicht: weder FW-IHEXT noch Teams mit „P“ erscheinen als Team oder Auftrag', teamsSeen.join(', '));
@@ -1093,6 +1094,7 @@ async function kindChecks(browser, base, viewport, errors) {
   const t0 = await tiles();
   report(Object.keys(t0).join() === 'Wartungen,Reparaturen,Entstörungen,Daueraufträge,Meldungen', `${label} Startseite: Auswahl der Auftragsart`, Object.keys(t0).join(', '));
   // „offen/gesamt“ (Status) gibt es nur bei Wartungen, die übrigen Auftragsarten zählen nur die Aufträge
+  report(/⏰ 1 im Verzug/.test(t0.Reparaturen) && !/Verzug/.test(t0.Entstörungen + t0.Daueraufträge + t0.Wartungen), `${label} Startseite: Reparaturen im Verzug werden gezählt`, t0.Reparaturen);
   report(/4 Aufträge/.test(t0.Reparaturen) && /2 Aufträge/.test(t0.Entstörungen) && /📅 1 heute/.test(t0.Entstörungen) && /1 Auftrag/.test(t0.Daueraufträge) && !/offen/.test(t0.Reparaturen + t0.Entstörungen + t0.Daueraufträge) && /2 ohne Auftrag/.test(t0.Meldungen) && /offen · \d+ gesamt/.test(t0.Wartungen), `${label} Startseite: Zahlen je Auftragsart (nur das eigene Team), Status nur bei Wartungen`, JSON.stringify(t0).slice(0, 300));
   // Startseite: Hinweis schließen/öffnen lässt nichts springen
   const hasBanner = await page.evaluate(() => [...document.querySelectorAll('#app button')].some(b => b.textContent.trim() === '✕'));
@@ -1105,7 +1107,10 @@ async function kindChecks(browser, base, viewport, errors) {
   await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900, anim: true });
   const order = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k));
   const o1 = await order();
-  report(o1.join() === 'o65900002-0010,o65900001-0010,o65900009,o65900008-0010', `${label} Reparaturen: Termin & Uhrzeit (zuerst die nächsten, dann Vergangenes)`, o1.join(', '));
+  report(o1.join() === 'o65900008-0010,o65900002-0010,o65900001-0010,o65900009', `${label} Reparaturen: nach Termin, das Älteste zuerst (wer im Verzug ist, steht oben), die neueren darunter`, o1.join(', '));
+  // im Verzug: der Termin (−3 Tage, ohne Zeitrückmeldung) liegt in der Vergangenheit – rotes Etikett mit den Tagen und rote Kante; die anderen nicht
+  const late = await page.evaluate(() => ({ tag: (document.querySelector('#app [data-k="o65900008-0010"] .tag.st-nok') || {}).textContent, cls: document.querySelector('#app [data-k="o65900008-0010"]').className, others: ['o65900002-0010', 'o65900001-0010', 'o65900009'].filter(k => /Verzug/.test(document.querySelector(`#app [data-k="${k}"]`).textContent) || /\bdue\b/.test(document.querySelector(`#app [data-k="${k}"]`).className)) }));
+  report(/im Verzug · 3 Tage/.test(late.tag || '') && /\bdue\b/.test(late.cls) && !late.others.length, `${label} Reparaturen: Termin in der Vergangenheit ist als „im Verzug“ hervorgehoben (Etikett mit Tagen, Kante), kommende nicht`, JSON.stringify(late));
   // Fortschritt, Status-Filter (Offen/Erledigt), Status-Etiketten und der Umschalter zwischen den Auftragsarten gibt es hier nicht
   const noStatus = await page.evaluate(() => ({ prg: !!document.querySelector('#app .prg'), fc: !!document.querySelector('#app [data-k="fc"]'), ksw: !!document.querySelector('#app .ksw'), tags: [...document.querySelectorAll('#app [data-list] .tag')].map(t => t.textContent).filter(t => /Erledigt|offen|Nicht OK|geprüft/.test(t)) }));
   report(!noStatus.prg && !noStatus.fc && !noStatus.ksw && !noStatus.tags.length, `${label} Reparaturen: kein Fortschritt, keine Status-Filter und -Etiketten, kein Umschalter`, JSON.stringify(noStatus));
@@ -1122,6 +1127,10 @@ async function kindChecks(browser, base, viewport, errors) {
   const extDetail = await page.evaluate(() => (document.querySelector('#app .extbox') || {}).textContent || '');
   report(/Externe Firma arbeitet mit/.test(extDetail) && /Vorgang 0030/.test(extDetail) && /Fremdfirma: Kabel ziehen/.test(extDetail) && /6 Std geplant/.test(extDetail), `${label} Reparatur: Detail zeigt die externe Firma mit ihrem Vorgang`, extDetail);
   await probe(page, `${label} Reparatur schließen (← Zurück, Seite gleitet von links herein)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
+  // Reparatur im Verzug öffnen: auch in der Auftragsansicht ist es hervorgehoben
+  await probe(page, `${label} Reparatur im Verzug öffnen`, `() => document.querySelector('#app [data-k="o65900008-0010"]')`, { reflow: true, ms: 900, anim: true });
+  report(await page.evaluate(() => /im Verzug · 3 Tage/.test((document.querySelector('#app [data-k="oc"] .tag.st-nok') || {}).textContent || '') && /\bdue\b/.test(document.querySelector('#app [data-k="oc"]').className)), `${label} Reparatur im Verzug: auch in der Auftragsansicht hervorgehoben`);
+  await probe(page, `${label} Reparatur im Verzug schließen`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
   const trm = await page.evaluate(() => (document.querySelector('#app [data-k="o65900002-0010"] .trm') || {}).textContent);
   report(/13:30 Uhr/.test(trm || ''), `${label} Reparaturen: Karte zeigt Datum und Uhrzeit`, trm);
   const sortBtns = await page.evaluate(() => [...document.querySelectorAll('#app .chips.ab button')].map(b => b.textContent.trim()).join(','));
@@ -1130,11 +1139,19 @@ async function kindChecks(browser, base, viewport, errors) {
   const o2 = await order();
   report(o2.join() === 'o65900001-0010,o65900002-0010,o65900008-0010,o65900009', `${label} Reparaturen: nach Auftragsnummer`, o2.join(', '));
   await probe(page, `${label} Reparaturen: Sortierung Termin & Uhrzeit`, btn('/^Termin & Uhrzeit$/'), { at: 300 });
+  // ist für den Auftrag im Verzug eine Zeit zurückgemeldet, gilt er als bearbeitet: keine Hervorhebung mehr (die Zeit steht auf der Karte)
+  {
+    const user = await (await fetch(base + '/api/user/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: MONTEUR.user, password: MONTEUR.password }) })).json();
+    const st = (await fetch(base + '/api/ergebnis/65900008-0010', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': user.token }, body: JSON.stringify({ a: '65900008-0010', team: 'FW-IH01', n: 0, s: '', nok: [], min: 60, dat: new Date().toLocaleDateString('sv-SE'), von: '08:00' }) })).status;
+    await pause(page, 1500);
+    const done = await page.evaluate(() => { const c = document.querySelector('#app [data-k="o65900008-0010"]'); return { verzug: /Verzug/.test(c.textContent), due: /\bdue\b/.test(c.className), zeit: /⏱ 1 Std/.test(c.textContent), pos: [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join() }; });
+    report(st === 200 && !done.verzug && !done.due && done.zeit && done.pos.startsWith('o65900008-0010'), `${label} Reparaturen: mit zurückgemeldeter Zeit ist der Verzug nicht mehr hervorgehoben (live)`, JSON.stringify(done));
+  }
   // zurück zur Startseite und die nächste Auftragsart öffnen (einen Umschalter in der Liste gibt es nicht)
   await probe(page, `${label} Reparaturen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
   await probe(page, `${label} Startseite: Entstörungen öffnen`, `() => document.querySelector('#app [data-k="kd-ent"]')`, { reflow: true, ms: 900, anim: true });
   const o3 = await order();
-  report(o3.join() === 'o65900003,o65900004', `${label} Entstörungen: heute zuerst, dann gestern`, o3.join(', '));
+  report(o3.join() === 'o65900004,o65900003', `${label} Entstörungen: das Älteste zuerst (Nachtschicht seit gestern vor dem Termin von heute)`, o3.join(', '));
   const ent = await page.evaluate(() => ({ a: document.querySelector('#app [data-k="o65900003"]').textContent.replace(/\s+/g, ' '), b: document.querySelector('#app [data-k="o65900004"] .trm').textContent }));
   const gbCards = await page.evaluate(() => {
     const c = k => document.querySelector(`#app [data-k="${k}"]`);
@@ -1161,7 +1178,7 @@ async function kindChecks(browser, base, viewport, errors) {
   report(!saved.status && saved.time, `${label} Entstörung: nach dem Speichern steht die Zeit auf der Karte, kein Status`, JSON.stringify(saved));
   await probe(page, `${label} Entstörung schließen (← Zurück)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
   const bothLeft = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
-  report(bothLeft === 'o65900003,o65900004', `${label} Entstörungen: alle bleiben in der Liste (kein Offen/Erledigt-Filter)`, bothLeft);
+  report(bothLeft === 'o65900004,o65900003', `${label} Entstörungen: alle bleiben in der Liste (kein Offen/Erledigt-Filter)`, bothLeft);
   // Dauerauftrag, Meldungen
   await probe(page, `${label} Entstörungen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
   await probe(page, `${label} Startseite: Daueraufträge öffnen`, `() => document.querySelector('#app [data-k="kd-dau"]')`, { reflow: true, ms: 900, anim: true });

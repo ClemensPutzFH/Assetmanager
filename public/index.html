@@ -1032,9 +1032,13 @@
       .kind .mu.sm {
         font-size: 0.8125rem;
       }
-      .kind > .tag {
+      .kind > .ktags {
         flex: 0 0 auto;
         align-self: flex-start;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
       }
       .ksw {
         margin-bottom: 10px;
@@ -4657,11 +4661,27 @@
           ? el('span', { class: 'tag st-nok' }, `⏰ überfällig seit ${plural(d.days)}`)
           : el('span', { class: 'tag st-zf' }, d.kind === 'today' ? '⏰ heute fällig' : `⏰ fällig in ${plural(d.days)}`);
       };
+      /**
+       * Reparaturen und Entstörungen im Verzug: Der Termin sollte schon gewesen sein – sein Ende (Enddatum, sonst das Datum) liegt vor
+       * heute – und es ist noch keine Zeit zurückgemeldet. Wer pünktlich arbeitet, hat in der Liste nur Aufträge von heute an. Alles Ältere
+       * ist hervorgehoben (rotes Etikett mit den Tagen, rote Kante) und steht in der Liste ganz oben. Ergebnis { days } oder null.
+       */
+      const dueDateOf = order => isoOfDate(order.ende) || isoOfDate(order.start);
+      const lateInfo = order => {
+        const due = isTimedKind(orderKind(order)) ? dueDateOf(order) : '';
+        if (!due || timeComplete(resultOf(order.auftrag))) return null;
+        const days = Math.round((new Date(today() + 'T12:00:00') - new Date(due + 'T12:00:00')) / 864e5);
+        return days > 0 ? { days } : null;
+      };
+      const lateTag = order => {
+        const l = lateInfo(order);
+        return l && el('span', { class: 'tag st-nok' }, `⏰ im Verzug · ${l.days === 1 ? '1 Tag' : l.days + ' Tage'}`);
+      };
       // Sortierung der Listen: Auftragsnummer (alle), Entfernung (Monteur: nächste zuerst, ohne Adresse zuletzt) oder Rückmeldung
       // (Disponent: zuletzt zurückgemeldete zuerst, ohne Rückmeldung zuletzt). Gespeichert ist die letzte Wahl; gilt sie in der
       // aktuellen Rolle nicht, wird nach Nummer sortiert (sortMode).
-      // Reparaturen und Entstörungen sind zeitlich wichtig: Standard ist hier „zeit“ (heute und später aufsteigend, dann das Vergangene mit
-      // dem Neuesten zuerst); wer „Auftragsnummer“ antippt, bekommt die Nummer.
+      // Reparaturen und Entstörungen sind zeitlich wichtig: Standard ist hier „zeit“ – das Älteste zuerst, die neueren darunter (wer im
+      // Verzug ist, sieht das oben, sonst stehen nur Aufträge von heute an in der Liste); wer „Auftragsnummer“ antippt, bekommt die Nummer.
       const sortMode = () =>
         session.role === 'dispo'
           ? listSort === 'rueck'
@@ -4688,17 +4708,14 @@
           const far = new Map(rows.map(r => [r.auftrag, distanceKm(r) ?? Infinity]));
           return rows.sort((a, b) => far.get(a.auftrag) - far.get(b.auftrag) || byNr(a, b)); // Infinity − Infinity = NaN -> Nummer
         }
-        if (mode === 'zeit') {
-          const now = today() + ' 00:00',
-            upcoming = r => isoOfDate(r.start) && termKey(r) >= now;
+        if (mode === 'zeit')
+          // nach Fälligkeit (Enddatum, sonst Datum), dann nach Beginn und Uhrzeit: das Älteste zuerst; ohne Datum ans Ende
           return rows.sort((a, b) => {
-            // ohne Datum ans Ende; ab heute aufsteigend; davor (Vergangenes) absteigend
-            if (!isoOfDate(a.start) || !isoOfDate(b.start)) return !isoOfDate(a.start) - !isoOfDate(b.start) || byNr(a, b);
-            if (upcoming(a) !== upcoming(b)) return upcoming(a) ? -1 : 1;
-            const c = termKey(a).localeCompare(termKey(b));
-            return (upcoming(a) ? c : -c) || byNr(a, b);
+            const da = dueDateOf(a),
+              db = dueDateOf(b);
+            if (!da || !db) return !da - !db || byNr(a, b);
+            return da.localeCompare(db) || termKey(a).localeCompare(termKey(b)) || byNr(a, b);
           });
-        }
         return rows.sort(mode === 'rueck' ? (a, b) => reported(b) - reported(a) || byNr(a, b) : byNr);
       };
       // ---- Entfernung: Koordinaten der Adressen (vom Server) + Standort des Geräts ----
@@ -4975,7 +4992,7 @@
               'card' +
               (clickable ? ' cl' : '') +
               (isDispo && clickable && markState(order.auftrag) === 1 ? ' dn' : '') +
-              (dueInfo(order) && dueInfo(order).kind === 'over' ? ' due' : '') +
+              ((dueInfo(order) && dueInfo(order).kind === 'over') || (lateInfo(order) && !gebrechen) ? ' due' : '') +
               (gebrechen ? ' gb-c' + gebrechen.lvl : ''),
             // Anker für render(): hält die Liste an derselben Stelle, wenn oben etwas dazukommt oder wegfällt (siehe viewportAnchors)
             'data-k': clickable ? 'o' + order.auftrag : null,
@@ -4999,6 +5016,7 @@
             timeTag(order),
             termTag(order),
             dueTag(order),
+            lateTag(order),
             gebrechen && gebrechenTag(gebrechen),
             melds.length > 0 &&
               (!gebrechen || melds.length > 1) &&
@@ -8026,7 +8044,8 @@
           out[k] = {
             n: list.length,
             open: k === 'war' ? list.filter(r => !isFinished(r)).length : list.length,
-            today: isTimedKind(k) ? list.filter(r => isoOfDate(r.start) === today()).length : 0
+            today: isTimedKind(k) ? list.filter(r => isoOfDate(r.start) === today()).length : 0,
+            late: isTimedKind(k) ? list.filter(lateInfo).length : 0
           };
         }
         return out;
@@ -8065,7 +8084,13 @@
                   ),
                   el('span', { class: 'mu sm' }, note)
                 ),
-                c.today > 0 && el('span', { class: 'tag st-zf' }, `📅 ${c.today} heute`)
+                (c.today > 0 || c.late > 0) &&
+                  el(
+                    'span',
+                    { class: 'ktags' },
+                    c.late > 0 && el('span', { class: 'tag st-nok' }, `⏰ ${c.late} im Verzug`),
+                    c.today > 0 && el('span', { class: 'tag st-zf' }, `📅 ${c.today} heute`)
+                  )
               );
             })
           )
