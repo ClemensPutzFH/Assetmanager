@@ -22,7 +22,7 @@
  *   meldung   Meldungen (Schäden): mit Auftrag (auftrag = echte Auftragsnummer) oder noch ohne (auftrag = '')
  *   pruef     Prüfobjekt-Liste je Auftrag (JSON)       ergebnis  Bewertung/Zeit je Auftrag (JSON, Format siehe index.html).
  *             Daueraufträge haben mehrere Tageseinträge: je Eintrag eine Zeile mit dem Schlüssel „Auftrag#Kennung“ (Format wie die Zeit
- *             eines Auftrags: min, dat, von, mit …); ein Eintrag ohne `min` gilt als gelöscht
+ *             eines Auftrags: min, dat, von, mit …); ein Eintrag ohne `min` gilt als gelöscht. `go` (ms) = Start gedrückt, solange noch keine Zeit gespeichert ist
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
  *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
@@ -986,6 +986,11 @@ function cleanResultDoc(orderNo, doc) {
       const mit = [...new Set(doc.mit.map(normalizeSap).filter(x => validSap(x) && sql.getUsr.get(x)))].slice(0, 10);
       if (mit.length) clean.mit = mit;
     }
+  } else {
+    // Start gedrückt (go, ms): der Auftrag läuft gerade. Gilt nur, solange noch keine Zeit gespeichert ist – die Zeit ersetzt den Start.
+    // Der Disponent sieht ihn so im Diagramm und in den Listen (farbig markiert), die anderen Geräte des Teams ebenfalls.
+    const go = Math.round(+doc.go);
+    if (go > 1e12 && go < Date.now() + 864e5) clean.go = go;
   }
   return clean;
 }
@@ -1717,7 +1722,7 @@ async function handleApi(req, res, url) {
         user.did,
         d.team,
         match[1],
-        `${d.ok} OK, ${d.nx} Nicht OK, ${d.n - d.ok - d.nx} offen` + (d.min != null ? `, Zeit ${d.min} Min` : '')
+        `${d.ok} OK, ${d.nx} Nicht OK, ${d.n - d.ok - d.nx} offen` + (d.min != null ? `, Zeit ${d.min} Min` : d.go ? ', gestartet' : '')
       );
       return { sq: changeSeq };
     });
@@ -2113,7 +2118,7 @@ async function handleApi(req, res, url) {
   /**
    * Disposition: Reparaturen und Entstörungen sehen Monteure erst, wenn der Disponent ihnen ein Team und einen Zeitraum gegeben hat.
    * Body: { items: [{ a: Auftrag, team, von: "JJJJ-MM-TTTHH:MM", bis: "JJJJ-MM-TTTHH:MM" } | { a: Auftrag, off: true }] } – disponieren bzw.
-   * die Disposition aufheben (Ortszeit; höchstens 1000 Aufträge je Aufruf, Zeitraum höchstens 31 Tage). Antwort { ok, sq, changed, skipped }:
+   * die Disposition aufheben (Ortszeit; höchstens 1000 Aufträge je Aufruf, Zeitraum höchstens 31 Tage, Uhrzeiten nur auf Viertelstunden). Antwort { ok, sq, changed, skipped }:
    * skipped = Aufträge, die es nicht (mehr) gibt oder keine Reparatur/Entstörung sind. Die Geräte der beteiligten Teams gleichen danach ab
    * (der Auftrag erscheint beim neuen Team und verschwindet beim alten), Disponenten bekommen die geänderten Aufträge gleich mit.
    */
@@ -2142,6 +2147,11 @@ async function handleApi(req, res, url) {
       if (von == null || bis == null || bis <= von)
         return sendJson(req, res, 400, { error: `Ungültiger Zeitraum bei Auftrag ${a} (Beginn und Ende als JJJJ-MM-TTTHH:MM, Ende nach Beginn)` });
       if (bis - von > 31 * 864e5) return sendJson(req, res, 400, { error: `Zeitraum bei Auftrag ${a} ist länger als 31 Tage` });
+      // Beginn und Ende nur auf Viertelstunden (:00, :15, :30, :45), wie die Zeitrückmeldung der Monteure; ein früher gespeicherter, nicht
+      // gerundeter Wert darf unverändert bleiben (z. B. wenn nur das Team gewechselt wird)
+      const was = sql.getOrderDispo.get(a);
+      if ((von % 9e5 && x.von !== (was && was.dvon)) || (bis % 9e5 && x.bis !== (was && was.dbis)))
+        return sendJson(req, res, 400, { error: `Beginn und Ende bei Auftrag ${a} müssen auf eine Viertelstunde gerundet sein (:00, :15, :30, :45)` });
       items.push({ a, team, von: x.von, bis: x.bis });
     }
     if (!items.length) return sendJson(req, res, 400, { error: 'Keine Aufträge angegeben' });

@@ -73,6 +73,7 @@
         --bd: #e3e2ea;
         --er: #c4320a;
         --ok: #067647;
+        --run: #0b62c4;
         --nk: #c4320a;
         --gb1: #b45309;
         --gb2: #c2410c;
@@ -100,6 +101,7 @@
           --bd: #2b2b34;
           --er: #f2704f;
           --ok: #15803d;
+          --run: #2563eb;
           --nk: #d0421a;
           --gb1: #fbbf24;
           --gb2: #fb923c;
@@ -121,6 +123,7 @@
         --bd: #2b2b34;
         --er: #f2704f;
         --ok: #15803d;
+        --run: #2563eb;
         --nk: #d0421a;
         --gb1: #fbbf24;
         --gb2: #fb923c;
@@ -332,6 +335,13 @@
       .tag.st-ok {
         background: var(--ok);
         border-color: var(--ok);
+        color: #fff;
+      }
+      /* gestartet (Start gedrückt): blau; erledigt: grün (st-ok). Die Karte trägt dazu eine farbige Kante links – als innerer Schatten, damit
+         sich Breite und Umbruch nicht ändern, wenn ein Auftrag live gestartet oder erledigt wird */
+      .tag.st-run {
+        background: var(--run);
+        border-color: var(--run);
         color: #fff;
       }
       .tag.st-nok {
@@ -578,6 +588,17 @@
       /* überfälliger Auftrag: roter Balken links an der Karte */
       .card.due {
         border-left: 4px solid var(--er);
+      }
+      /* gestarteter (blau) und erledigter (grün) Auftrag: Kante links, gewinnt gegen die anderen Kanten */
+      .card.run {
+        box-shadow:
+          inset 4px 0 0 var(--run),
+          var(--sh1);
+      }
+      .card.fin {
+        box-shadow:
+          inset 4px 0 0 var(--ok),
+          var(--sh1);
       }
       /* Dispo-Filter: breit immer sichtbar; am Handy zugeklappt hinter „Filter“, oben nur Suche und die aktiven Filter */
       .fbtn {
@@ -2453,6 +2474,13 @@
       .gt-bar.ent {
         --bc: var(--nk);
       }
+      /* gestartet (blau) und erledigt (grün): die Farbe zeigt den Stand statt der Auftragsart (Art und Stand stehen im Hinweistext) */
+      .gt-bar.run {
+        --bc: var(--run);
+      }
+      .gt-bar.fin {
+        --bc: var(--ok);
+      }
       .gt-bar b {
         font-weight: 700;
         font-variant-numeric: tabular-nums;
@@ -2577,6 +2605,12 @@
       .gt-leg i.ent {
         background: var(--nk);
       }
+      .gt-leg i.run {
+        background: var(--run);
+      }
+      .gt-leg i.fin {
+        background: var(--ok);
+      }
       .gt-leg i.dr {
         background: transparent;
         border: 2px dashed var(--ac);
@@ -2658,6 +2692,14 @@
         grid-column: 2 / -1;
         width: 100%;
         min-width: 0;
+      }
+      /* Uhrzeit (Viertelstunden zur Auswahl): wie die Datumsfelder daneben, nicht wie die Teamauswahl über zwei Spalten */
+      .gt-f select.tm {
+        grid-column: auto;
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        padding: 8px 10px;
       }
       .gt-f input {
         width: 100%;
@@ -2798,7 +2840,8 @@
        *                  ext = [{ vg, t, h? }] Vorgänge externer Firmen (FW-IHEXT), die mit den internen Teams am Auftrag arbeiten
        *   Meldung        { nr, dat, txt, str, plz, auftrag (leer = noch ohne Auftrag), code, tp, stat, team, grp }
        *   Prüfobjekte    Liste von Kurztexten je Auftrag (aus dem Prüflos-Excel)
-       *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von?, u?, tu? } je Auftrag (u = SAP-User, der zuletzt gespeichert hat,
+       *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von?, go?, u?, tu? } je Auftrag (go = „Start“ gedrückt (ms), solange noch keine Zeit
+       *                  gespeichert ist – so sehen Disponent und Team, dass der Auftrag läuft; u = SAP-User, der zuletzt gespeichert hat,
        *                  tu = SAP-User, der die Zeit zurückgemeldet hat – beide setzt der Server,
        *                  mit = SAP-User der Kollegen, mit denen gearbeitet wurde):
        *                    n = Anzahl Prüfobjekte, ok / nx = Anzahl OK / Nicht OK,
@@ -3837,6 +3880,20 @@
         !!(result && result.min >= 1 && performedDate(result) && /^\d{2}:\d{2}$/.test(result.von || ''));
       // true, wenn der Auftrag erledigt ist
       const isFinished = order => orderStatus(order).st === 'done';
+      // Farbe in Liste und Diagramm: 'run' = Start gedrückt, noch keine Zeit gespeichert · 'fin' = erledigt (Wartung: Prüfobjekte bewertet und Zeit
+      // eingetragen, sonst: Zeit eingetragen) · '' = sonst. Daueraufträge laufen weiter und bekommen keine Farbe. Der Disponent sieht nur den Start
+      // laut Ergebnis (go); ein Monteur auch den Timer seines Geräts, der noch nicht gesendet ist.
+      const startOf = order => (session.role === 'dispo' ? goOf(order.auftrag) : timerStartOf(order.auftrag));
+      const workState = order => (orderKind(order) === 'dau' ? '' : isFinished(order) ? 'fin' : startOf(order) ? 'run' : '');
+      // „08:15“, an einem anderen Tag „07.10. 08:15“
+      const startText = ms => {
+        const d = new Date(ms),
+          day = d.toLocaleDateString('sv-SE');
+        return (day === today() ? '' : formatIsoDate(day).slice(0, 6) + ' ') + d.toTimeString().slice(0, 5);
+      };
+      // Etikett „▶ gestartet 08:15“ (blau). „Erledigt“ bekommt nur die Farbe (grüne Kante): bei Wartungen steht das Etikett schon in statusTags,
+      // die übrigen Auftragsarten zeigen bewusst keinen Status – dort steht die Zeit („⏱ 1 Std“) auf der Karte.
+      const workTags = order => (workState(order) === 'run' ? el('span', { class: 'tag st-run' }, '▶ gestartet ' + startText(startOf(order))) : null);
       // Zeile mit Filter-Chips: items = [[Schlüssel, Beschriftung, Anzahl]]; current = aktiver Schlüssel; select setzt ihn
       const filterChips = (items, cur, set) =>
         el(
@@ -3873,7 +3930,7 @@
        * Zeitfelder bleiben erhalten.
        */
       // Die Zeit-Felder eines Ergebnisses (Dauer, Zeitpunkt, Datum, Beginn, Kollegen), die jedes neue Ergebnis mitnehmen muss –
-      // sonst gingen sie beim Bewerten eines Prüfobjekts verloren. Ohne Zeit: nichts.
+      // sonst gingen sie beim Bewerten eines Prüfobjekts verloren. Ohne Zeit: nur der Start (go), falls gedrückt, sonst nichts.
       const timeFieldsOf = result =>
         result && result.min != null
           ? {
@@ -3883,7 +3940,9 @@
               ...(result.von ? { von: result.von } : {}),
               ...(Array.isArray(result.mit) ? { mit: [...result.mit] } : {})
             }
-          : {};
+          : result && +result.go > 0
+            ? { go: +result.go }
+            : {};
       function saveChecklistState(order, items, state, nokTexts = {}) {
         if (isLocked(order.auftrag)) return denyLocked();
         const nokItems = [...state].flatMap((c, k) =>
@@ -4023,6 +4082,7 @@
         delete doc.dat;
         delete doc.von;
         delete doc.mit;
+        delete doc.go; // die Zeit ersetzt den Start
         if (minutes > 0) {
           delete runningTimers[order.auftrag]; // die Zeit ist jetzt gespeichert: ein laufender Timer ist erledigt
           saveTimers();
@@ -4081,18 +4141,44 @@
           localStorage.setItem('tmr', JSON.stringify(runningTimers));
         } catch (e) {}
       };
-      const timerStartOf = orderNo => +runningTimers[orderNo] || 0;
+      // Der Start steht zusätzlich im Ergebnis (go): so sehen ihn auch der Disponent und die anderen Geräte des Teams (Farbe in Liste und Diagramm).
+      // goOf: Start laut Ergebnis (0 = keiner oder die Zeit ist schon gespeichert). timerStartOf: der Start dieses Geräts, sonst der laut Ergebnis.
+      const goOf = orderNo => {
+        const r = rawResult(orderNo);
+        return r && r.min == null && +r.go > 0 ? +r.go : 0;
+      };
+      const timerStartOf = orderNo => +runningTimers[orderNo] || goOf(orderNo);
+      // Start (go > 0) oder Rücknahme (go = 0) ins Ergebnis des Auftrags schreiben; Zeit und Bewertungen bleiben, wie sie sind. Bei Daueraufträgen
+      // (Tageseinträge), abgehakten Aufträgen und ohne geladene Prüfobjekte (Wartung, noch nicht geladen) bleibt der Start nur im Gerät.
+      function saveGo(order, items, go) {
+        const key = order.auftrag;
+        if (!items || orderKind(order) === 'dau' || isLocked(key) || (goOf(key) || 0) === go) return;
+        const result = rawResult(key),
+          count = items.length,
+          listValid = !!(result && result.s && result.n === count && result.s.length === count),
+          doc = listValid
+            ? { ...result }
+            : { a: key, team: order.team, n: count, ok: 0, nx: 0, s: '-'.repeat(count), nok: [], ...timeFieldsOf(result) };
+        if (go) doc.go = go;
+        else delete doc.go;
+        doc._b = serverBaseOf(key);
+        outbox.set(key, doc);
+        saveOutbox();
+        sendPending(key);
+      }
       // „seit 08:15 Uhr · 12 Min“ (die Minuten aktualisiert ein Intervall, siehe unten)
       const elapsedMinutes = start => Math.max(0, Math.floor((Date.now() - start) / 60000));
-      const startTimer = order => {
+      const startTimer = (order, items) => {
         runningTimers[order.auftrag] = Date.now();
         saveTimers();
         timeError = '';
+        saveGo(order, items, runningTimers[order.auftrag]);
         render();
       };
-      const cancelTimer = order => {
+      const cancelTimer = (order, items) => {
         delete runningTimers[order.auftrag];
         saveTimers();
+        saveGo(order, items, 0);
         render();
       };
       function stopTimer(order, items) {
@@ -4368,7 +4454,7 @@
                         { class: 'sv', disabled: items ? null : 'disabled', onclick: () => stopTimer(order, items) },
                         '■ Ende'
                       ),
-                      el('button', { class: 'er', onclick: () => cancelTimer(order) }, 'Verwerfen')
+                      el('button', { class: 'er', onclick: () => cancelTimer(order, items) }, 'Verwerfen')
                     )
                   ]
                 : [
@@ -4377,7 +4463,7 @@
                       { class: 'mu' },
                       'Optional: „Start“ drücken, wenn die Arbeit beginnt, und „Ende“, wenn sie fertig ist – die Zeit wird dann automatisch gespeichert.'
                     ),
-                    el('div', { class: 'ob' }, el('button', { class: 'sv', onclick: () => startTimer(order) }, '▶ Start'))
+                    el('div', { class: 'ob' }, el('button', { class: 'sv', onclick: () => startTimer(order, items) }, '▶ Start'))
                   ]
             )
           );
@@ -5360,6 +5446,8 @@
       const isTimedKind = k => !!kindInfo(k).timed;
       // echte Auftragsnummer (bei Reparaturen ist `auftrag` „Nummer-Vorgang“)
       const orderNr = order => order.nr || order.auftrag;
+      // so steht ein Auftrag auf Karte und Kopfzeile: bei Reparaturen mit dem Vorgang nach einem Bindestrich („65900001-0010“)
+      const orderLabel = order => orderNr(order) + (order.vg ? '-' + order.vg : '');
       // Aufträge einer Auftragsart (Meldungen sind keine Aufträge)
       const ordersOfKind = (rows, k) => rows.filter(r => orderKind(r) === k);
       // ---- Meldungen (Schäden) ----
@@ -5867,7 +5955,7 @@
         const t = searchText.trim().toLowerCase();
         return (
           !t ||
-          [orderNr(r), r.vg, r.vtxt, r.kurz, r.str, r.plz, r.tp, r.mel, ...(r.ext || []).map(x => x.t), ...meldungenOf(r).map(m => m.nr + ' ' + m.txt)]
+          [orderNr(r), orderLabel(r), r.vg, r.vtxt, r.kurz, r.str, r.plz, r.tp, r.mel, ...(r.ext || []).map(x => x.t), ...meldungenOf(r).map(m => m.nr + ' ' + m.txt)]
             .join(' ')
             .toLowerCase()
             .includes(t)
@@ -5911,7 +5999,8 @@
               (clickable ? ' cl' : '') +
               (isDispo && clickable && markState(order.auftrag) === 1 ? ' dn' : '') +
               ((dueInfo(order) && dueInfo(order).kind === 'over') || (lateInfo(order) && !gebrechen) ? ' due' : '') +
-              (gebrechen ? ' gb-c' + gebrechen.lvl : ''),
+              (gebrechen ? ' gb-c' + gebrechen.lvl : '') +
+              (workState(order) ? ' ' + workState(order) : ''),
             // Anker für render(): hält die Liste an derselben Stelle, wenn oben etwas dazukommt oder wegfällt (siehe viewportAnchors)
             'data-k': clickable ? 'o' + order.auftrag : null,
             onclick: clickable
@@ -5926,11 +6015,11 @@
           el(
             'div',
             { class: 'row' },
-            el('b', {}, orderNr(order)),
-            order.vg && el('span', { class: 'tag' }, 'Vorgang ' + order.vg),
+            el('b', {}, orderLabel(order)),
             showTeam && el('span', { class: 'tag' }, order.team),
             order.art && el('span', { class: 'tag' }, order.art),
             statusTags(order),
+            workTags(order),
             timeTag(order),
             termTag(order),
             dueTag(order),
@@ -7766,6 +7855,11 @@
       const msStamp = t => new Date(t).toISOString().slice(0, 16);
       const addMinutes = (s, m) => msStamp(stampMs(s) + m * 6e4);
       const minutesBetween = (a, b) => Math.round((stampMs(b) - stampMs(a)) / 6e4);
+      // Beginn und Ende werden nur auf Viertelstunden gesetzt (:00, :15, :30, :45 – wie die Zeitrückmeldung der Monteure; auch der Server verlangt es):
+      // snapQuarter rundet einen Zeitpunkt auf die nächste Viertelstunde (auf und ab, 07:07 → 07:00, 07:08 → 07:15, 23:55 → 00:00 des Folgetags).
+      // QUARTERS = die wählbaren Uhrzeiten im Bearbeiten-Fenster (00:00 … 23:45)
+      const snapQuarter = s => (validStamp(s) ? msStamp(Math.round(stampMs(s) / 9e5) * 9e5) : s);
+      const QUARTERS = Array.from({ length: 96 }, (_, i) => String(Math.floor(i / 4)).padStart(2, '0') + ':' + String((i % 4) * 15).padStart(2, '0'));
       const shiftDay = (iso, n) => msStamp(stampMs(iso + 'T00:00') + n * 864e5).slice(0, 10);
       const mondayOf = iso => shiftDay(iso, -((new Date(iso + 'T12:00:00Z').getUTCDay() + 6) % 7));
       const G_PXH = { tag: 48, woche: 14, monat: 1.5 }, // Pixel je Stunde
@@ -7788,14 +7882,14 @@
         o.dis ? { team: o.team, von: isoOfDate(o.start) + 'T' + (o.uhr || '00:00'), bis: isoOfDate(o.ende) + 'T' + (o.uhr2 || '00:00') } : null;
       /**
        * Vorschlag aus SAP: SAP-Team, Beginn laut SAP (ohne Uhrzeit 07:00), Ende laut SAP – fehlt es oder liegt es nicht nach dem Beginn, gilt die
-       * geplante Arbeit (Stunden, höchstens 24), sonst 2 Stunden. null, wenn SAP gar keinen Termin nennt.
+       * geplante Arbeit (Stunden, höchstens 24), sonst 2 Stunden. Beide Zeiten auf die nächste Viertelstunde gerundet. null, wenn SAP gar keinen Termin nennt.
        */
       function suggestSlot(o) {
         const sap = sapOf(o),
           day = isoOfDate(sap.start);
         if (!day || !sap.team) return null;
-        const von = day + 'T' + (sap.uhr || '07:00');
-        let bis = sap.uhr2 ? (isoOfDate(sap.ende) || day) + 'T' + sap.uhr2 : '';
+        const von = snapQuarter(day + 'T' + (sap.uhr || '07:00'));
+        let bis = sap.uhr2 ? snapQuarter((isoOfDate(sap.ende) || day) + 'T' + sap.uhr2) : '';
         if (!validStamp(von)) return null;
         if (!validStamp(bis) || stampMs(bis) <= stampMs(von))
           bis = addMinutes(von, Math.round(((+o.arb > 0 ? Math.min(+o.arb, 24) : G_DEFAULT_MIN / 60) * 60) / 15) * 15);
@@ -7991,12 +8085,12 @@
           same = cur && cur.team === d.team && cur.von === d.von && cur.bis === d.bis,
           teams = gTeams(),
           setVon = (day, time) => {
-            const von = day + 'T' + time;
+            const von = snapQuarter(day + 'T' + time);
             if (validStamp(von)) gDraft = { ...d, von, bis: addMinutes(von, Math.max(mins, 15)) }; // der Beginn verschiebt das Ende mit
             render();
           },
           setBis = (day, time) => {
-            const bis = day + 'T' + time;
+            const bis = snapQuarter(day + 'T' + time);
             if (validStamp(bis)) gDraft = { ...d, bis };
             render();
           },
@@ -8005,8 +8099,16 @@
             dismissSheet();
             dispoSave([item], `${o.auftrag} → ${d.team}, ${slotText(d)}`);
           };
-        const field = (type, key, label, value, onchange, extra) =>
-          el('input', { type, value, 'data-nr': '1', 'data-keep': key, 'aria-label': label, onchange: e => onchange(e.target.value), ...extra });
+        const field = (type, key, label, value, onchange) =>
+          el('input', { type, value, 'data-nr': '1', 'data-keep': key, 'aria-label': label, onchange: e => onchange(e.target.value) });
+        // Uhrzeit: Auswahl der Viertelstunden statt eines freien Zeitfeldes (dort ließe sich jede Minute eintippen). Eine früher gespeicherte,
+        // nicht gerundete Zeit bleibt als zusätzlicher Eintrag stehen, bis eine andere gewählt wird.
+        const timeField = (key, label, value, onchange) =>
+          el(
+            'select',
+            { class: 'tm', 'data-nr': '1', 'data-keep': key, 'aria-label': label, onchange: e => onchange(e.target.value) },
+            (QUARTERS.includes(value) ? QUARTERS : [...QUARTERS, value].sort()).map(t => el('option', { value: t, ...(t === value ? { selected: 'selected' } : {}) }, t))
+          );
         return el(
           'div',
           { class: 'gt-sheet', role: 'dialog', 'aria-label': 'Auftrag disponieren', 'data-k': 'gt-sheet' },
@@ -8042,10 +8144,10 @@
             ),
             el('span', { class: 'mu' }, 'Von'),
             field('date', 'gv-d', 'Beginn, Datum', d.von.slice(0, 10), v => setVon(v, d.von.slice(11))),
-            field('time', 'gv-t', 'Beginn, Uhrzeit', d.von.slice(11), v => setVon(d.von.slice(0, 10), v), { step: '900' }),
+            timeField('gv-t', 'Beginn, Uhrzeit', d.von.slice(11), v => setVon(d.von.slice(0, 10), v)),
             el('span', { class: 'mu' }, 'Bis'),
             field('date', 'gb-d', 'Ende, Datum', d.bis.slice(0, 10), v => setBis(v, d.bis.slice(11))),
-            field('time', 'gb-t', 'Ende, Uhrzeit', d.bis.slice(11), v => setBis(d.bis.slice(0, 10), v), { step: '900' })
+            timeField('gb-t', 'Ende, Uhrzeit', d.bis.slice(11), v => setBis(d.bis.slice(0, 10), v))
           ),
           el(
             'div',
@@ -8143,6 +8245,7 @@
           kind = orderKind(o),
           sel = gSel === o.auftrag && (draft || !it.ghosted),
           late = lateInfo(o),
+          state = draft ? '' : workState(o), // 'run' gestartet · 'fin' fertig: die Balkenfarbe zeigt den Stand
           label = o.auftrag,
           text = (kind === 'rep' && o.vtxt ? o.vtxt : o.kurz) || '',
           // (auch der schmalste Balken ist 16 px breit – Polster und Rand –, die Ränder nehmen höchstens je ein Drittel)
@@ -8158,14 +8261,14 @@
           node = el(
             'div',
             {
-              class: ['gt-bar', kind, draft && 'draft', it.ghosted && 'gh', sel && 'sel', it.cf && 'cf', late && 'late', x0 < 0 && 'cl', x1 > g.days * g.dayPx && 'cr']
+              class: ['gt-bar', kind, state, draft && 'draft', it.ghosted && 'gh', sel && 'sel', it.cf && 'cf', late && 'late', x0 < 0 && 'cl', x1 > g.days * g.dayPx && 'cr']
                 .filter(Boolean)
                 .join(' '),
               'data-k': (draft ? 'gd-' : 'gb-') + o.auftrag,
               role: 'button',
               tabindex: '0',
-              'aria-label': `${label} ${text}, ${it.slot.team}, ${slotText(it.slot)}${it.cf ? ', Überschneidung' : ''}`,
-              title: `${label}${text ? ' · ' + text : ''}\n${it.slot.team} · ${slotText(it.slot)} (${durationText(minutesBetween(it.slot.von, it.slot.bis))})${o.str ? '\n' + [o.plz, o.str].filter(Boolean).join(' ') : ''}${it.cf ? '\n⚠ Überschneidet sich mit einem anderen Auftrag' : ''}${late ? '\n⏰ im Verzug' : ''}`,
+              'aria-label': `${label} ${text}, ${kindInfo(kind).name}, ${it.slot.team}, ${slotText(it.slot)}${state === 'run' ? ', gestartet' : state === 'fin' ? ', fertig' : ''}${it.cf ? ', Überschneidung' : ''}`,
+              title: `${label}${text ? ' · ' + text : ''}\n${kindInfo(kind).name} · ${it.slot.team} · ${slotText(it.slot)} (${durationText(minutesBetween(it.slot.von, it.slot.bis))})${state === 'run' ? '\n▶ gestartet ' + startText(startOf(o)) : state === 'fin' ? '\n✓ fertig, Zeit eingetragen' : ''}${o.str ? '\n' + [o.plz, o.str].filter(Boolean).join(' ') : ''}${it.cf ? '\n⚠ Überschneidet sich mit einem anderen Auftrag' : ''}${late ? '\n⏰ im Verzug' : ''}`,
               style: `left:${left}px;width:${Math.max(g.minBar, right - left)}px;top:${4 + it.lane * h}px;height:${h - 2}px`,
               onpointerdown: e => startBarDrag(e, o, it.slot, 'move', !!draft),
               onclick: e => {
@@ -8181,7 +8284,7 @@
               }
             },
             // (in einem schmalen Balken, im Monat meist, stünde von der Nummer nur ein abgeschnittener Rest)
-            right - left >= 44 && el('b', {}, label),
+            right - left >= 44 && el('b', {}, (state === 'run' ? '▶ ' : state === 'fin' ? '✓ ' : '') + label),
             text && h >= 16 && right - left >= 44 && el('span', {}, text),
             // Ränder zum Ändern der Länge (nicht am abgeschnittenen Rand: dort endet der Auftrag nicht; nicht am blassen Platzhalter eines Entwurfs)
             grip && x0 >= 0 && edge('l', 'start'),
@@ -8294,7 +8397,7 @@
             )
           ),
           el('div', { class: 'gt-wrap' }, names, scroller),
-          el('div', { class: 'gt-leg' }, el('span', {}, el('i', {}), 'Reparatur'), el('span', {}, el('i', { class: 'ent' }), 'Entstörung'), el('span', {}, el('i', { class: 'dr' }), 'Entwurf'), el('span', {}, '⚠ gelber Rand = Überschneidung im Team'), el('span', {}, '↔ Rand des Balkens ziehen = Länge ändern'))
+          el('div', { class: 'gt-leg' }, el('span', {}, el('i', {}), 'Reparatur'), el('span', {}, el('i', { class: 'ent' }), 'Entstörung'), el('span', {}, el('i', { class: 'dr' }), 'Entwurf'), el('span', {}, el('i', { class: 'run' }), 'gestartet'), el('span', {}, el('i', { class: 'fin' }), 'fertig (Zeit eingetragen)'), el('span', {}, '⚠ gelber Rand = Überschneidung im Team'), el('span', {}, '↔ Rand des Balkens ziehen = Länge ändern'))
         );
         return card;
       }
@@ -9680,7 +9783,7 @@
           el(
             'div',
             { class: 'bar stk' },
-            el('h1', {}, 'Auftrag ' + orderNr(order) + (order.vg ? ' · Vorgang ' + order.vg : '')),
+            el('h1', {}, 'Auftrag ' + orderLabel(order)),
             el('button', { onclick: requestBack }, '← Zurück')
           ),
           ...(locked

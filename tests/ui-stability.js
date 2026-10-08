@@ -1103,13 +1103,14 @@ async function kindUploadChecks(browser, base, errors) {
   report(await page.evaluate(() => ![...document.querySelectorAll('#app button')].some(b => /^(Erledigt|In Arbeit|Nicht OK)/.test(b.textContent.trim()))), 'Dispo Übersicht: Reparaturen ohne Status-Filter (Erledigt, In Arbeit, Nicht OK)');
   const cardsOf = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.textContent.replace(/\s+/g, ' ').slice(0, 300)));
   const reps = await cardsOf();
-  report(reps.some(t => /65900001.*Vorgang 0010.*FW-IH01/.test(t)) && reps.some(t => /65900001.*Vorgang 0020.*FW-IH02/.test(t)), 'Dispo Übersicht: jeder Vorgang einer Reparatur ist ein eigener Auftrag (mit seinem Team)');
+  report(reps.some(t => /65900001-0010.*FW-IH01/.test(t)) && reps.some(t => /65900001-0020.*FW-IH02/.test(t)), 'Dispo Übersicht: jeder Vorgang einer Reparatur ist ein eigener Auftrag (mit seinem Team)');
   report(await page.evaluate(() => { const c = document.querySelector('#app [data-k="o65900008-0010"]'); return !!c && /im Verzug · 3 Tage/.test(c.textContent) && /\bdue\b/.test(c.className); }), 'Dispo Übersicht: Reparatur im Verzug ist hervorgehoben');
-  report(reps.some(t => /65900001.*Vorgang 0010.*Testgasse 1/.test(t)), 'Dispo Übersicht: Auftrag und Vorgang sind zusammengesetzt (Adresse aus den Aufträgen)');
+  report(reps.some(t => /65900001-0010.*Testgasse 1/.test(t)), 'Dispo Übersicht: Auftrag und Vorgang sind zusammengesetzt (Adresse aus den Aufträgen)');
+  report(await page.evaluate(() => { const c = document.querySelector('#app [data-k="o65900001-0010"]'); return !!c && c.querySelector('.row > b').textContent === '65900001-0010' && ![...c.querySelectorAll('.tag')].some(t => /Vorgang/.test(t.textContent)); }), 'Dispo Übersicht: der Vorgang steht mit Bindestrich hinter der Auftragsnummer, kein Etikett „Vorgang“');
   report(reps.length === 5 && reps.every(t => /nicht disponiert/.test(t)), 'Dispo Übersicht: Reparaturen tragen das Etikett „nicht disponiert“, solange nichts disponiert ist', String(reps.filter(t => /nicht disponiert/.test(t)).length));
   const teamsSeen = await page.evaluate(() => [...document.querySelectorAll('#app select option')].map(o => o.textContent.trim().split(' ')[0]));
-  report(!teamsSeen.some(t => /EXT$|\dP$/.test(t)) && !reps.some(t => /Vorgang 0030|Vorgang 0040|65900010/.test(t)), 'Dispo Übersicht: weder FW-IHEXT noch Teams mit „P“ erscheinen als Team oder Auftrag', teamsSeen.join(', '));
-  report(reps.some(t => /65900009.*FW-IH01/.test(t) && /Externe Firma/.test(t)) && reps.some(t => /65900001.*Vorgang 0010.*Externe Firma/.test(t)), 'Dispo Übersicht: Aufträge mit externer Firma sind gekennzeichnet (auch bei nur externen Vorgängen)');
+  report(!teamsSeen.some(t => /EXT$|\dP$/.test(t)) && !reps.some(t => /65900001-0030|65900001-0040|65900010/.test(t)), 'Dispo Übersicht: weder FW-IHEXT noch Teams mit „P“ erscheinen als Team oder Auftrag', teamsSeen.join(', '));
+  report(reps.some(t => /65900009.*FW-IH01/.test(t) && /Externe Firma/.test(t)) && reps.some(t => /65900001-0010.*Externe Firma/.test(t)), 'Dispo Übersicht: Aufträge mit externer Firma sind gekennzeichnet (auch bei nur externen Vorgängen)');
   await probe(page, 'Dispo Übersicht: Auftragsart Meldungen', btn('/Meldungen/'), { ms: 900, reflow: true, anim: true });
   const mels = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].length);
   report(mels === 3, 'Dispo Übersicht: Liste Meldungen zeigt die Meldungen ohne Auftrag', String(mels));
@@ -1135,14 +1136,14 @@ async function kindUploadChecks(browser, base, errors) {
   await tab('Übersicht');
   await chooseKind(page, 'Reparaturen');
   let again = await cardsOf();
-  report(again.length === 5 && again.some(t => /65900001.*Vorgang 0020/.test(t)), 'Upload Aufträge erneut: Reparaturen bleiben je Vorgang erhalten', `${again.length} Aufträge`);
+  report(again.length === 5 && again.some(t => /65900001-0020/.test(t)), 'Upload Aufträge erneut: Reparaturen bleiben je Vorgang erhalten', `${again.length} Aufträge`);
   await openUpload();
   r = await upload('vorgaenge', files.vorgaenge);
   await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 15000 });
   await tab('Übersicht');
   await chooseKind(page, 'Reparaturen');
   again = await cardsOf();
-  report(again.length === 5 && again.some(t => /65900001.*Vorgang 0010.*Testgasse 1/.test(t)), 'Upload Vorgänge erneut: Adressen aus den Aufträgen bleiben erhalten', `${again.length} Aufträge`);
+  report(again.length === 5 && again.some(t => /65900001-0010.*Testgasse 1/.test(t)), 'Upload Vorgänge erneut: Adressen aus den Aufträgen bleiben erhalten', `${again.length} Aufträge`);
   // eine Datei im falschen Feld: klare Fehlermeldung statt falscher Daten
   await openUpload();
   await page.setInputFiles('#app input[data-up="mel"]', files.vorgaenge);
@@ -1236,6 +1237,18 @@ async function dispositionChecks(browser, base, viewport, errors) {
   const sheetInfo = await page.evaluate(() => { const s = document.querySelector('#app .gt-sheet'); const r = s.getBoundingClientRect(); return { text: s.textContent.replace(/\s+/g, ' '), team: s.querySelector('select').value, bottom: Math.round(innerHeight - r.bottom), inside: r.top >= 0 && r.left >= 0 && r.right <= innerWidth + 1 }; });
   report(v.sheet && /65900002-0010/.test(sheetInfo.text) && /noch offen/.test(sheetInfo.text) && sheetInfo.team === 'FW-IH01' && sheetInfo.inside, `${label} Fenster: Auftrag, „noch offen“, Team FW-IH01 vorbelegt, liegt im Bild`, sheetInfo.text.slice(0, 120));
   report((await field('gv-d')) === dayIso(1) && (await field('gv-t')) === '13:30' && (await field('gb-t')) === '17:30', `${label} Fenster: Beginn und Ende mit dem Vorschlag aus SAP vorbelegt`, [await field('gv-d'), await field('gv-t'), await field('gb-d'), await field('gb-t')].join(' '));
+  // Uhrzeiten nur auf Viertelstunden: Auswahl (kein freies Zeitfeld, in dem sich jede Minute tippen ließe); ein krummer Wert wird gerundet;
+  // krumme Zeiten aus SAP werden im Vorschlag gerundet; der Server lehnt krumme Zeiten ab
+  const quarterOpts = await page.evaluate(() => ['gv-t', 'gb-t'].map(k => { const n = document.querySelector(`#app .gt-sheet [data-keep="${k}"]`); return { tag: n.tagName, n: n.options.length, first: n.options[0].value, last: n.options[n.options.length - 1].value, ok: [...n.options].every(o => /^\d{2}:(00|15|30|45)$/.test(o.value)) }; }));
+  report(quarterOpts.every(o => o.tag === 'SELECT' && o.n === 96 && o.first === '00:00' && o.last === '23:45' && o.ok), `${label} Fenster: Uhrzeit nur in Viertelstunden wählbar (96 Einträge von 00:00 bis 23:45)`, JSON.stringify(quarterOpts));
+  await page.evaluate(() => { const n = document.querySelector('#app .gt-sheet [data-keep="gv-t"]'); const o = document.createElement('option'); o.value = '13:37'; n.append(o); n.value = '13:37'; n.dispatchEvent(new Event('change', { bubbles: true })); });
+  await settle(400);
+  report((await field('gv-t')) === '13:30' && (await field('gb-t')) === '17:30', `${label} Fenster: ein krummer Wert (13:37) wird auf die nächste Viertelstunde gerundet (13:30)`, `${await field('gv-t')}–${await field('gb-t')}`);
+  const sug = await page.evaluate(() => suggestSlot({ ...ordersMap.get('65900009'), sap: undefined, uhr: '07:07', uhr2: '09:53' }));
+  report(sug && sug.von === dayIso(3) + 'T07:00' && sug.bis === dayIso(3) + 'T10:00', `${label} Vorschlag aus SAP: krumme Zeiten (07:07–09:53) werden auf Viertelstunden gerundet (07:00–10:00)`, JSON.stringify(sug));
+  const badTime = await fetch(base + '/api/dispo', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(await dispoHeaders(base)) }, body: JSON.stringify({ items: [{ a: '65900009', team: 'FW-IH01', von: dayIso(3) + 'T07:07', bis: dayIso(3) + 'T09:00' }] }) }),
+    badBody = await badTime.json();
+  report(badTime.status === 400 && /Viertelstunde/.test(badBody.error || ''), `${label} Server: Beginn 07:07 wird abgelehnt (nur Viertelstunden)`, `${badTime.status} ${badBody.error}`);
   await probe(page, `${label} Fenster: Team wechseln (Entwurf wandert in die andere Zeile)`, `() => document.querySelector('#app .gt-sheet select')`, { act: selectTeam('FW-IH02'), ms: 700 });
   v = await view();
   report(v.draft.join() === 'FW-IH02', `${label} Fenster: gestrichelter Entwurfsbalken steht bei FW-IH02`, v.draft.join());
@@ -1870,6 +1883,85 @@ async function dispositionNarrowChecks(browser, base, errors) {
 }
 
 // Monteur: Startseite mit der Auswahl der Auftragsart, die Listen (Termin & Uhrzeit), Detail ohne Prüfobjekte, Meldungen
+// Gestartet (blau) und fertig (grün): Drückt der Monteur „▶ Start“, steht der Start im Ergebnis (go) – Disponent und Team sehen den Auftrag
+// farbig markiert (Balken im Diagramm, Karte, Etikett). Mit eingetragener Zeit ist er „fertig“ (grün), „Verwerfen“ nimmt den Start zurück.
+// Gemessen wird auch hier, dass die Farbe nichts verschiebt (Balken und Karten behalten Lage und Größe). Läuft nach der Disposition (alles
+// ist disponiert); räumt hinterher auf, damit die späteren Prüfungen unverändert starten.
+async function workStateChecks(browser, base, errors) {
+  console.log('\n=== Gestartet / fertig: Farbe in Diagramm, Liste und beim Monteur ===');
+  const A = '65900002-0010',
+    login = await apiJson(base, 'POST', '/api/user/login', { user: MONTEUR.user, password: MONTEUR.password }),
+    put = async doc => (await fetch(`${base}/api/ergebnis/${A}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': login.token }, body: JSON.stringify({ a: A, team: 'FW-IH01', n: 0, s: '', nok: [], ...doc }) })).status,
+    dispo = await newPage(browser, base, { width: 1280, height: 900 }, errors);
+  await loginDispo(dispo);
+  const tab = async n => {
+    await dispo.evaluate(n => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim().startsWith(n)).click(), n);
+    await pause(dispo, 900);
+  };
+  const colorOf = v => dispo.evaluate(v => { const i = document.createElement('i'); i.style.background = `var(--${v})`; document.body.append(i); const c = getComputedStyle(i).backgroundColor; i.remove(); return c; }, v);
+  const bar = () => dispo.evaluate(A => { const n = document.querySelector(`#app .gt-bar[data-k="gb-${A}"]`); if (!n) return null; const r = n.getBoundingClientRect(); return { cls: n.className, bg: getComputedStyle(n).backgroundColor, label: (n.querySelector('b') || {}).textContent, box: [r.left, r.top, r.width, r.height].map(Math.round).join(), title: n.title }; }, A);
+  const card = () => dispo.evaluate(A => { const n = document.querySelector(`#app [data-k="o${A}"]`); if (!n) return null; const r = n.getBoundingClientRect(); return { cls: n.className, tags: [...n.querySelectorAll('.tag')].map(t => t.textContent), box: [r.left, r.width].map(Math.round).join() }; }, A);
+  const waitFor = (fn, arg) => dispo.waitForFunction(fn, arg, { timeout: 8000 }).then(() => true, () => false);
+  await put({});
+  // Übersicht, Reparaturen: Karte ohne Farbe
+  await chooseKind(dispo, 'Reparaturen');
+  const c0 = await card();
+  report(c0 && !/\b(run|fin)\b/.test(c0.cls) && !c0.tags.some(t => /gestartet|Erledigt/.test(t)), 'Gestartet: Karte ohne Start ist nicht markiert', JSON.stringify(c0));
+  // Monteur drückt „▶ Start“ (Handy) – der Disponent sieht es live
+  const phone = await newPage(browser, base, { width: 390, height: 844 }, errors);
+  await loginMonteur(phone, 'Reparaturen');
+  await phone.evaluate(A => document.querySelector(`#app [data-k="o${A}"]`).click(), A);
+  await pause(phone, 900);
+  await phone.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Start$/.test(b.textContent.trim())).click());
+  await pause(phone, 600);
+  report(await waitFor(A => { const n = document.querySelector(`#app [data-k="o${A}"]`); return n && /\brun\b/.test(n.className); }, A), 'Gestartet: Karte des Disponenten wird blau, sobald der Monteur „▶ Start“ drückt (live)');
+  const c1 = await card();
+  report(c1 && c1.tags.some(t => /^▶ gestartet \d{2}:\d{2}$/.test(t)) && c1.box === c0.box, 'Gestartet: Etikett „▶ gestartet 08:15“, die Karte behält Lage und Breite', JSON.stringify(c1));
+  const shadow = await dispo.evaluate(A => getComputedStyle(document.querySelector(`#app [data-k="o${A}"]`)).boxShadow, A);
+  report(shadow.includes((await colorOf('run'))) , 'Gestartet: Kante der Karte ist blau', shadow.slice(0, 60));
+  // Diagramm
+  await tab('Disposition');
+  const b1 = await bar();
+  report(b1 && /\brun\b/.test(b1.cls) && b1.bg === (await colorOf('run')) && /^▶ /.test(b1.label || '') && /gestartet/.test(b1.title), 'Gestartet: Balken im Diagramm ist blau (▶ vor der Nummer, Hinweis „gestartet“)', JSON.stringify(b1));
+  const leg = await dispo.evaluate(() => (document.querySelector('#app .gt-leg') || {}).textContent || '');
+  report(/gestartet/.test(leg) && /fertig/.test(leg), 'Gestartet: die Legende nennt „gestartet“ und „fertig“', leg);
+  // Der Monteur nimmt den Start zurück
+  await phone.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /^Verwerfen$/.test(b.textContent.trim())).click());
+  report(await waitFor(A => { const n = document.querySelector(`#app .gt-bar[data-k="gb-${A}"]`); return n && !/\b(run|fin)\b/.test(n.className); }, A), 'Gestartet: „Verwerfen“ nimmt die Markierung wieder zurück (live)');
+  const b0 = await bar();
+  report(b0 && b0.box === b1.box && !/^[▶✓]/.test(b0.label || ''), 'Gestartet: Der Balken behält Lage und Größe (nur die Farbe wechselt)', `${b0 && b0.box} / ${b1.box}`);
+  // Start und „■ Ende“: die Zeit ist gespeichert -> fertig (grün)
+  await phone.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Start$/.test(b.textContent.trim())).click());
+  await pause(phone, 800);
+  await phone.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Ende$/.test(b.textContent.trim())).click());
+  report(await waitFor(A => { const n = document.querySelector(`#app .gt-bar[data-k="gb-${A}"]`); return n && /\bfin\b/.test(n.className); }, A), 'Fertig: Balken wird grün, sobald der Monteur mit „■ Ende“ die Zeit eingetragen hat (live)');
+  const b2 = await bar();
+  report(b2 && b2.bg === (await colorOf('ok')) && /^✓ /.test(b2.label || '') && b2.box === b1.box && !/gestartet/.test(b2.title), 'Fertig: grün, ✓ vor der Nummer, Lage und Größe unverändert', JSON.stringify(b2));
+  const phoneCard = await phone.evaluate(A => { const n = document.querySelector(`#app [data-k="oc"]`); return n && { cls: n.className, tags: [...n.querySelectorAll('.tag')].map(t => t.textContent) }; }, A);
+  report(phoneCard && /\bfin\b/.test(phoneCard.cls) && phoneCard.tags.some(t => /^⏱ 15 Min$/.test(t)) && !phoneCard.tags.some(t => /gestartet|Erledigt/.test(t)), 'Fertig: auch beim Monteur trägt der Auftrag die grüne Kante (nur Farbe, kein Etikett „Erledigt“ – die Zeit steht auf der Karte)', JSON.stringify(phoneCard));
+  await tab('Übersicht');
+  await chooseKind(dispo, 'Reparaturen');
+  const c2 = await card();
+  report(c2 && /\bfin\b/.test(c2.cls) && c2.tags.some(t => /^⏱ 15 Min$/.test(t)) && !c2.tags.some(t => /gestartet|Erledigt/.test(t)) && c2.box === c0.box, 'Fertig: Karte des Disponenten ist grün markiert (nur Farbe, die Zeit steht auf der Karte), gleiche Lage und Breite', JSON.stringify(c2));
+  // Start laut Ergebnis, nur für den Server geprüft: eine Zeit ersetzt den Start; ein Start in der Zukunft/ohne Sinn wird verworfen
+  report((await put({ go: Date.now() })) === 200 && (await put({ go: 5 })) === 200, 'Gestartet: Server nimmt einen Start an; ein unsinniger Wert (5) wird still verworfen');
+  await pause(dispo, 800);
+  const srv = await dispo.evaluate(A => rawResult(A), A);
+  report(srv && srv.go === undefined && srv.min === undefined, 'Gestartet: unsinniger Startwert ist nicht im Ergebnis', JSON.stringify(srv));
+  await put({ go: Date.now() - 60000 });
+  await put({ min: 60, dat: new Date().toLocaleDateString('sv-SE'), von: '08:00', go: Date.now() });
+  await pause(dispo, 800);
+  const srv2 = await dispo.evaluate(A => rawResult(A), A);
+  report(srv2 && srv2.min === 60 && srv2.go === undefined, 'Fertig: mit gespeicherter Zeit gibt es keinen Start mehr im Ergebnis', JSON.stringify(srv2));
+  // aufräumen: Ergebnis ohne Zeit und ohne Start
+  await put({});
+  await pause(dispo, 800);
+  const bEnd = await bar();
+  report(await dispo.evaluate(A => { const n = document.querySelector(`[data-k="o${A}"]`); return !n || !/\b(run|fin)\b/.test(n.className); }, A) && (await card()).tags.every(t => !/gestartet|Erledigt/.test(t)), 'Gestartet: nach dem Aufräumen ist nichts mehr markiert');
+  await phone.context().close();
+  await dispo.context().close();
+}
+
 async function kindChecks(browser, base, viewport, errors) {
   const label = `${viewport.width}px`,
     page = await newPage(browser, base, viewport, errors);
@@ -1893,6 +1985,8 @@ async function kindChecks(browser, base, viewport, errors) {
   const order = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k));
   const o1 = await order();
   report(o1.join() === 'o65900008-0010,o65900002-0010,o65900001-0010,o65900009', `${label} Reparaturen: nach Termin, das Älteste zuerst (wer im Verzug ist, steht oben), die neueren darunter`, o1.join(', '));
+  // Der Vorgang steht mit Bindestrich hinter der Auftragsnummer (nicht als Etikett)
+  report(await page.evaluate(() => { const c = document.querySelector('#app [data-k="o65900001-0010"]'); return !!c && c.querySelector('.row > b').textContent === '65900001-0010' && ![...c.querySelectorAll('.tag')].some(t => /Vorgang/.test(t.textContent)); }), `${label} Reparaturen: der Vorgang steht mit Bindestrich hinter der Auftragsnummer („65900001-0010“), kein Etikett „Vorgang“`);
   // im Verzug: der Termin (−3 Tage, ohne Zeitrückmeldung) liegt in der Vergangenheit – rotes Etikett mit den Tagen und rote Kante; die anderen nicht
   const late = await page.evaluate(() => ({ tag: (document.querySelector('#app [data-k="o65900008-0010"] .tag.st-nok') || {}).textContent, cls: document.querySelector('#app [data-k="o65900008-0010"]').className, others: ['o65900002-0010', 'o65900001-0010', 'o65900009'].filter(k => /Verzug/.test(document.querySelector(`#app [data-k="${k}"]`).textContent) || /\bdue\b/.test(document.querySelector(`#app [data-k="${k}"]`).className)) }));
   report(/im Verzug · 3 Tage/.test(late.tag || '') && /\bdue\b/.test(late.cls) && !late.others.length, `${label} Reparaturen: Termin in der Vergangenheit ist als „im Verzug“ hervorgehoben (Etikett mit Tagen, Kante), kommende nicht`, JSON.stringify(late));
@@ -1910,6 +2004,7 @@ async function kindChecks(browser, base, viewport, errors) {
   // Auftrag mit externer Firma: im Detail die Vorgänge der Fremdfirma
   await probe(page, `${label} Reparatur mit externer Firma öffnen`, `() => document.querySelector('#app [data-k="o65900001-0010"]')`, { reflow: true, ms: 900, anim: true });
   const extDetail = await page.evaluate(() => (document.querySelector('#app .extbox') || {}).textContent || '');
+  report(await page.evaluate(() => document.querySelector('#app .bar h1').textContent === 'Auftrag 65900001-0010' && document.querySelector('#app [data-k="oc"] .row > b').textContent === '65900001-0010'), `${label} Reparatur: Kopfzeile und Karte nennen „65900001-0010“ (Vorgang mit Bindestrich)`);
   report(/Externe Firma arbeitet mit/.test(extDetail) && /Vorgang 0030/.test(extDetail) && /Fremdfirma: Kabel ziehen/.test(extDetail) && /6 Std geplant/.test(extDetail), `${label} Reparatur: Detail zeigt die externe Firma mit ihrem Vorgang`, extDetail);
   await probe(page, `${label} Reparatur schließen (← Zurück, Seite gleitet von links herein)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
   // Reparatur im Verzug öffnen: auch in der Auftragsansicht ist es hervorgehoben
@@ -2239,6 +2334,7 @@ function summary(t0) {
       await poolWindowChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
+      await workStateChecks(browser, base, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
@@ -2255,6 +2351,7 @@ function summary(t0) {
       await poolWindowChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
+      await workStateChecks(browser, base, errors);
       await kindChecks(browser, base, { width: 390, height: 844 }, errors);
       await kindChecksWide(browser, base, { width: 1280, height: 800 }, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
@@ -2267,6 +2364,7 @@ function summary(t0) {
     await poolWindowChecks(browser, base, errors);
     await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
     await dispositionNarrowChecks(browser, base, errors);
+    await workStateChecks(browser, base, errors);
     await kindChecks(browser, base, { width: 390, height: 844 }, errors);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);
