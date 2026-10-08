@@ -200,6 +200,12 @@
         color: var(--mu);
         font-size: 0.875rem;
       }
+      /* Zeile „N Aufträge · Standort …“ über der Liste: immer genau eine Zeile (ändert sich der Text, springt die Liste nicht) */
+      .cnt {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .msg {
         padding: 10px 12px;
         border-radius: 10px;
@@ -1838,7 +1844,7 @@
         pinInput = '',
         pinError = false,
         // dispoFiltersOpen: Filter der Dispo-Übersicht am Handy aufgeklappt · listSort: Sortierung der Listen
-        // ('nr' Nummer | 'termin' Termin (Monteur) | 'rueck' Rückmeldung (Disponent))
+        // ('nr' Nummer | 'termin' Termin (Monteur) | 'nah' Entfernung (Monteur) | 'rueck' Rückmeldung (Disponent))
         dispoFiltersOpen = false,
         listSort = 'nr',
         // timeFormOpen: Eingabefelder (Datum, Beginn, Dauer) der Zeitkarte aufgeklappt ·
@@ -4077,11 +4083,17 @@
           ? el('span', { class: 'tag st-nok' }, `⏰ überfällig seit ${plural(d.days)}`)
           : el('span', { class: 'tag st-zf' }, d.kind === 'today' ? '⏰ heute fällig' : `⏰ fällig in ${plural(d.days)}`);
       };
-      // Sortierung der Listen: Auftragsnummer (alle), Endtermin (Monteur: früheste zuerst, ohne Termin zuletzt) oder
-      // Rückmeldung (Disponent: zuletzt zurückgemeldete zuerst, ohne Rückmeldung zuletzt). Gespeichert ist die letzte Wahl;
-      // gilt sie in der aktuellen Rolle nicht, wird nach Nummer sortiert (sortMode).
+      // Sortierung der Listen: Auftragsnummer (alle), Endtermin (Monteur: früheste zuerst, ohne Termin zuletzt), Entfernung (Monteur:
+      // nächste zuerst, ohne Adresse zuletzt) oder Rückmeldung (Disponent: zuletzt zurückgemeldete zuerst, ohne Rückmeldung zuletzt).
+      // Gespeichert ist die letzte Wahl; gilt sie in der aktuellen Rolle nicht, wird nach Nummer sortiert (sortMode).
       const sortMode = () =>
-        session.role === 'dispo' ? (listSort === 'rueck' ? 'rueck' : 'nr') : listSort === 'termin' ? 'termin' : 'nr';
+        session.role === 'dispo'
+          ? listSort === 'rueck'
+            ? 'rueck'
+            : 'nr'
+          : listSort === 'termin' || listSort === 'nah'
+            ? listSort
+            : 'nr';
       const sortRows = rows => {
         const byNr = (a, b) => naturalCompare(a.auftrag, b.auftrag),
           mode = sortMode(),
@@ -4090,6 +4102,11 @@
             const d = resultOf(r.auftrag);
             return d && d.min != null && d.tat ? d.tat : 0;
           };
+        // Entfernung: ohne Standort (noch nicht ermittelt oder nicht erlaubt) bleibt es bei der Nummer; ohne Adresse ganz ans Ende
+        if (mode === 'nah' && geoPos) {
+          const far = new Map(rows.map(r => [r.auftrag, distanceKm(r) ?? Infinity]));
+          return rows.sort((a, b) => far.get(a.auftrag) - far.get(b.auftrag) || byNr(a, b)); // Infinity − Infinity = NaN -> Nummer
+        }
         return rows.sort(
           mode === 'termin'
             ? (a, b) => end(a).localeCompare(end(b)) || byNr(a, b)
@@ -4098,6 +4115,153 @@
               : byNr
         );
       };
+      // ---- Entfernung: Koordinaten der Adressen (vom Server) + Standort des Geräts ----
+      // geoMap: "PLZ|Straße" -> [Breite, Länge, 'h' Hausnummer gefunden | 's' nur die Straße] · geoSince: Stand beim Server (?since=) ·
+      // geoPos: letzter Standort { lat, lon, at } oder null (bleibt nur im Gerät, wird nie an den Server gesendet) ·
+      // geoStatus: '' | 'wait' (Abfrage läuft) | 'denied' (nicht erlaubt) | 'unavailable' (nicht möglich) · geoAsked: in dieser
+      // Sitzung schon angefragt · geoVer: zählt jede Änderung von Standort/Koordinaten (die Liste beginnt dann wieder oben)
+      let geoMap = new Map(),
+        geoSince = 0,
+        geoPos = null,
+        geoStatus = '',
+        geoAsked = false,
+        geoVer = 0;
+      try {
+        const saved = JSON.parse(localStorage.getItem('geo') || 'null');
+        if (saved && Array.isArray(saved.items)) {
+          geoMap = new Map(saved.items.map(i => [i[0], i.slice(1)]));
+          geoSince = +saved.n || 0;
+        }
+      } catch (e) {}
+      // Notfall, falls der Server eine Adresse (noch) nicht auflösen konnte: ungefähre Mitte des Wiener Bezirks nach PLZ
+      const PLZ_CENTER = {
+        1010: [48.2082, 16.373],
+        1020: [48.217, 16.4],
+        1030: [48.198, 16.4],
+        1040: [48.192, 16.369],
+        1050: [48.188, 16.356],
+        1060: [48.196, 16.348],
+        1070: [48.203, 16.348],
+        1080: [48.211, 16.343],
+        1090: [48.226, 16.356],
+        1100: [48.162, 16.378],
+        1110: [48.169, 16.44],
+        1120: [48.174, 16.332],
+        1130: [48.185, 16.29],
+        1140: [48.201, 16.276],
+        1150: [48.196, 16.327],
+        1160: [48.214, 16.307],
+        1170: [48.233, 16.3],
+        1180: [48.233, 16.331],
+        1190: [48.253, 16.345],
+        1200: [48.24, 16.378],
+        1210: [48.28, 16.4],
+        1220: [48.235, 16.475],
+        1230: [48.138, 16.29]
+      };
+      // Koordinaten eines Auftrags { lat, lon, rough } (rough = nur die Bezirksmitte) oder null (keine Adresse)
+      const coordOf = order => {
+        const hit = geoMap.get((order.plz || '') + '|' + (order.str || '')),
+          center = PLZ_CENTER[order.plz];
+        return hit ? { lat: hit[0], lon: hit[1], rough: false } : center ? { lat: center[0], lon: center[1], rough: true } : null;
+      };
+      // Luftlinie in km zwischen dem Standort des Geräts und dem Auftrag; null ohne Standort oder Adresse
+      const distanceKm = order => {
+        const c = geoPos && coordOf(order);
+        if (!c) return null;
+        const rad = Math.PI / 180,
+          dLat = (c.lat - geoPos.lat) * rad,
+          dLon = (c.lon - geoPos.lon) * rad,
+          a = Math.sin(dLat / 2) ** 2 + Math.cos(geoPos.lat * rad) * Math.cos(c.lat * rad) * Math.sin(dLon / 2) ** 2;
+        return 12742 * Math.asin(Math.sqrt(a));
+      };
+      // „350 m“, „1,2 km“, „12 km“ – bei nur bekannter Bezirksmitte „ca. 3 km“
+      const distanceText = order => {
+        const km = distanceKm(order);
+        if (km == null) return '';
+        const rough = coordOf(order).rough,
+          text =
+            km < 1 && !rough
+              ? Math.max(10, Math.round(km * 100) * 10) + ' m'
+              : km < 10 && !rough
+                ? (Math.round(km * 10) / 10).toLocaleString('de-AT', { minimumFractionDigits: 1 }) + ' km'
+                : Math.max(1, Math.round(km)) + ' km';
+        return (rough ? 'ca. ' : '') + text;
+      };
+      // Koordinaten der Adressen beim Server abholen (nur Neues); offline reicht der gemerkte Stand
+      async function loadGeo() {
+        try {
+          const r = await api('GET', '/api/geo?since=' + geoSince);
+          if (r.full) geoMap = new Map();
+          for (const [k, lat, lon, q] of r.items) geoMap.set(k, [lat, lon, q]);
+          geoSince = r.n;
+          if (r.items.length || r.full) {
+            geoVer++;
+            try {
+              localStorage.setItem('geo', JSON.stringify({ n: geoSince, items: [...geoMap].map(([k, v]) => [k, ...v]) }));
+            } catch (e) {}
+            if (sortMode() === 'nah' && geoStatus !== 'wait') render(); // kam erst nach dem Standort an
+          }
+        } catch (e) {}
+      }
+      // Standort des Geräts: erst genau (GPS), bei Zeitüberschreitung oder Fehler ungefähr (WLAN/Mobilfunk); nur wenn der Monteur
+      // „Entfernung“ wählt. Fehlt die Erlaubnis, fragt der Browser beim ersten Mal selbst.
+      const currentPosition = () =>
+        new Promise((resolve, reject) => {
+          if (!navigator.geolocation) return reject({ code: 2 });
+          navigator.geolocation.getCurrentPosition(
+            resolve,
+            error =>
+              error.code === 1
+                ? reject(error)
+                : navigator.geolocation.getCurrentPosition(resolve, reject, {
+                    enableHighAccuracy: false,
+                    timeout: 8000,
+                    maximumAge: 600000
+                  }),
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+          );
+        });
+      async function locateMe(quiet = false) {
+        const running = geoStatus === 'wait';
+        geoAsked = true;
+        geoStatus = 'wait';
+        render();
+        if (running) return;
+        const geoLoad = loadGeo(); // gleichzeitig die Koordinaten aktualisieren (neu hochgeladene Aufträge)
+        try {
+          // höchstens 25 Sekunden warten: manche Browser melden nichts zurück, wenn die Frage nach der Erlaubnis nur weggewischt wird
+          const position = await Promise.race([
+            currentPosition(),
+            new Promise((resolve, reject) => setTimeout(() => reject({ code: 3 }), 25000))
+          ]);
+          geoPos = { lat: position.coords.latitude, lon: position.coords.longitude, at: Date.now() };
+          geoStatus = '';
+        } catch (error) {
+          geoStatus = error && error.code === 1 ? 'denied' : 'unavailable';
+          if (!quiet)
+            toast(
+              geoStatus === 'denied'
+                ? '📍 Standort nicht erlaubt – bitte in den Browser-Einstellungen für diese Seite freigeben.'
+                : '📍 Standort gerade nicht verfügbar – bitte später nochmal „Entfernung“ antippen.'
+            );
+        }
+        // die Koordinaten höchstens kurz abwarten, damit die Liste nur einmal umsortiert wird (kommen sie später, folgt ein zweites Mal)
+        await Promise.race([geoLoad, new Promise(resolve => setTimeout(resolve, 3000))]);
+        geoVer++;
+        render();
+      }
+      // Zusatz hinter der Anzahl über der Liste (steht nur bei „Entfernung“)
+      const geoLine = () =>
+        sortMode() !== 'nah'
+          ? ''
+          : geoPos
+            ? ` · 📍 Standort von ${timeText(geoPos.at)} Uhr${geoStatus === 'wait' ? ' …' : ''}`
+            : geoStatus === 'wait'
+              ? ' · 📍 Standort wird ermittelt …'
+              : geoStatus
+                ? ' · 📍 kein Standort'
+                : '';
       const sortChips = () =>
         el(
           'div',
@@ -4105,7 +4269,12 @@
           el('span', { class: 'mu' }, 'Sortierung:'),
           [
             ['nr', 'Auftragsnummer'],
-            session.role === 'dispo' ? ['rueck', 'Rückmeldung (neueste zuerst)'] : ['termin', 'Termin']
+            ...(session.role === 'dispo'
+              ? [['rueck', 'Rückmeldung (neueste zuerst)']]
+              : [
+                  ['termin', 'Termin'],
+                  ['nah', 'Entfernung']
+                ])
           ].map(([k, l]) =>
             el(
               'button',
@@ -4116,7 +4285,8 @@
                   try {
                     localStorage.setItem('lsort', k);
                   } catch (e) {}
-                  render();
+                  if (k === 'nah') locateMe(); // auch beim erneuten Antippen: Standort neu bestimmen
+                  else render();
                 }
               },
               l
@@ -4125,7 +4295,7 @@
         );
       try {
         const saved = localStorage.getItem('lsort');
-        if (saved === 'termin' || saved === 'rueck') listSort = saved;
+        if (saved === 'termin' || saved === 'rueck' || saved === 'nah') listSort = saved;
       } catch (e) {}
       // Suche: Text kommt in Auftrag, Kurztext, Straße, PLZ oder Technischem Platz vor
       const matchesSearch = r => {
@@ -4182,7 +4352,13 @@
           ),
           el('div', { class: 'kt' }, order.kurz || '–'),
           (order.str || order.plz) &&
-            el('div', { class: 'mu' }, [order.plz, order.str].filter(Boolean).join(' ')),
+            el(
+              'div',
+              { class: 'mu' },
+              [order.plz, order.str].filter(Boolean).join(' '),
+              // Entfernung vom Standort des Geräts (nur in der Monteur-Liste mit Sortierung „Entfernung“)
+              clickable && sortMode() === 'nah' && distanceText(order) && ' · 📍 ' + distanceText(order)
+            ),
           order.tp && el('div', { class: 'mu' }, 'Techn. Platz: ' + order.tp),
           (order.start || order.ende) &&
             el('div', { class: 'mu' }, 'Termin: ' + [dateDe(order.start), dateDe(order.ende)].filter(Boolean).join(' – ')),
@@ -4332,7 +4508,7 @@
           total = Math.min(filtered.length, LIST_MAX);
         // Karten werden in Portionen gezeichnet (LIST_CHUNK), weitere kommen beim Scrollen dazu: so bleibt das Neuzeichnen auch bei
         // langen Listen schnell. Ändert sich Filter, Suche oder Ansicht, beginnt die Liste wieder mit der ersten Portion.
-        const sig = [teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab, sortMode()].join('|');
+        const sig = [teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab, sortMode(), sortMode() === 'nah' ? geoVer : ''].join('|');
         if (sig !== listSig) {
           listSig = sig;
           listLimit = LIST_CHUNK;
@@ -4342,7 +4518,7 @@
         moreObserver = null;
         const container = el('div', {});
         container.append(
-          el('p', { class: 'mu' }, filtered.length === 1 ? '1 Auftrag' : `${filtered.length} Aufträge`),
+          el('p', { class: 'mu cnt' }, (filtered.length === 1 ? '1 Auftrag' : `${filtered.length} Aufträge`) + geoLine()),
           el(
             'div',
             { class: 'grid', 'data-list': '1' },
@@ -7132,6 +7308,11 @@
         container.append(orderList(view(), false));
         if (uploadMeta)
           app.append(el('p', { class: 'mu' }, 'Stand: ' + new Date(uploadMeta.at).toLocaleString('de-AT')));
+        // Sortierung „Entfernung“ war schon gewählt (App neu gestartet): Standort einmal je Sitzung bestimmen
+        if (sortMode() === 'nah' && !geoAsked) {
+          geoAsked = true;
+          setTimeout(() => locateMe(true), 0);
+        }
       }
 
       // Dispo-Tab „Fortschritt“: Gesamt + je Team

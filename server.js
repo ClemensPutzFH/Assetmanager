@@ -17,6 +17,7 @@
  *   gas       tägliche Bestätigung des Gaswarngeräts je Team (Tag, Team, Uhrzeit, Gerät, Benutzer) – wird nur angefügt, nie geändert
  *   usr       Benutzer der Monteure (SAP-User, Name, Team, Passwort als scrypt-Hash); beim ersten Start aus users.json befüllt
  *   act       Protokoll: wer (Benutzer, Gerät) hat wann was getan (Anmeldung, Ergebnis, Gaswarngerät, Bestätigung, Benutzerverwaltung)
+ *   geo       Koordinaten der Auftragsadressen (PLZ|Straße -> Breite/Länge) für die Sortierung der Monteur-Liste nach Entfernung
  *
  * ZUGRIFFSSTUFEN
  *   offen            Anmeldung (Monteur: SAP-User + Passwort, Disponent: PIN), Nachricht bestätigen, Push-Erneuerung, Standort
@@ -29,7 +30,7 @@
  *   MONTEUR_PASSWORD (Startpasswort aller Monteur-Benutzer, Standard siehe unten) · DB_SYNC=FULL (Festschreiben wie bisher, siehe unten) ·
  *   PORT, HOST · DATA_DIR · TIMEZONE (bestimmt, wann für die Gaswarngerät-Bestätigung ein neuer Tag beginnt) · DISPO_PIN, UPLOAD_PIN (unbedingt ändern!) · NAG_MIN, MSG_HOURS · PUSH_CONTACT, PUSH_HOSTS ·
  *   TRUST_PROXY=1 (hinter Proxy: echte Client-IP) · DB_JOURNAL=DELETE · TLS_CERT + TLS_KEY oder TLS_PFX (+ TLS_PASS) ·
- *   HTTP_REDIRECT_PORT
+ *   HTTP_REDIRECT_PORT · GEOCODER_URL (Nominatim für die Koordinaten der Adressen, Standard OpenStreetMap, "off" = aus), GEOCODER_DELAY_MS
  * ================================================================================================= */
 const http = require('http'),
   https = require('https'),
@@ -123,6 +124,10 @@ CREATE TABLE IF NOT EXISTS usr(sap TEXT PRIMARY KEY, last TEXT NOT NULL, first T
 -- Protokoll: kind = login | login_fail | ergebnis | gas | ack | user_new | user_edit | user_del | user_reset; usr = SAP-User (leer bei Disponent)
 CREATE TABLE IF NOT EXISTS act(id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, usr TEXT, did TEXT, team TEXT, kind TEXT NOT NULL, ref TEXT, info TEXT);
 CREATE INDEX IF NOT EXISTS act_usr ON act(usr, at);
+-- Koordinaten der Auftragsadressen (Sortierung der Monteur-Liste nach Entfernung): k = "PLZ|Straße" genau wie im Auftrag,
+-- q = 'h' Hausnummer gefunden | 's' nur die Straße; lat/lon NULL = nicht gefunden (wird nach 7 Tagen erneut versucht).
+-- Die Nummer id wächst bei jedem Eintrag: Geräte holen mit ?since=<id> nur Neues.
+CREATE TABLE IF NOT EXISTS geo(id INTEGER PRIMARY KEY AUTOINCREMENT, k TEXT NOT NULL UNIQUE, lat REAL, lon REAL, q TEXT, at INTEGER NOT NULL);
 `);
 // Spalte nachrüsten, falls eine ältere Datenbank sie noch nicht hat
 const addColumn = (table, column, type) => {
@@ -286,7 +291,22 @@ const sql = {
   listAct: db.prepare('SELECT at, did, team, kind, ref, info FROM act WHERE usr=? ORDER BY id DESC LIMIT ?'),
   msgState: db.prepare(
     'SELECT closed, at, (SELECT 1 FROM mack a WHERE a.id=msg.id AND a.did=?) ack FROM msg WHERE id=?'
-  )
+  ),
+  // Adressen der Aufträge, für die noch keine Koordinaten da sind (und kein Fehlversuch jünger als `?` ist)
+  geoNext: db.prepare(
+    `SELECT o.plz, o.str FROM orders o WHERE o.del=0 AND COALESCE(o.str,'')<>''
+     AND NOT EXISTS (SELECT 1 FROM geo g WHERE g.k=COALESCE(o.plz,'') || '|' || o.str AND (g.lat IS NOT NULL OR g.at>?))
+     GROUP BY o.plz, o.str LIMIT 1`
+  ),
+  geoOpen: db.prepare(
+    `SELECT COUNT(*) n FROM (SELECT 1 FROM orders o WHERE o.del=0 AND COALESCE(o.str,'')<>''
+     AND NOT EXISTS (SELECT 1 FROM geo g WHERE g.k=COALESCE(o.plz,'') || '|' || o.str AND (g.lat IS NOT NULL OR g.at>?))
+     GROUP BY o.plz, o.str)`
+  ),
+  // REPLACE statt UPDATE: der Eintrag bekommt eine neue Nummer, damit Geräte die Änderung bei ?since= mitbekommen
+  geoSet: db.prepare('INSERT OR REPLACE INTO geo(k,lat,lon,q,at) VALUES(?,?,?,?,?)'),
+  geoSince: db.prepare('SELECT id, k, lat, lon, q FROM geo WHERE id>? AND lat IS NOT NULL ORDER BY id'),
+  geoMax: db.prepare('SELECT MAX(id) m FROM geo')
 };
 // Wert aus der Tabelle meta lesen (JSON) bzw. null
 // Zwischenspeicher: meta wird bei jedem Abgleich gelesen (JSON parsen), ändert sich aber selten
@@ -846,6 +866,108 @@ const orderFields = r => ({
   ende: r.ende
 });
 
+// ---------- Koordinaten der Adressen (Entfernungs-Sortierung der Monteure) ----------
+/**
+ * Die Aufträge haben nur PLZ und Straße. Damit die Monteur-Liste nach Entfernung sortiert werden kann, holt der Server
+ * die Koordinaten im Hintergrund von einem Nominatim-Dienst (Standard: nominatim.openstreetmap.org, höchstens eine Anfrage
+ * pro Sekunde) und merkt sie dauerhaft in der Tabelle `geo` – jede Adresse wird nur einmal abgefragt. Die Geräte holen die
+ * Tabelle über GET /api/geo und rechnen die Entfernung zum eigenen Standort selbst; der Standort verlässt das Gerät nie.
+ * GEOCODER_URL = eigene Nominatim-Adresse, "off" = nichts abfragen (dann gilt nur die Bezirksmitte aus der PLZ);
+ * GEOCODER_DELAY_MS = Pause zwischen zwei Anfragen. Gesendet werden nur Straße und PLZ, keine Namen.
+ */
+const GEOCODER = String(process.env.GEOCODER_URL ?? 'https://nominatim.openstreetmap.org').replace(/\/+$/, ''),
+  GEOCODER_ON = !!GEOCODER && GEOCODER.toLowerCase() !== 'off',
+  GEOCODER_DELAY_MS = process.env.GEOCODER_DELAY_MS === undefined ? 1100 : Math.max(0, +process.env.GEOCODER_DELAY_MS || 0),
+  GEO_RETRY_MS = 7 * 864e5, // nicht gefundene Adressen nach so langer Zeit erneut versuchen
+  GEO_OFFLINE_RETRY_MS = 10 * 60e3; // Dienst nicht erreichbar / gesperrt: nach so langer Zeit weiter
+// „Autokaderstraße 5, 25“ -> { name: 'Autokaderstraße', num: '5' } (nach dem Komma folgen Stiege/Tür, bei „12-14“ zählt die erste Nummer)
+const splitStreet = text => {
+  const first = String(text || '').split(',')[0].trim(),
+    m = /^(.+?)\s+(\d+\s?[A-Za-z]?)(?:\s*[-–/].*)?$/.exec(first);
+  return m ? { name: m[1], num: m[2].replace(/\s/g, '') } : { name: first, num: '' };
+};
+// Liegt der Treffer im erwarteten Gebiet? (1xxx = Wien; sonst Österreich) – schützt vor Treffern am anderen Ende der Welt
+const geoPlausible = (plz, lat, lon) =>
+  /^1\d{3}$/.test(plz)
+    ? lat > 48.1 && lat < 48.35 && lon > 16.17 && lon < 16.59
+    : lat > 46.3 && lat < 49.1 && lon > 9.5 && lon < 17.2;
+// Eine Anfrage an den Dienst: { lat, lon } oder null (nicht gefunden). Wirft bei Netzfehler, Sperre (403/429) und Serverfehlern.
+async function geocodeQuery(plz, street) {
+  const url = new URL(GEOCODER + '/search');
+  url.search = new URLSearchParams({
+    format: 'jsonv2',
+    limit: '1',
+    countrycodes: 'at',
+    street,
+    ...(plz ? { postalcode: plz } : {})
+  });
+  const response = await fetch(url, {
+    headers: { 'User-Agent': `Auftraege-nach-Team/1.0 (${PUSH_CONTACT})`, Accept: 'application/json' },
+    signal: AbortSignal.timeout(15000)
+  });
+  if (response.status === 403 || response.status === 429 || response.status >= 500)
+    throw new Error('HTTP ' + response.status);
+  if (!response.ok) return null;
+  const hit = (await response.json())[0],
+    lat = hit && Number(hit.lat),
+    lon = hit && Number(hit.lon);
+  return hit && geoPlausible(plz, lat, lon) ? { lat: Math.round(lat * 1e5) / 1e5, lon: Math.round(lon * 1e5) / 1e5 } : null;
+}
+// Koordinaten einer Adresse: zuerst mit Hausnummer (q = 'h'), sonst nur die Straße (q = 's'); { lat, lon, q } oder null
+async function geocodeAddress(plz, str) {
+  const { name, num } = splitStreet(str),
+    // „Kürschnergasse S“: ein einzelner Großbuchstabe am Ende gehört nicht zum Straßennamen
+    bare = name.replace(/\s+[A-ZÄÖÜ]$/, ''),
+    tries = [...(num ? [[`${name} ${num}`, 'h']] : []), [name, 's'], ...(bare && bare !== name ? [[bare, 's']] : [])];
+  for (const [i, [street, q]] of tries.entries()) {
+    if (i) await new Promise(resolve => setTimeout(resolve, GEOCODER_DELAY_MS)); // zwischen zwei Anfragen die Pause einhalten
+    const hit = await geocodeQuery(plz, street);
+    if (hit) return { ...hit, q };
+  }
+  return null;
+}
+let geoBusy = false,
+  geoTimer = null;
+// Startet (nach `delay` ms) das Abarbeiten der offenen Adressen – ruft man es mehrfach auf, läuft immer nur eines
+function geocodeKick(delay = 0) {
+  if (!GEOCODER_ON || geoBusy || geoTimer) return;
+  geoTimer = setTimeout(() => {
+    geoTimer = null;
+    geocodeRun();
+  }, delay);
+  geoTimer.unref();
+}
+async function geocodeRun() {
+  if (geoBusy) return;
+  geoBusy = true;
+  let retryIn = 0,
+    done = 0;
+  try {
+    for (;;) {
+      const row = sql.geoNext.get(Date.now() - GEO_RETRY_MS);
+      if (!row) break;
+      let found;
+      try {
+        found = await geocodeAddress(row.plz || '', row.str);
+      } catch (e) {
+        console.error('Koordinaten der Adressen: Dienst nicht erreichbar –', e.message, '(neuer Versuch in 10 Minuten)');
+        retryIn = GEO_OFFLINE_RETRY_MS;
+        break;
+      }
+      sql.geoSet.run((row.plz || '') + '|' + row.str, found ? found.lat : null, found ? found.lon : null, found ? found.q : null, Date.now());
+      done++;
+      await new Promise(resolve => setTimeout(resolve, GEOCODER_DELAY_MS));
+    }
+  } catch (e) {
+    console.error('Koordinaten der Adressen:', e.message);
+    retryIn = GEO_OFFLINE_RETRY_MS;
+  } finally {
+    geoBusy = false;
+  }
+  if (done) console.log(`Koordinaten der Adressen: ${done} neu ermittelt.`);
+  if (retryIn) geocodeKick(retryIn);
+}
+
 // ---------- API ----------
 /**
  * Alle Aufrufe unter /api/. Reihenfolge = Zugriffsstufen: zuerst offene Aufrufe (Anmeldung, Abgleich, Prüfobjekte,
@@ -1020,6 +1142,21 @@ async function handleApi(req, res, url) {
       .all(clipString(params.get('team'), 100), Date.now() - 7 * 864e5, user.sap)
       .map(r => ({ sap: r.sap, name: r.name, team: r.team, here: !!r.here }));
     return sendJson(req, res, 200, { list });
+  }
+  // Koordinaten der Auftragsadressen für die Entfernungs-Sortierung: ?since=<n> liefert nur Neueres. Antwort: n = größte Nummer
+  // (beim nächsten Aufruf als since), full = Gerät muss seine Liste ersetzen (Datenbank wurde ersetzt), items = [[PLZ|Straße, lat, lon, q]],
+  // open = Adressen, die noch auf ihre Koordinaten warten (die Geräte rechnen dafür vorerst mit der Bezirksmitte)
+  if (pathname === '/api/geo' && method === 'GET') {
+    if (!isDispo(req) && !userFromRequest(req)) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
+    const max = sql.geoMax.get().m || 0,
+      full = (+params.get('since') || 0) > max,
+      since = full ? 0 : +params.get('since') || 0;
+    return sendJson(req, res, 200, {
+      n: max,
+      ...(full ? { full: true } : {}),
+      items: sql.geoSince.all(since).map(r => [r.k, r.lat, r.lon, r.q]),
+      open: GEOCODER_ON ? sql.geoOpen.get(Date.now() - GEO_RETRY_MS).n : 0
+    });
   }
   // Prüfobjekte lesen: ?a=<Auftrag> liefert eine Liste, ?team=<Team>&since=<Nr> alle geänderten Listen des Teams
   if (pathname === '/api/pruef' && method === 'GET') {
@@ -1527,6 +1664,7 @@ async function handleApi(req, res, url) {
       catalogVer++;
     });
     announce(changeSeq);
+    geocodeKick(); // neue Adressen im Hintergrund in Koordinaten umwandeln
     return sendJson(req, res, 200, { ok: true });
   }
   if (pathname === '/api/orders' && method === 'DELETE') {
@@ -1709,6 +1847,7 @@ server.listen(PORT, HOST, () =>
     `Läuft auf ${TLS ? 'https' : 'http'}://localhost:${PORT}  (Daten: ${path.join(DATA_DIR, 'data.db')}, ${JOURNAL}/synchronous=${SYNCHRONOUS}, ${db.prepare('PRAGMA synchronous').get().synchronous === 1 ? 'NORMAL aktiv' : 'FULL aktiv'})`
   )
 );
+geocodeKick(2000); // Adressen, für die noch Koordinaten fehlen (z. B. nach dem ersten Start oder Neustart während der Abfrage)
 if (TLS) {
   // erneuertes Zertifikat (z. B. Let's Encrypt, IT) ohne Neustart übernehmen: stündlich prüfen
   const stamp = () =>

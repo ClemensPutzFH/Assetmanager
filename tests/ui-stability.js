@@ -13,7 +13,8 @@
  *     laufen über mehrere Bilder und zählen nicht. (Bei Schrift- und Ansichtswechseln ändert sich absichtlich alles: reflow.)
  *   · Die Seite wird nie breiter als der Bildschirm (sonst lässt sie sich seitlich verschieben und wackelt).
  *   · Keine JavaScript-Fehler.
- * Dazu Einzelprüfungen (Dunkelmodus, Suche, Scroll-Stelle bleibt erhalten, Formulare erscheinen sichtbar, Live-Update).
+ * Dazu Einzelprüfungen (Dunkelmodus, Suche, Scroll-Stelle bleibt erhalten, Formulare erscheinen sichtbar, Live-Update,
+ * Sortierung nach Entfernung mit Test-Standort und einem Mini-Geocoder statt des echten Nominatim-Dienstes).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
  * ================================================================================================= */
@@ -59,15 +60,38 @@ const freePort = () =>
     });
   });
 
+// ---------- Mini-Geocoder (ersetzt Nominatim): Koordinaten = Bezirksmitte + fester Versatz je Straße ----------
+// Der Server fragt ihn nach den Adressen der Aufträge; „Unbekannt“ und U-Bahn/Haltestellen findet er nicht (dann gilt die Bezirksmitte).
+const TEST_POS = { latitude: 48.283, longitude: 16.4 }; // Standort des Test-Geräts: Mitte von Floridsdorf (1210)
+const CENTERS = { 1010: [48.2082, 16.373], 1020: [48.217, 16.4], 1030: [48.198, 16.4], 1040: [48.192, 16.369], 1050: [48.188, 16.356], 1060: [48.196, 16.348], 1070: [48.203, 16.348], 1080: [48.211, 16.343], 1090: [48.226, 16.356], 1100: [48.162, 16.378], 1110: [48.169, 16.44], 1120: [48.174, 16.332], 1130: [48.185, 16.29], 1140: [48.201, 16.276], 1150: [48.196, 16.327], 1160: [48.214, 16.307], 1170: [48.233, 16.3], 1180: [48.233, 16.331], 1190: [48.253, 16.345], 1200: [48.24, 16.378], 1210: [48.28, 16.4], 1220: [48.235, 16.475], 1230: [48.138, 16.29] };
+async function startGeocoder() {
+  const http = require('http'),
+    crypto = require('crypto');
+  let requests = 0;
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x'),
+      street = u.searchParams.get('street') || '',
+      plz = u.searchParams.get('postalcode') || '',
+      c = CENTERS[plz] || [48.2, 16.37],
+      h = crypto.createHash('md5').update(street).digest();
+    requests++;
+    const found = !/Haltestelle|U-Bahn/.test(street);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(found ? [{ lat: String(c[0] + (h[0] / 255 - 0.5) * 0.02), lon: String(c[1] + (h[1] / 255 - 0.5) * 0.03) }] : []));
+  });
+  await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve));
+  return { url: 'http://127.0.0.1:' + srv.address().port, requests: () => requests, stop: () => srv.close() };
+}
+
 // ---------- Server mit Kopie der Daten ----------
-async function startServer() {
+async function startServer(geocoderUrl) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-test-')),
     port = await freePort();
   for (const f of ['data.db', 'data.db-wal', 'data.db-shm'])
     if (fs.existsSync(path.join(ROOT, 'data', f))) fs.copyFileSync(path.join(ROOT, 'data', f), path.join(dir, f));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: dir, DISPO_PIN, UPLOAD_PIN: '1025', MONTEUR_PASSWORD: MONTEUR.password },
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: dir, DISPO_PIN, UPLOAD_PIN: '1025', MONTEUR_PASSWORD: MONTEUR.password, GEOCODER_URL: geocoderUrl, GEOCODER_DELAY_MS: '1' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   await new Promise((resolve, reject) => {
@@ -76,6 +100,16 @@ async function startServer() {
     child.on('exit', c => reject(new Error('Server beendet (' + c + ')')));
   });
   return { port, dir, stop: () => (child.kill(), fs.rmSync(dir, { recursive: true, force: true })) };
+}
+// wartet, bis der Server alle Adressen der Aufträge in Koordinaten umgewandelt hat (sonst hängt die Entfernungs-Prüfung vom Zufall ab)
+async function waitForCoordinates(base) {
+  const login = await (await fetch(base + '/api/user/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: MONTEUR.user, password: MONTEUR.password }) })).json();
+  for (let i = 0; i < 120; i++) {
+    const geo = await (await fetch(base + '/api/geo?since=0', { headers: { 'X-User-Token': login.token } })).json();
+    if (geo.items.length && !geo.open) return geo.items.length;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  throw new Error('Server hat die Adressen nicht in Koordinaten umgewandelt');
 }
 
 // ---------- Messung ----------
@@ -238,11 +272,19 @@ const nthBtn = (re, n) => `() => { const b = [...document.querySelectorAll('#app
 const pause = (page, ms = 500) => page.waitForTimeout(ms);
 
 // ---------- Anmeldung ----------
-async function newPage(browser, base, viewport, errorsOut) {
+async function newPage(browser, base, viewport, errorsOut, { geolocation = true, denyLocation = false } = {}) {
   const mobile = viewport.width < 700,
-    ctx = await browser.newContext({ viewport, hasTouch: mobile, isMobile: mobile, deviceScaleFactor: 2 }),
+    ctx = await browser.newContext({
+      viewport,
+      hasTouch: mobile,
+      isMobile: mobile,
+      deviceScaleFactor: 2,
+      ...(geolocation ? { permissions: ['geolocation'], geolocation: TEST_POS } : {})
+    }),
     page = await ctx.newPage();
   page.on('pageerror', e => errorsOut.push(e.message));
+  // Ablehnung nachstellen: das Test-Chromium fragt nie, es würde endlos warten
+  if (denyLocation) await page.addInitScript(() => { navigator.geolocation.getCurrentPosition = (ok, fail) => setTimeout(() => fail({ code: 1 }), 80); });
   await page.goto(base);
   await pause(page, 600);
   return page;
@@ -287,6 +329,50 @@ async function openOrderWithItems(page) {
 // ================================================================================================
 // Prüfungen
 // ================================================================================================
+// liest aus der Liste die Entfernungen („350 m“, „1,2 km“, „ca. 3 km“) in Anzeigereihenfolge
+const readDistances = page =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('#app [data-list] > [data-k]')].map(card => {
+      const m = /📍 (ca\. )?([\d.,]+) (m|km)/.exec(card.textContent);
+      return { k: card.dataset.k, km: m ? parseFloat(m[2].replace(/\./g, '').replace(',', '.')) / (m[3] === 'm' ? 1000 : 1) : null, rough: !!(m && m[1]) };
+    })
+  );
+// Sortierung nach Entfernung (Standort des Test-Geräts: Floridsdorf): der Knopf bleibt stehen, nächste Aufträge zuerst, Zeile über der Liste bleibt einzeilig
+async function distanceChecks(page, label) {
+  const countBox = () => page.evaluate(() => { const n = document.querySelector('#app .cnt'); return n ? { h: Math.round(n.getBoundingClientRect().height), text: n.textContent } : null; });
+  const nrOrder = (await readDistances(page)).map(c => c.k);
+  const before = await countBox();
+  await probe(page, `${label} Liste: Sortierung Entfernung`, btn('/^Entfernung$/'), { at: 300, ms: 1600 });
+  const after = await countBox();
+  report(!!after && /Standort von \d\d:\d\d Uhr/.test(after.text), `${label} Entfernung: Zeile über der Liste nennt den Standort`, after && after.text);
+  report(!!before && !!after && before.h === after.h, `${label} Entfernung: Zeile über der Liste bleibt gleich hoch`, `${before && before.h} → ${after && after.h} px`);
+  const list = await readDistances(page),
+    km = list.filter(c => c.km != null && !c.rough).map(c => c.km); // „ca.“ (nur Bezirksmitte, ganze km) nicht mitzählen: gerundet kann es vor genaueren Werten stehen
+  report(km.length >= 10, `${label} Entfernung: Karten zeigen die Entfernung`, `${km.length} von ${list.length} Karten`);
+  report(km.every((v, i) => i === 0 || v >= km[i - 1]), `${label} Entfernung: nächste Aufträge stehen oben`, km.slice(0, 6).join(' · ') + ' … ' + km.slice(-2).join(' · ') + ' km');
+  report(list.map(c => c.k).join() !== nrOrder.join(), `${label} Entfernung: Reihenfolge unterscheidet sich von der Auftragsnummer`);
+  // erneut antippen = Standort neu bestimmen (Liste bleibt dabei ruhig)
+  await probe(page, `${label} Liste: Entfernung erneut antippen (Standort neu)`, btn('/^Entfernung$/'), { at: 300, ms: 1200 });
+  await probe(page, `${label} Liste: Sortierung Auftragsnummer (nach Entfernung)`, btn('/^Auftragsnummer$/'), { at: 300 });
+  const back = await readDistances(page);
+  report(back.every(c => c.km == null) && back.map(c => c.k).join() === nrOrder.join(), `${label} Entfernung: zurück zur Auftragsnummer stellt Reihenfolge und Karten wieder her`);
+}
+// Standort nicht erlaubt: Hinweis statt Absturz, Liste bleibt nach Auftragsnummer, nichts springt
+async function noLocationChecks(browser, base, errors) {
+  console.log('\n=== Entfernung ohne Standort-Erlaubnis ===');
+  const page = await newPage(browser, base, { width: 390, height: 844 }, errors, { geolocation: false, denyLocation: true });
+  await loginMonteur(page);
+  const nrOrder = (await readDistances(page)).map(c => c.k);
+  await probe(page, 'Entfernung ohne Erlaubnis: Knopf bleibt stehen', btn('/^Entfernung$/'), { at: 300, ms: 1800 });
+  const info = await page.evaluate(() => ({ cnt: document.querySelector('#app .cnt').textContent, toast: document.querySelector('.toast').classList.contains('on') }));
+  report(/kein Standort/.test(info.cnt), 'Entfernung ohne Erlaubnis: Zeile nennt „kein Standort“', info.cnt);
+  report(info.toast, 'Entfernung ohne Erlaubnis: Kurzmeldung erscheint');
+  const now = await readDistances(page);
+  report(now.map(c => c.k).join() === nrOrder.join() && now.every(c => c.km == null), 'Entfernung ohne Erlaubnis: Liste bleibt nach Auftragsnummer');
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => b.textContent === 'Auftragsnummer').click());
+  await page.context().close();
+}
+
 async function monteurChecks(browser, base, viewport, errors) {
   const label = `${viewport.width}px`,
     page = await newPage(browser, base, viewport, errors);
@@ -306,6 +392,7 @@ async function monteurChecks(browser, base, viewport, errors) {
     await probe(page, `${label} Liste: Filter „${f}“`, btn(`/^${f}/`), { at: 300 });
   await probe(page, `${label} Liste: Sortierung Termin`, btn('/^Termin$/'), { at: 300 });
   await probe(page, `${label} Liste: Sortierung Auftragsnummer`, btn('/^Auftragsnummer$/'), { at: 300 });
+  await distanceChecks(page, label);
 
   // Schriftgröße: der angetippte Knopf bleibt unter dem Finger – ganz oben und weiter unten, rauf und runter
   await probe(page, `${label} Schrift: A+ ganz oben`, btn('/^A\\+$/'), { scroll: 0, reflow: true });
@@ -478,6 +565,12 @@ async function overflowChecks(browser, base, errors) {
     page.evaluate(() => [...document.querySelectorAll('#app *')].filter(n => n.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && !n.closest('.tabs') && getComputedStyle(n).position !== 'fixed').map(n => n.tagName + '.' + n.className + '"' + n.textContent.trim().slice(0, 20) + '"').slice(0, 3));
   let w = await wide();
   report(!w.length, 'Liste ragt nicht über den Rand', w.join(', '));
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => b.textContent === 'Entfernung').click());
+  await pause(page, 1500);
+  w = await wide();
+  report(!w.length, 'Liste mit Entfernung ragt nicht über den Rand', w.join(', '));
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => b.textContent === 'Auftragsnummer').click());
+  await pause(page, 500);
   await openOrderWithItems(page);
   w = await wide();
   report(!w.length, 'Auftragsansicht ragt nicht über den Rand', w.join(', '));
@@ -487,13 +580,17 @@ async function overflowChecks(browser, base, errors) {
 // ================================================================================================
 (async () => {
   const pw = loadPlaywright(),
-    server = await startServer(),
+    geocoder = await startGeocoder(),
+    server = await startServer(geocoder.url),
     base = 'http://127.0.0.1:' + server.port,
     errors = [];
   const browser = await pw.chromium.launch({ executablePath: findChrome() });
   const t0 = Date.now();
   try {
+    const found = await waitForCoordinates(base);
+    console.log(`Adressen mit Koordinaten: ${found} (Mini-Geocoder: ${geocoder.requests()} Anfragen)`);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
+    await noLocationChecks(browser, base, errors);
     await dispoChecks(browser, base, { width: 390, height: 844 }, errors);
     await overflowChecks(browser, base, errors);
     // Desktop (breit): dieselben Grundabläufe
@@ -502,6 +599,7 @@ async function overflowChecks(browser, base, errors) {
   } finally {
     await browser.close();
     server.stop();
+    geocoder.stop();
   }
   console.log(`\n${failures.length ? 'FEHLGESCHLAGEN' : 'BESTANDEN'}: ${passed} Prüfungen ok, ${failures.length} Fehler (${Math.round((Date.now() - t0) / 1000)} s)`);
   for (const f of failures) console.log('  ✗ ' + f);
