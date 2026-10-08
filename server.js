@@ -30,7 +30,9 @@
  *   MONTEUR_PASSWORD (Startpasswort aller Monteur-Benutzer, Standard siehe unten) · DB_SYNC=FULL (Festschreiben wie bisher, siehe unten) ·
  *   PORT, HOST · DATA_DIR · TIMEZONE (bestimmt, wann für die Gaswarngerät-Bestätigung ein neuer Tag beginnt) · DISPO_PIN, UPLOAD_PIN (unbedingt ändern!) · NAG_MIN, MSG_HOURS · PUSH_CONTACT, PUSH_HOSTS ·
  *   TRUST_PROXY=1 (hinter Proxy: echte Client-IP) · DB_JOURNAL=DELETE · TLS_CERT + TLS_KEY oder TLS_PFX (+ TLS_PASS) ·
- *   HTTP_REDIRECT_PORT · GEOCODER_URL (Nominatim für die Koordinaten der Adressen, Standard OpenStreetMap, "off" = aus), GEOCODER_DELAY_MS
+ *   HTTP_REDIRECT_PORT · Koordinaten der Adressen: GEOCODER_WIEN_URL (Adressdienst der Stadt Wien, Standard data.wien.gv.at, "off" = nicht
+ *   verwenden), GEOCODER_URL (Nominatim, Standard OpenStreetMap; "wien" = nur der Wiener Dienst, "off" = gar nichts abfragen),
+ *   GEOCODER_CONTACT (Kontaktadresse für Nominatim, sonst PUSH_CONTACT), GEOCODER_DELAY_MS
  * ================================================================================================= */
 const http = require('http'),
   https = require('https'),
@@ -871,21 +873,35 @@ const orderFields = r => ({
 
 // ---------- Koordinaten der Adressen (Entfernungs-Sortierung der Monteure) ----------
 /**
- * Die Aufträge haben nur PLZ und Straße. Damit die Monteur-Liste nach Entfernung sortiert werden kann, holt der Server
- * die Koordinaten im Hintergrund von einem Nominatim-Dienst (Standard: nominatim.openstreetmap.org, höchstens eine Anfrage
- * pro Sekunde) und merkt sie dauerhaft in der Tabelle `geo` – jede Adresse wird nur einmal abgefragt. Die Geräte holen die
- * Tabelle über GET /api/geo und rechnen die Entfernung zum eigenen Standort selbst; der Standort verlässt das Gerät nie.
- * GEOCODER_URL = eigene Nominatim-Adresse, "off" = nichts abfragen (dann gilt nur die Bezirksmitte aus der PLZ);
- * GEOCODER_DELAY_MS = Pause zwischen zwei Anfragen. Gesendet werden nur Straße und PLZ, keine Namen.
+ * Die Aufträge haben nur PLZ und Straße. Damit die Monteur-Liste nach Entfernung sortiert werden kann, wandelt der Server jede
+ * Adresse einmal im Hintergrund in Koordinaten um und merkt sie dauerhaft in der Tabelle `geo`. Die Geräte holen die Tabelle über
+ * GET /api/geo und rechnen die Entfernung zum eigenen Standort selbst; der Standort verlässt das Gerät nie. Gesendet werden nur
+ * Straße (mit Hausnummer) und PLZ, keine Namen.
+ * Quellen (in dieser Reihenfolge, eine gesperrte oder gestörte wird 10 Minuten übersprungen):
+ *   1. „Wien“: der Adressdienst der Stadt Wien (data.wien.gv.at, amtliche Hauskoordinaten, nur für Wiener PLZ 1xxx) – kein Schlüssel,
+ *      für viele Adressen gedacht. GEOCODER_WIEN_URL = andere Adresse, "off" = nicht verwenden.
+ *   2. „Nominatim“ (OpenStreetMap): GEOCODER_URL = eigene Instanz, Standard nominatim.openstreetmap.org. Der öffentliche Dienst sperrt
+ *      (HTTP 403) Server, die viele Adressen auf einmal abfragen oder sich nicht mit echter Kontaktadresse melden (GEOCODER_CONTACT,
+ *      sonst PUSH_CONTACT). GEOCODER_URL=wien: nur Quelle 1 · GEOCODER_URL=off: gar nichts abfragen (dann gilt die Bezirksmitte).
+ * GEOCODER_DELAY_MS = Pause zwischen zwei Anfragen an Nominatim (Standard 1100, der öffentliche Dienst erlaubt eine pro Sekunde).
  * Reihenfolge: Die Adressen der Teams, deren Geräte gerade „Entfernung“ nutzen (GET /api/geo?team=…), kommen zuerst an die Reihe –
- * sonst müsste ein Team in 1210/1220 warten, bis alle Bezirke davor fertig sind (rund 1000 Adressen brauchen etwa 20 Minuten).
+ * sonst müsste ein Team in 1210/1220 warten, bis alle Bezirke davor fertig sind.
  * Bis die Koordinaten da sind, rechnen die Geräte mit der Bezirksmitte (dann haben fast alle Aufträge eines Teams dieselbe Entfernung).
  */
 const GEOCODER = String(process.env.GEOCODER_URL ?? 'https://nominatim.openstreetmap.org').replace(/\/+$/, ''),
-  GEOCODER_ON = !!GEOCODER && GEOCODER.toLowerCase() !== 'off',
+  GEOCODER_ALL_OFF = GEOCODER.toLowerCase() === 'off' || GEOCODER === '',
+  NOMINATIM_ON = !GEOCODER_ALL_OFF && GEOCODER.toLowerCase() !== 'wien',
+  WIEN_URL = String(process.env.GEOCODER_WIEN_URL ?? 'https://data.wien.gv.at/daten/OGDAddressService.svc/GetAddressInfo'),
+  WIEN_ON = !GEOCODER_ALL_OFF && WIEN_URL.toLowerCase() !== 'off' && WIEN_URL !== '',
+  GEOCODER_ON = NOMINATIM_ON || WIEN_ON,
+  GEOCODER_CONTACT = process.env.GEOCODER_CONTACT || PUSH_CONTACT,
   GEOCODER_DELAY_MS = process.env.GEOCODER_DELAY_MS === undefined ? 1100 : Math.max(0, +process.env.GEOCODER_DELAY_MS || 0),
   GEO_RETRY_MS = 7 * 864e5, // nicht gefundene Adressen nach so langer Zeit erneut versuchen
-  GEO_OFFLINE_RETRY_MS = 10 * 60e3; // Dienst nicht erreichbar / gesperrt: nach so langer Zeit weiter
+  GEO_OFFLINE_RETRY_MS = 10 * 60e3; // Quelle nicht erreichbar / gesperrt: nach so langer Zeit wieder probieren
+if (NOMINATIM_ON && /example\.(com|org)/i.test(GEOCODER_CONTACT))
+  console.warn(
+    'Hinweis: PUSH_CONTACT/GEOCODER_CONTACT ist noch die Platzhalteradresse – der öffentliche Nominatim-Dienst sperrt Anfragen ohne echte Kontaktadresse (HTTP 403). Bitte eine echte Adresse setzen.'
+  );
 // GEO_EPOCH: Stand der Koordinaten-Tabelle. Koordinaten, die vor der Prüfung auf zu grobe Treffer gespeichert wurden (Epoche 1), können
 // ein ganzes PLZ-Gebiet statt der Straße sein (dann hätten alle Aufträge der PLZ dieselbe Entfernung): sie werden einmal verworfen und
 // neu ermittelt. Geräte mit einer anderen Epoche ersetzen ihren Zwischenspeicher (GET /api/geo liefert dann `full`).
@@ -896,7 +912,7 @@ if (getMeta('geoq') !== GEO_EPOCH) {
   if (n) console.log(`Koordinaten der Adressen: ${n} früher gespeicherte werden neu ermittelt (strengere Prüfung).`);
 }
 // geoWanted: Team -> Zeitpunkt, zu dem ein Gerät zuletzt Entfernungen dieses Teams brauchte (eine Stunde lang bevorzugt) ·
-// geoError: letzter Fehler des Dienstes ('' = in Ordnung) · geoTriedAt: Zeitpunkt der letzten Abfrage
+// geoError: letzter Fehler ('' = in Ordnung; nur wenn gar keine Quelle antwortet) · geoTriedAt: Zeitpunkt der letzten Abfrage
 const geoWanted = new Map();
 let geoError = '',
   geoTriedAt = 0;
@@ -906,33 +922,90 @@ const geoWantedJson = () => {
 };
 // „fetch failed (ENOTFOUND)“ statt nur „fetch failed“: Node versteckt die eigentliche Ursache in `cause`
 const geoReason = e => (e && e.cause ? `${e.message} (${e.cause.code || e.cause.message})` : (e && e.message) || String(e));
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// Anfang der Antwort bei einem Fehler (zeigt, ob der Dienst selbst oder eine Firewall/ein Proxy dahintersteckt)
+const bodySnippet = async response => {
+  const text = await response.text().catch(() => '');
+  return text ? ' – ' + text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100) : '';
+};
 // „Autokaderstraße 5, 25“ -> { name: 'Autokaderstraße', num: '5' } (nach dem Komma folgen Stiege/Tür, bei „12-14“ zählt die erste Nummer)
 const splitStreet = text => {
   const first = String(text || '').split(',')[0].trim(),
     m = /^(.+?)\s+(\d+\s?[A-Za-z]?)(?:\s*[-–/].*)?$/.exec(first);
   return m ? { name: m[1], num: m[2].replace(/\s/g, '') } : { name: first, num: '' };
 };
+// „Straße“ -> „Strasse“ (der Wiener Adressdienst nimmt auch Schreibweisen ohne Sonderzeichen)
+const asciiOf = text => text.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/Ä/g, 'Ae').replace(/Ö/g, 'Oe').replace(/Ü/g, 'Ue').replace(/ß/g, 'ss');
 // Liegt der Treffer im erwarteten Gebiet? (1xxx = Wien; sonst Österreich) – schützt vor Treffern am anderen Ende der Welt
 const geoPlausible = (plz, lat, lon) =>
   /^1\d{3}$/.test(plz)
     ? lat > 48.1 && lat < 48.35 && lon > 16.17 && lon < 16.59
     : lat > 46.3 && lat < 49.1 && lon > 9.5 && lon < 17.2;
-// Eine Anfrage an den Dienst: { lat, lon } oder null (nicht gefunden). Wirft bei Netzfehler, Sperre (403/429) und Serverfehlern.
-async function geocodeQuery(plz, street) {
+// ungefähre Mitte der Wiener Bezirke nach PLZ (wie PLZ_CENTER in index.html): wählt unter mehreren gleichnamigen Straßen die des Bezirks
+const PLZ_CENTER = {
+  1010: [48.2082, 16.373], 1020: [48.217, 16.4], 1030: [48.198, 16.4], 1040: [48.192, 16.369], 1050: [48.188, 16.356],
+  1060: [48.196, 16.348], 1070: [48.203, 16.348], 1080: [48.211, 16.343], 1090: [48.226, 16.356], 1100: [48.162, 16.378],
+  1110: [48.169, 16.44], 1120: [48.174, 16.332], 1130: [48.185, 16.29], 1140: [48.201, 16.276], 1150: [48.196, 16.327],
+  1160: [48.214, 16.307], 1170: [48.233, 16.3], 1180: [48.233, 16.331], 1190: [48.253, 16.345], 1200: [48.24, 16.378],
+  1210: [48.28, 16.4], 1220: [48.235, 16.475], 1230: [48.138, 16.29]
+};
+const distKm = (lat1, lon1, lat2, lon2) => {
+  const rad = Math.PI / 180,
+    a = Math.sin(((lat2 - lat1) * rad) / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lon2 - lon1) * rad) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(a));
+};
+// alle Koordinatenpaare einer GeoJSON-Geometrie (Punkt, Linie, Fläche …) als Liste von [x, y]
+const coordPairs = c =>
+  Array.isArray(c) && typeof c[0] === 'number' && typeof c[1] === 'number' ? [c] : Array.isArray(c) ? c.flatMap(coordPairs) : [];
+// Quelle 1: Adressdienst der Stadt Wien. { lat, lon } oder null (nicht gefunden); wirft bei Fehlern und unerwartetem Format.
+// Der Dienst kennt keine PLZ: gibt es die Straße in mehreren Bezirken, zählt der Treffer, der der Bezirksmitte der PLZ am nächsten liegt.
+// Die Achsenreihenfolge (Länge/Breite oder Breite/Länge) wird an den Werten erkannt, eine Fläche (Straße ohne Nummer) durch ihre Mitte ersetzt.
+async function wienQuery(plz, street) {
+  const url = new URL(WIEN_URL);
+  url.search = new URLSearchParams({ crs: 'EPSG:4326', Address: street });
+  const response = await fetch(url, {
+    headers: { 'User-Agent': `Auftraege-nach-Team/1.0 (${GEOCODER_CONTACT})`, Accept: 'application/json' },
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!response.ok) throw new Error('HTTP ' + response.status + (await bodySnippet(response)));
+  const data = await response.json();
+  if (!data || !Array.isArray(data.features)) throw new Error('unerwartete Antwort (kein GeoJSON)');
+  const centre = PLZ_CENTER[plz],
+    candidates = [];
+  for (const feature of data.features) {
+    const pairs = coordPairs(feature && feature.geometry && feature.geometry.coordinates);
+    if (!pairs.length) continue;
+    let [x, y] = [pairs.reduce((n, c) => n + c[0], 0) / pairs.length, pairs.reduce((n, c) => n + c[1], 0) / pairs.length];
+    if (x > 47 && y < 17) [x, y] = [y, x]; // Breite/Länge statt Länge/Breite
+    if (geoPlausible(plz, y, x)) candidates.push({ lat: y, lon: x });
+  }
+  if (data.features.length && !candidates.length && data.features.some(f => f && f.geometry && coordPairs(f.geometry.coordinates).length))
+    return null; // Treffer außerhalb von Wien: nicht brauchbar
+  if (data.features.length && !data.features.some(f => f && f.geometry))
+    throw new Error('unerwartete Antwort (Treffer ohne Koordinaten)');
+  if (!candidates.length) return null;
+  candidates.sort((p, q) => (centre ? distKm(p.lat, p.lon, centre[0], centre[1]) - distKm(q.lat, q.lon, centre[0], centre[1]) : 0));
+  const best = candidates[0];
+  if (centre && distKm(best.lat, best.lon, centre[0], centre[1]) > 9) return null; // liegt nicht im Bezirk dieser PLZ
+  return { lat: Math.round(best.lat * 1e5) / 1e5, lon: Math.round(best.lon * 1e5) / 1e5, rank: 0 };
+}
+// Quelle 2: Nominatim. { lat, lon, rank } oder null (nicht gefunden). Wirft bei Netzfehler, Sperre (403/429) und Serverfehlern.
+async function nominatimQuery(plz, street) {
   const url = new URL(GEOCODER + '/search');
   url.search = new URLSearchParams({
     format: 'jsonv2',
     limit: '1',
     countrycodes: 'at',
     street,
-    ...(plz ? { postalcode: plz } : {})
+    ...(plz ? { postalcode: plz } : {}),
+    ...(/^mailto:/i.test(GEOCODER_CONTACT) ? { email: GEOCODER_CONTACT.replace(/^mailto:/i, '') } : {})
   });
   const response = await fetch(url, {
-    headers: { 'User-Agent': `Auftraege-nach-Team/1.0 (${PUSH_CONTACT})`, Accept: 'application/json' },
+    headers: { 'User-Agent': `Auftraege-nach-Team/1.0 (${GEOCODER_CONTACT})`, Accept: 'application/json' },
     signal: AbortSignal.timeout(15000)
   });
   if (response.status === 403 || response.status === 429 || response.status >= 500)
-    throw new Error('HTTP ' + response.status);
+    throw new Error('HTTP ' + response.status + (await bodySnippet(response)));
   if (!response.ok) return null;
   const hit = (await response.json())[0],
     lat = hit && Number(hit.lat),
@@ -943,18 +1016,69 @@ async function geocodeQuery(plz, street) {
   if (!hit || !geoPlausible(plz, lat, lon) || rank < 26) return null;
   return { lat: Math.round(lat * 1e5) / 1e5, lon: Math.round(lon * 1e5) / 1e5, rank: rank || 0 };
 }
-// Koordinaten einer Adresse: zuerst mit Hausnummer (q = 'h'), sonst nur die Straße (q = 's'); { lat, lon, q } oder null
-async function geocodeAddress(plz, str) {
+// Die Quellen: on = eingeschaltet, applies = gilt für diese PLZ, delay = Pause zwischen zwei Anfragen, ascii = auch ohne Sonderzeichen
+// probieren, blockedUntil = bis dahin gesperrt/gestört (wird übersprungen), error = letzter Fehler
+const geoSources = [
+  { name: 'Wien', on: WIEN_ON, applies: plz => /^1\d{3}$/.test(plz), delay: Math.min(GEOCODER_DELAY_MS, 300), ascii: true, preferAscii: false, query: wienQuery, blockedUntil: 0, error: '' },
+  { name: 'Nominatim', on: NOMINATIM_ON, applies: () => true, delay: GEOCODER_DELAY_MS, ascii: false, query: nominatimQuery, blockedUntil: 0, error: '' }
+];
+// Koordinaten einer Adresse bei einer Quelle: zuerst mit Hausnummer (q = 'h'), sonst nur die Straße (q = 's'); { lat, lon, q } oder null
+async function lookupAt(source, plz, str) {
   const { name, num } = splitStreet(str),
     // „Kürschnergasse S“: ein einzelner Großbuchstabe am Ende gehört nicht zum Straßennamen
     bare = name.replace(/\s+[A-ZÄÖÜ]$/, ''),
-    tries = [...(num ? [[`${name} ${num}`, 'h']] : []), [name, 's'], ...(bare && bare !== name ? [[bare, 's']] : [])];
-  for (const [i, [street, q]] of tries.entries()) {
-    if (i) await new Promise(resolve => setTimeout(resolve, GEOCODER_DELAY_MS)); // zwischen zwei Anfragen die Pause einhalten
-    const hit = await geocodeQuery(plz, street);
-    if (hit) return { lat: hit.lat, lon: hit.lon, q: hit.rank ? (hit.rank >= 28 ? 'h' : 's') : q }; // q nach dem, was der Dienst wirklich fand
+    base = [...(num ? [[`${name} ${num}`, 'h']] : []), [name, 's'], ...(bare && bare !== name ? [[bare, 's']] : [])],
+    // Straßen mit Sonderzeichen (ä, ö, ü, ß): auch ohne probieren, und zwar zuerst die Schreibweise, die dieser Dienst zuletzt angenommen hat
+    tries = base.flatMap(([street, q]) => {
+      const plain = { street, q, ascii: false, pair: false };
+      if (!source.ascii || asciiOf(street) === street) return [plain];
+      const other = { street: asciiOf(street), q, ascii: true, pair: true };
+      plain.pair = true;
+      return source.preferAscii ? [other, plain] : [plain, other];
+    });
+  for (const [i, t] of tries.entries()) {
+    if (i) await sleep(source.delay); // zwischen zwei Anfragen die Pause einhalten
+    const hit = await source.query(plz, t.street);
+    if (hit) {
+      if (t.pair) source.preferAscii = t.ascii; // diese Schreibweise nimmt der Dienst an: beim nächsten Mal zuerst
+      return { lat: hit.lat, lon: hit.lon, q: hit.rank ? (hit.rank >= 28 ? 'h' : 's') : t.q }; // q nach dem, was der Dienst wirklich fand
+    }
   }
   return null;
+}
+/**
+ * Koordinaten einer Adresse über die Quellen der Reihe nach. Eine Quelle, die einen Fehler meldet (gesperrt, nicht erreichbar,
+ * unerwartetes Format), wird 10 Minuten übersprungen; die nächste springt ein. Ergebnis: { hit, delay, degraded } – hit = { lat, lon, q }
+ * oder null (nicht gefunden), degraded = es fehlte eine Quelle (ein „nicht gefunden“ gilt dann nur kurz). Wirft, wenn keine Quelle antwortet.
+ */
+async function geocodeAddress(plz, str) {
+  let delay = 0,
+    answered = 0, // Quellen, die geantwortet haben (auch mit „nicht gefunden“)
+    failed = 0; // Quellen, die gesperrt/gestört waren oder jetzt einen Fehler meldeten
+  const reasons = [];
+  for (const source of geoSources) {
+    if (!source.on || !source.applies(plz)) continue;
+    if (source.blockedUntil > Date.now()) {
+      failed++;
+      reasons.push(`${source.name}: ${source.error}`);
+      continue;
+    }
+    delay = Math.max(delay, source.delay);
+    try {
+      const hit = await lookupAt(source, plz, str);
+      source.error = '';
+      answered++;
+      if (hit) return { hit, delay, degraded: failed > 0 };
+    } catch (e) {
+      source.error = geoReason(e).slice(0, 140);
+      source.blockedUntil = Date.now() + GEO_OFFLINE_RETRY_MS;
+      failed++;
+      reasons.push(`${source.name}: ${source.error}`);
+      console.error(`Koordinaten der Adressen: ${source.name} nicht brauchbar – ${source.error} (wird 10 Minuten übersprungen)`);
+    }
+  }
+  if (!answered && failed) throw new Error(reasons.join(' · '));
+  return { hit: null, delay, degraded: failed > 0 };
 }
 let geoBusy = false,
   geoTimer = null;
@@ -977,28 +1101,30 @@ async function geocodeRun() {
     done = 0;
   try {
     const open = sql.geoOpen.get(Date.now() - GEO_RETRY_MS).n;
-    if (open) console.log(`Koordinaten der Adressen: ${open} offen, Dienst ${GEOCODER}`);
+    if (open) console.log(`Koordinaten der Adressen: ${open} offen, Quellen: ${geoSources.filter(s => s.on).map(s => s.name).join(' → ')}`);
     for (;;) {
       const row = sql.geoNext.get(Date.now() - GEO_RETRY_MS, geoWantedJson());
       if (!row) break;
-      let found;
+      let result;
       geoTriedAt = Date.now();
       try {
-        found = await geocodeAddress(row.plz || '', row.str);
+        result = await geocodeAddress(row.plz || '', row.str);
         geoError = '';
       } catch (e) {
-        geoError = geoReason(e).slice(0, 120);
-        console.error(`Koordinaten der Adressen: Dienst nicht erreichbar – ${geoError} (neuer Versuch in 10 Minuten; bis dahin gilt die Bezirksmitte)`);
+        geoError = geoReason(e).slice(0, 160);
+        console.error(`Koordinaten der Adressen: keine Quelle erreichbar – ${geoError} (neuer Versuch in 10 Minuten; bis dahin gilt die Bezirksmitte)`);
         retryIn = GEO_OFFLINE_RETRY_MS;
         break;
       }
-      sql.geoSet.run((row.plz || '') + '|' + row.str, found ? found.lat : null, found ? found.lon : null, found ? found.q : null, Date.now());
+      const { hit, delay, degraded } = result;
+      // nicht gefunden, aber eine Quelle fehlte: schon nach einer Stunde noch einmal versuchen (nicht erst nach 7 Tagen)
+      sql.geoSet.run((row.plz || '') + '|' + row.str, hit ? hit.lat : null, hit ? hit.lon : null, hit ? hit.q : null, Date.now() - (!hit && degraded ? GEO_RETRY_MS - 3600e3 : 0));
       done++;
       if (done % 100 === 0) console.log(`Koordinaten der Adressen: ${done} neu ermittelt, ${sql.geoOpen.get(Date.now() - GEO_RETRY_MS).n} offen`);
-      await new Promise(resolve => setTimeout(resolve, GEOCODER_DELAY_MS));
+      await sleep(delay);
     }
   } catch (e) {
-    geoError = geoReason(e).slice(0, 120);
+    geoError = geoReason(e).slice(0, 160);
     console.error('Koordinaten der Adressen:', geoError);
     retryIn = GEO_OFFLINE_RETRY_MS;
   } finally {

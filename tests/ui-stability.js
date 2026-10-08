@@ -65,31 +65,66 @@ const freePort = () =>
 // Der Server fragt ihn nach den Adressen der Aufträge; „Unbekannt“ und U-Bahn/Haltestellen findet er nicht (dann gilt die Bezirksmitte).
 const TEST_POS = { latitude: 48.283, longitude: 16.4, accuracy: 25 }; // Standort des Test-Geräts: Mitte von Floridsdorf (1210)
 const CENTERS = { 1010: [48.2082, 16.373], 1020: [48.217, 16.4], 1030: [48.198, 16.4], 1040: [48.192, 16.369], 1050: [48.188, 16.356], 1060: [48.196, 16.348], 1070: [48.203, 16.348], 1080: [48.211, 16.343], 1090: [48.226, 16.356], 1100: [48.162, 16.378], 1110: [48.169, 16.44], 1120: [48.174, 16.332], 1130: [48.185, 16.29], 1140: [48.201, 16.276], 1150: [48.196, 16.327], 1160: [48.214, 16.307], 1170: [48.233, 16.3], 1180: [48.233, 16.331], 1190: [48.253, 16.345], 1200: [48.24, 16.378], 1210: [48.28, 16.4], 1220: [48.235, 16.475], 1230: [48.138, 16.29] };
-// delay: Antwortzeit je Anfrage in ms (langsamer Dienst) · coarse: Straßen (RegExp), für die der Dienst nur ein PLZ-Gebiet liefert (place_rank 21)
-async function startGeocoder({ delay = 0, coarse = null } = {}) {
+// Nachbau von Nominatim (/search) und des Wiener Adressdienstes (/daten/OGDAddressService.svc/GetAddressInfo):
+// delay: Antwortzeit je Anfrage in ms (langsamer Dienst) · coarse: Straßen (RegExp), für die Nominatim nur ein PLZ-Gebiet liefert (place_rank 21) ·
+// nominatimStatus: z. B. 403 (gesperrt, wie der öffentliche Dienst) · wienStreets: Map „Straße Nr“ -> PLZ-Liste (die Straße gibt es dort),
+// wienAsciiOnly: kennt nur Schreibweisen ohne Sonderzeichen (ae/ss) · wienSwap: Breite/Länge statt Länge/Breite · wienBad: antwortet mit HTML
+async function startGeocoder({ delay = 0, coarse = null, nominatimStatus = 200, wienStreets = null, wienAsciiOnly = false, wienSwap = false, wienBad = false } = {}) {
   const http = require('http'),
-    crypto = require('crypto');
-  let requests = 0;
+    crypto = require('crypto'),
+    ascii = t => t.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss'),
+    counts = { nominatim: 0, wien: 0 };
+  let requests = 0,
+    streets = wienStreets, // kann nachträglich gesetzt werden (setStreets), sobald die Daten des Servers bekannt sind
+    asciiStreets = null;
+  // PLZ-Liste einer Straße; im Modus „nur ohne Sonderzeichen“ kennt der Dienst „Strasse“, aber nicht „Straße“
+  const known = street => {
+    if (!streets) return null;
+    if (!wienAsciiOnly) return streets.get(street);
+    if (/[äöüß]/.test(street)) return null;
+    if (!asciiStreets) asciiStreets = new Map([...streets].map(([k, v]) => [ascii(k), v]));
+    return asciiStreets.get(street);
+  };
+  const jitter = (street, plz) => {
+    const c = CENTERS[plz] || [48.2, 16.37],
+      h = crypto.createHash('md5').update(street).digest();
+    return [c[0] + (h[0] / 255 - 0.5) * 0.02, c[1] + (h[1] / 255 - 0.5) * 0.03];
+  };
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x'),
-      street = u.searchParams.get('street') || '',
-      plz = u.searchParams.get('postalcode') || '',
-      c = CENTERS[plz] || [48.2, 16.37],
-      h = crypto.createHash('md5').update(street).digest();
-    requests++;
-    const found = !/Haltestelle|U-Bahn/.test(street),
-      answer = () => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(found ? [{ lat: String(c[0] + (h[0] / 255 - 0.5) * 0.02), lon: String(c[1] + (h[1] / 255 - 0.5) * 0.03), place_rank: coarse && coarse.test(street) ? 21 : 30 }] : []));
+      send = (status, body, type = 'application/json') => {
+        const answer = () => {
+          res.writeHead(status, { 'Content-Type': type });
+          res.end(typeof body === 'string' ? body : JSON.stringify(body));
+        };
+        delay ? setTimeout(answer, delay) : answer();
       };
-    delay ? setTimeout(answer, delay) : answer();
+    requests++;
+    if (u.pathname === '/daten/OGDAddressService.svc/GetAddressInfo') {
+      counts.wien++;
+      if (wienBad) return send(200, '<html><body>Wartungsarbeiten</body></html>', 'text/html');
+      const street = u.searchParams.get('Address') || '',
+        features = (known(street) || []).map(plz => {
+          const [lat, lon] = jitter(street, plz);
+          return { type: 'Feature', geometry: { type: 'Point', coordinates: wienSwap ? [lat, lon] : [lon, lat] }, properties: { PostalCode: plz } };
+        });
+      return send(200, { type: 'FeatureCollection', features });
+    }
+    counts.nominatim++;
+    if (nominatimStatus !== 200) return send(nominatimStatus, '<html><body>Access blocked: you have violated the usage policy</body></html>', 'text/html');
+    const street = u.searchParams.get('street') || '',
+      plz = u.searchParams.get('postalcode') || '',
+      found = !/Haltestelle|U-Bahn/.test(street),
+      [lat, lon] = jitter(street, plz);
+    send(200, found ? [{ lat: String(lat), lon: String(lon), place_rank: coarse && coarse.test(street) ? 21 : 30 }] : []);
   });
   await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve));
-  return { url: 'http://127.0.0.1:' + srv.address().port, requests: () => requests, stop: () => srv.close() };
+  const url = 'http://127.0.0.1:' + srv.address().port;
+  return { url, wienUrl: url + '/daten/OGDAddressService.svc/GetAddressInfo', counts, setStreets: m => ((streets = m), (asciiStreets = null)), requests: () => requests, stop: () => srv.close() };
 }
 
 // ---------- Server mit Kopie der Daten ----------
-async function startServer(geocoderUrl, prepareData = null) {
+async function startServer(geocoderUrl, prepareData = null, extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-test-')),
     port = await freePort();
   for (const f of ['data.db', 'data.db-wal', 'data.db-shm'])
@@ -97,7 +132,7 @@ async function startServer(geocoderUrl, prepareData = null) {
   if (prepareData) prepareData(dir); // Daten vor dem Start verändern (nur in der Kopie)
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: dir, DISPO_PIN, UPLOAD_PIN: '1025', MONTEUR_PASSWORD: MONTEUR.password, GEOCODER_URL: geocoderUrl, GEOCODER_DELAY_MS: '1' },
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: dir, DISPO_PIN, UPLOAD_PIN: '1025', MONTEUR_PASSWORD: MONTEUR.password, GEOCODER_URL: geocoderUrl, GEOCODER_DELAY_MS: '1', GEOCODER_WIEN_URL: 'off', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   await new Promise((resolve, reject) => {
@@ -491,7 +526,74 @@ async function geoScenarioChecks(browser, errors) {
       geocoder.stop();
     }
   };
-  await Promise.all([scenario1(), scenario2(), scenario3(), scenario4()]);
+  // Wiener Adressdienst: Karte „Straße Nr“ -> PLZ, in denen es sie gibt (aus der Kopie der Daten), wie ihn der Dienst kennt
+  const streetsOf = dir => {
+    const { DatabaseSync } = require('node:sqlite'),
+      db = new DatabaseSync(path.join(dir, 'data.db'), { readOnly: true }),
+      map = new Map(),
+      add = (key, plz) => (map.get(key) || map.set(key, new Set()).get(key)).add(plz);
+    for (const r of db.prepare("SELECT DISTINCT plz, str FROM orders WHERE del=0 AND COALESCE(str,'')<>''").all()) {
+      const first = r.str.split(',')[0].trim(),
+        m = /^(.+?)\s+(\d+\s?[A-Za-z]?)(?:\s*[-–/].*)?$/.exec(first),
+        name = m ? m[1] : first;
+      if (m) add(`${name} ${m[2].replace(/\s/g, '')}`, r.plz);
+      add(name, r.plz);
+      add(name.replace(/\s+[A-ZÄÖÜ]$/, ''), r.plz);
+    }
+    db.close();
+    return new Map([...map].map(([k, v]) => [k, [...v]]));
+  };
+  // (5) Der öffentliche Nominatim sperrt den Server (HTTP 403, wie bei dir): der Wiener Adressdienst liefert alle Koordinaten – auch wenn er
+  // nur Schreibweisen ohne Sonderzeichen kennt und Breite/Länge vertauscht; gibt es die Straße in mehreren Bezirken, zählt der der PLZ
+  const scenario5 = async () => {
+    let streets;
+    const geocoder = await startGeocoder({ nominatimStatus: 403, wienAsciiOnly: true, wienSwap: true }),
+      server = await startServer(geocoder.url, dir => {
+        streets = streetsOf(dir);
+        geocoder.setStreets(streets);
+      }, { GEOCODER_WIEN_URL: geocoder.wienUrl }),
+      base = 'http://127.0.0.1:' + server.port;
+    try {
+      const token = await monteurToken(base);
+      let geo = {};
+      for (let i = 0; i < 480; i++) {
+        geo = await json(base, '/api/geo?since=0&team=FW-IH01', token);
+        if (!geo.open) break;
+        await sleep(250);
+      }
+      const plzOf = k => k.split('|')[0],
+        far = geo.items.filter(i => CENTERS[plzOf(i[0])] && Math.hypot((i[1] - CENTERS[plzOf(i[0])][0]) * 111, (i[2] - CENTERS[plzOf(i[0])][1]) * 74) > 3),
+        multi = [...streets.values()].filter(plzs => plzs.length > 1).length;
+      report(!geo.open && geo.items.length > 1000, 'Wiener Adressdienst: alle Adressen werden umgewandelt, obwohl Nominatim sperrt (403)', `${geo.items.length} Adressen, Nominatim ${geocoder.counts.nominatim}× angefragt, Wien ${geocoder.counts.wien}×`);
+      report(!geo.err, 'Wiener Adressdienst: keine Störungsmeldung, solange eine Quelle funktioniert', geo.err || '');
+      report(geocoder.counts.nominatim <= 3, 'Wiener Adressdienst: gesperrter Nominatim wird nicht ständig weiter angefragt', `${geocoder.counts.nominatim} Anfragen`);
+      report(far.length === 0, 'Wiener Adressdienst: Koordinaten liegen im Bezirk der PLZ (Achsenreihenfolge und gleichnamige Straßen)', `${far.length} Adressen weiter als 3 km von der Bezirksmitte (${multi} Straßen gibt es in mehreren Bezirken)`);
+    } finally {
+      server.stop();
+      geocoder.stop();
+    }
+  };
+  // (6) Der Wiener Adressdienst liefert Unbrauchbares (z. B. Wartungsseite): Nominatim springt ein, der Wiener Dienst wird nicht ständig gefragt
+  const scenario6 = async () => {
+    const geocoder = await startGeocoder({ wienBad: true }),
+      server = await startServer(geocoder.url, null, { GEOCODER_WIEN_URL: geocoder.wienUrl }),
+      base = 'http://127.0.0.1:' + server.port;
+    try {
+      const token = await monteurToken(base);
+      let geo = {};
+      for (let i = 0; i < 240; i++) {
+        geo = await json(base, '/api/geo?since=0&team=FW-IH01', token);
+        if (!geo.open) break;
+        await sleep(250);
+      }
+      report(!geo.open && geo.items.length > 1000, 'Wiener Adressdienst kaputt: Nominatim springt ein', `${geo.items.length} Adressen`);
+      report(geocoder.counts.wien <= 3, 'Wiener Adressdienst kaputt: wird nicht ständig weiter angefragt', `${geocoder.counts.wien} Anfragen`);
+    } finally {
+      server.stop();
+      geocoder.stop();
+    }
+  };
+  await Promise.all([scenario1(), scenario2(), scenario3(), scenario4(), scenario5(), scenario6()]);
 }
 // Ortung durch den Disponenten (Tab „Geräte“): Monteur-Geräte antworten auf die Abfrage, die Karte zeigt den Standort bzw. den Grund,
 // warum es keinen gibt; „Ausloggen“ bringt das Gerät zum Startbildschirm, und die erneute Anmeldung bleibt bestehen.

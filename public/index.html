@@ -3617,6 +3617,9 @@
           })
           .catch(() => {});
       }
+      // authAt: Zeitpunkt der letzten Anmeldung auf diesem Gerät (Monteur oder Disponent). Eine Antwort „vom Disponenten ausgeloggt“ auf einen
+      // Abgleich, der VOR der Anmeldung gesendet wurde, gilt der früheren Anmeldung und wird ignoriert.
+      let authAt = 0;
       // ---- Abgleich mit dem Server ----
       /**
        * Holt Änderungen seit syncSeq (GET /api/sync). Der Monteur bekommt nur Daten seines Teams, der Disponent alles
@@ -3641,7 +3644,8 @@
             await loadCache(key);
             render();
           }
-          const team = session.role === 'monteur' ? session.team || '-' : '';
+          const team = session.role === 'monteur' ? session.team || '-' : '',
+            sentAt = Date.now();
           const response = await api(
             'GET',
             `/api/sync?since=${syncSeq}&team=${urlEncode(team)}&did=${deviceId}&uv=${userNamesVer}`,
@@ -3678,7 +3682,7 @@
             }
           }
           // der Disponent hat dieses Gerät ausgeloggt
-          if (response.kicked) forcedLogout();
+          if (response.kicked && sentAt >= authAt) forcedLogout();
           // der Disponent hat die Geräteübersicht offen und fragt Standorte ab (locate = Nummer der Abfragerunde)
           // Eine Runde, die schon lief, als die App gestartet wurde, bleibt ohne Hinweis. Nur wenn der Disponent die Abfrage
           // danach neu auslöst (Geräteübersicht geöffnet oder „Standorte jetzt aktualisieren“), erscheint die Kurzmeldung.
@@ -7129,6 +7133,7 @@
             saveUser();
             clearLoginPass();
             loginBusy = false;
+            authAt = Date.now();
             infoMsg = ''; // z. B. „Dieses Gerät wurde vom Disponenten abgemeldet.“ gilt nach der Anmeldung nicht mehr
             switchRole('monteur', (r.user.lock ? null : last) || r.user.team || undefined);
           } catch (e) {
@@ -7203,6 +7208,7 @@
           pinInput = '';
           try {
             dispoToken = (await api('POST', '/api/login', { pin: pin, did: deviceId })).token;
+            authAt = Date.now();
             dispoUnlocked = true;
             pinError = false;
             pushSync(false);
