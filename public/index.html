@@ -74,6 +74,9 @@
         --er: #c4320a;
         --ok: #067647;
         --nk: #c4320a;
+        --gb1: #b45309;
+        --gb2: #c2410c;
+        --gb3: #c4320a;
         --g1: #5fb085;
         --g2: #067647;
         --gt: #e3e2e9;
@@ -98,6 +101,9 @@
           --er: #f2704f;
           --ok: #15803d;
           --nk: #d0421a;
+          --gb1: #fbbf24;
+          --gb2: #fb923c;
+          --gb3: #d0421a;
           --g1: #2e6e4c;
           --g2: #22a35a;
           --gt: #33333c;
@@ -116,6 +122,9 @@
         --er: #f2704f;
         --ok: #15803d;
         --nk: #d0421a;
+        --gb1: #fbbf24;
+        --gb2: #fb923c;
+        --gb3: #d0421a;
         --g1: #2e6e4c;
         --g2: #22a35a;
         --gt: #33333c;
@@ -339,6 +348,46 @@
         border-color: var(--nk);
         color: var(--er);
         font-weight: 700;
+      }
+      /* Gebrechen (Meldung mit Codierung „Gebrechen leicht/mittel/stark“): Etikett mit der Schwere und eine farbige Kante an Karte bzw. Meldung.
+         Stufen: 1 leicht (gelb), 2 mittel (orange), 3 stark (rot, Etikett gefüllt). Die Kante ist wie beim überfälligen Auftrag ein Rahmen links. */
+      .tag.gb {
+        font-weight: 600;
+        color: var(--c);
+        border-color: var(--c);
+        background: color-mix(in srgb, var(--c) 14%, var(--card));
+      }
+      .tag.gb-1 {
+        --c: var(--gb1);
+      }
+      .tag.gb-2 {
+        --c: var(--gb2);
+      }
+      .tag.gb-3 {
+        --c: var(--gb3);
+        color: #fff;
+        background: var(--gb3);
+      }
+      .card.gb-c1 {
+        border-left: 4px solid var(--gb1);
+      }
+      .card.gb-c2 {
+        border-left: 4px solid var(--gb2);
+      }
+      .card.gb-c3 {
+        border-left: 4px solid var(--gb3);
+      }
+      .it.gbi {
+        padding-left: 8px;
+      }
+      .it.gb-c1 {
+        border-left: 3px solid var(--gb1);
+      }
+      .it.gb-c2 {
+        border-left: 3px solid var(--gb2);
+      }
+      .it.gb-c3 {
+        border-left: 3px solid var(--gb3);
       }
       .nokbox {
         margin-top: 8px;
@@ -4402,6 +4451,20 @@
         for (const m of meldungen.values())
           if (m.auftrag) (meldungenByOrder.get(m.auftrag) || meldungenByOrder.set(m.auftrag, []).get(m.auftrag)).push(m);
       }
+      /**
+       * Gebrechen: Meldungen mit der Codierung „Gebrechen leicht/mittel/stark“ sind dringender als ein Schaden und werden hervorgehoben
+       * (Etikett mit Schwere, farbige Kante an Karte und Meldung). gebrechenOf liefert { lvl: 1 leicht | 2 mittel | 3 stark, word } oder
+       * null (Schaden und alles andere). Bei mehreren Meldungen zählt die schwerste (worstGebrechen).
+       */
+      const GEBRECHEN_LEVELS = { leicht: 1, mittel: 2, stark: 3 };
+      const gebrechenOf = m => {
+        const x = /^Gebrechen(?:\s+(leicht|mittel|stark))?\b/i.exec(String((m && m.code) || '').trim());
+        return x ? { lvl: GEBRECHEN_LEVELS[(x[1] || 'leicht').toLowerCase()], word: (x[1] || '').toLowerCase() } : null;
+      };
+      const worstGebrechen = melds => melds.map(gebrechenOf).filter(Boolean).sort((a, b) => b.lvl - a.lvl)[0] || null;
+      const gebrechenTag = g => el('span', { class: 'tag gb gb-' + g.lvl, title: 'Gebrechen' + (g.word ? ', ' + g.word : '') }, '⚠ Gebrechen' + (g.word ? ' · ' + g.word : ''));
+      // Meldungen, schwerstes Gebrechen zuerst (sonst in der Reihenfolge der Datei)
+      const bySeverity = melds => [...melds].sort((a, b) => ((gebrechenOf(b) || {}).lvl || 0) - ((gebrechenOf(a) || {}).lvl || 0));
       // Meldungen zu einem Auftrag (nach Nummer)
       const meldungenOf = order => meldungenByOrder.get(orderNr(order)) || [];
       // Meldungen ohne Auftrag (team = nur die dieses Teams)
@@ -4899,7 +4962,8 @@
           result = resultOf(order.auftrag),
           kind = orderKind(order),
           timed = isTimedKind(kind),
-          melds = meldungenOf(order),
+          melds = bySeverity(meldungenOf(order)),
+          gebrechen = worstGebrechen(melds),
           // Reparatur: der Vorgang ist der Auftrag – sein Text ist der Titel, der Kurztext des Auftrags darunter
           title = kind === 'rep' && order.vtxt ? order.vtxt : order.kurz,
           subtitle = kind === 'rep' ? (order.vtxt && order.kurz !== order.vtxt ? order.kurz : '') : order.vtxt,
@@ -4911,7 +4975,8 @@
               'card' +
               (clickable ? ' cl' : '') +
               (isDispo && clickable && markState(order.auftrag) === 1 ? ' dn' : '') +
-              (dueInfo(order) && dueInfo(order).kind === 'over' ? ' due' : ''),
+              (dueInfo(order) && dueInfo(order).kind === 'over' ? ' due' : '') +
+              (gebrechen ? ' gb-c' + gebrechen.lvl : ''),
             // Anker für render(): hält die Liste an derselben Stelle, wenn oben etwas dazukommt oder wegfällt (siehe viewportAnchors)
             'data-k': clickable ? 'o' + order.auftrag : null,
             onclick: clickable
@@ -4934,7 +4999,10 @@
             timeTag(order),
             termTag(order),
             dueTag(order),
-            melds.length > 0 && el('span', { class: 'tag st-teil' }, melds.length === 1 ? '📋 Meldung' : `📋 ${melds.length} Meldungen`),
+            gebrechen && gebrechenTag(gebrechen),
+            melds.length > 0 &&
+              (!gebrechen || melds.length > 1) &&
+              el('span', { class: 'tag st-teil' }, melds.length === 1 ? '📋 Meldung' : `📋 ${melds.length} Meldungen`),
             ext.length > 0 && el('span', { class: 'tag st-teil' }, '🏗 Externe Firma'),
             isLocked(order.auftrag) && el('span', { class: 'tag' }, '🔒 Abgehakt'),
             clickable && el('span', { class: 'chev' }, kind === 'war' ? 'Prüfobjekte ›' : 'Details ›')
@@ -7431,13 +7499,13 @@
       const meldungCardEl = (m, showTeam = false) =>
         el(
           'div',
-          { class: 'card mld', 'data-k': 'm' + m.nr },
+          { class: 'card mld' + (gebrechenOf(m) ? ' gb-c' + gebrechenOf(m).lvl : ''), 'data-k': 'm' + m.nr },
           el(
             'div',
             { class: 'row' },
             el('b', {}, 'Meldung ' + m.nr),
             m.dat && el('span', { class: 'tag' }, dateDe(m.dat)),
-            m.code && el('span', { class: 'tag' }, m.code),
+            gebrechenOf(m) ? gebrechenTag(gebrechenOf(m)) : m.code && el('span', { class: 'tag' }, m.code),
             showTeam && m.team && el('span', { class: 'tag' }, m.team),
             m.auftrag && showTeam && el('span', { class: 'tag st-teil' }, 'Auftrag ' + m.auftrag)
           ),
@@ -7448,7 +7516,7 @@
         );
       // Karte „Meldung(en)“ in der Auftrags-Detailansicht (Schaden genauer dokumentiert); ohne Meldung ein kurzer Hinweis
       function meldungCard(order) {
-        const melds = meldungenOf(order),
+        const melds = bySeverity(meldungenOf(order)),
           card = el('div', { class: 'card d-check', 'data-k': 'pc' }, el('b', {}, melds.length > 1 ? `Meldungen (${melds.length})` : 'Meldung'));
         if (!melds.length)
           card.append(el('p', { class: 'mu' }, `Meldung ${order.mel} – die Beschreibung liegt (noch) nicht vor.`));
@@ -7456,8 +7524,14 @@
           card.append(
             el(
               'div',
-              { class: 'it' },
-              el('div', { class: 'row' }, el('b', {}, m.nr), m.dat && el('span', { class: 'tag' }, dateDe(m.dat)), m.code && el('span', { class: 'tag' }, m.code)),
+              { class: 'it' + (gebrechenOf(m) ? ' gbi gb-c' + gebrechenOf(m).lvl : '') },
+              el(
+                'div',
+                { class: 'row' },
+                el('b', {}, m.nr),
+                m.dat && el('span', { class: 'tag' }, dateDe(m.dat)),
+                gebrechenOf(m) ? gebrechenTag(gebrechenOf(m)) : m.code && el('span', { class: 'tag' }, m.code)
+              ),
               el('div', { class: 'kt' }, m.txt || '–'),
               (m.str || m.plz) && el('div', { class: 'mu' }, [m.plz, m.str].filter(Boolean).join(' ')),
               m.tp && el('div', { class: 'mu' }, 'Techn. Platz: ' + m.tp),

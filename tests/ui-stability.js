@@ -950,8 +950,8 @@ function kindFiles() {
     ['Angelegt am', 'Meldung', 'Beschreibung', 'Straße', 'Postleitzahl', 'Auftrag', 'Codier.Code.Txt', 'Techn. Platz', 'Anwenderstat.', 'Verantw.ArbPl.', 'Codier.Grp.Text'],
     [excelDay(0), '1290000001', 'Dampf aus dem Schacht', 'Schachtgasse    3', '1210', '65900003', 'Gebrechen stark', 'TP-3', 'prag', T, 'WN: FW Störmeldung'],
     [excelDay(-1), '1290000002', 'Rohrbruch Testgasse', 'Testgasse    1', '1210', '65900001', 'Schaden', 'TP-1', 'prag', T, 'Mängelkategorien'],
-    [excelDay(-2), '1290000003', 'Deckel locker Teststraße 5', 'Teststraße    5', '1210', '', 'Schaden', 'TP-5', 'prag', T, 'Mängelkategorien'],
-    [excelDay(-2), '1290000004', 'Fremdes Team Schaden', 'Andere Gasse 1', '1020', '', 'Schaden', 'TP-9', 'prag', T2, 'Mängelkategorien'],
+    [excelDay(-2), '1290000003', 'Deckel locker Teststraße 5', 'Teststraße    5', '1210', '', 'Gebrechen mittel', 'TP-5', 'prag', T, 'WN: FW Störmeldung'],
+    [excelDay(-2), '1290000004', 'Fremdes Team Gebrechen', 'Andere Gasse 1', '1020', '', 'Gebrechen leicht', 'TP-9', 'prag', T2, 'WN: FW Störmeldung'],
     [excelDay(-9), '1290000005', 'Graffiti am Schachtdeckel', 'Teststraße    7', '1210', '', 'Schaden', 'TP-7', 'prag', T, 'Mängelkategorien']
   ];
   return {
@@ -1046,6 +1046,17 @@ async function kindUploadChecks(browser, base, errors) {
   const mels = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].length);
   report(mels === 3, 'Dispo Übersicht: Liste Meldungen zeigt die Meldungen ohne Auftrag', String(mels));
   await probe(page, 'Dispo Übersicht: Meldungen „Mit Auftrag“', btn('/^Mit Auftrag/'), { at: 330 });
+  await probe(page, 'Dispo Übersicht: Meldungen „Alle“', btn('/^Alle \\(/'), { at: 330 });
+  // Gebrechen sind hervorgehoben: Etikett mit der Schwere (leicht, mittel, stark – drei Farben) und Kante an der Karte; klein wie die übrigen Etiketten
+  const gb = await page.evaluate(() => {
+    const tag = n => document.querySelector(`#app [data-k="${n}"] .tag.gb`),
+      look = n => { const t = tag(n); if (!t) return null; const cs = getComputedStyle(t); return { text: t.textContent, bg: cs.backgroundColor, col: cs.color, h: Math.round(t.getBoundingClientRect().height), card: getComputedStyle(t.closest('.card')).borderLeftColor, w: getComputedStyle(t.closest('.card')).borderLeftWidth }; },
+      plain = document.querySelector('#app [data-k="m1290000002"] .row .tag:not(.gb)');
+    return { stark: look('m1290000001'), mittel: look('m1290000003'), leicht: look('m1290000004'), plainH: plain ? Math.round(plain.getBoundingClientRect().height) : null, schaden: !tag('m1290000002') };
+  });
+  report(gb.stark && gb.mittel && gb.leicht && /stark/.test(gb.stark.text) && /mittel/.test(gb.mittel.text) && /leicht/.test(gb.leicht.text), 'Meldungen: Gebrechen leicht/mittel/stark tragen ein Etikett mit der Schwere', JSON.stringify([gb.leicht && gb.leicht.text, gb.mittel && gb.mittel.text, gb.stark && gb.stark.text]));
+  report(!!gb.stark && new Set([gb.stark.card, gb.mittel.card, gb.leicht.card]).size === 3 && new Set([gb.stark.bg, gb.mittel.bg, gb.leicht.bg]).size === 3 && gb.stark.w === '4px', 'Meldungen: die drei Schweregrade haben eigene Farben (Etikett und Kante der Karte)', JSON.stringify([gb.leicht && gb.leicht.card, gb.mittel && gb.mittel.card, gb.stark && gb.stark.card]));
+  report(gb.schaden && gb.stark.h - gb.plainH <= 2, 'Meldungen: Schaden bleibt unauffällig, das Gebrechen-Etikett ist nicht höher als ein normales', `Etikett ${gb.stark.h} px, normal ${gb.plainH} px`);
   await probe(page, 'Dispo Übersicht: Auftragsart Wartungen', btn('/Wartungen/'), { ms: 900, reflow: true, anim: true });
   report(await page.evaluate(() => [...document.querySelectorAll('#app button')].some(b => /^Erledigt/.test(b.textContent.trim())) && [...document.querySelectorAll('#app button')].some(b => /^Nicht OK/.test(b.textContent.trim()))), 'Dispo Übersicht: Wartungen mit Status-Filter (Nicht OK, Erledigt …)');
   // Die Dateien sind unabhängig: erneut NUR die Aufträge hochladen lässt die Vorgänge in Ruhe (und umgekehrt die Adressen)
@@ -1104,6 +1115,7 @@ async function kindChecks(browser, base, viewport, errors) {
     none: !/Externe Firma/.test(document.querySelector('#app [data-k="o65900002-0010"]').textContent),
     planned: !document.querySelector('#app [data-k="o65900010"], #app [data-k="o65900001-0040"]')
   }));
+  report(await page.evaluate(() => /📋 Meldung/.test(document.querySelector('#app [data-k="o65900001-0010"]').textContent) && !document.querySelector('#app [data-k="o65900001-0010"] .tag.gb')), `${label} Reparaturen: Meldung mit Schaden bleibt ein einfaches „📋 Meldung“`);
   report(extTags.mixed && extTags.only && extTags.none && extTags.planned, `${label} Reparaturen: externe Firma gekennzeichnet, Geplantes (P) fehlt`, JSON.stringify(extTags));
   // Auftrag mit externer Firma: im Detail die Vorgänge der Fremdfirma
   await probe(page, `${label} Reparatur mit externer Firma öffnen`, `() => document.querySelector('#app [data-k="o65900001-0010"]')`, { reflow: true, ms: 900, anim: true });
@@ -1124,10 +1136,17 @@ async function kindChecks(browser, base, viewport, errors) {
   const o3 = await order();
   report(o3.join() === 'o65900003,o65900004', `${label} Entstörungen: heute zuerst, dann gestern`, o3.join(', '));
   const ent = await page.evaluate(() => ({ a: document.querySelector('#app [data-k="o65900003"]').textContent.replace(/\s+/g, ' '), b: document.querySelector('#app [data-k="o65900004"] .trm').textContent }));
+  const gbCards = await page.evaluate(() => {
+    const c = k => document.querySelector(`#app [data-k="${k}"]`);
+    return { ent: (c('o65900003').querySelector('.tag.gb') || {}).textContent, entCard: c('o65900003').className, none: !c('o65900004').querySelector('.tag.gb') };
+  });
+  report(/Gebrechen · stark/.test(gbCards.ent || '') && /gb-c3/.test(gbCards.entCard) && gbCards.none, `${label} Entstörungen: Gebrechen stark ist in der Liste hervorgehoben (Etikett, Kante), ohne Meldung nicht`, JSON.stringify(gbCards));
   report(/Heute/.test(ent.a) && /08:30–10:15 Uhr/.test(ent.a) && /📋/.test(ent.a) && /bis .* 05:30 Uhr/.test(ent.b), `${label} Entstörungen: Heute-Etikett, Uhrzeit von–bis, Meldung; Nachtschicht über Mitternacht`, ent.a.slice(0, 120) + ' | ' + ent.b);
   // Entstörung öffnen: keine Prüfobjekte, dafür die Meldung; Zeit ist mit dem Termin vorbelegt
   await probe(page, `${label} Entstörung öffnen`, `() => document.querySelector('#app [data-k="o65900003"]')`, { reflow: true, ms: 900, anim: true });
   const det = await page.evaluate(() => ({ items: document.querySelectorAll('#app .it').length, text: document.querySelector('#app').textContent.replace(/\s+/g, ' ') }));
+  const gbDetail = await page.evaluate(() => ({ info: !!document.querySelector('#app [data-k="oc"] .tag.gb-3'), item: !!document.querySelector('#app .it.gb-c3 .tag.gb-3') }));
+  report(gbDetail.info && gbDetail.item, `${label} Entstörung: im Auftrag ist das Gebrechen oben und bei der Meldung hervorgehoben`, JSON.stringify(gbDetail));
   report(/Dampf aus dem Schacht/.test(det.text) && /1290000001/.test(det.text) && !/Prüfobjekte/.test(det.text.replace(/Prüfobjekte bewerten/, '')), `${label} Entstörung: Detail zeigt die Meldung, keine Prüfobjekte`, det.text.slice(0, 160));
   const A = 330;
   await probe(page, `${label} Entstörung: Zeit von Hand eintragen öffnen`, btn('/Zeit von Hand/'), { at: A, ms: 800 });
@@ -1203,6 +1222,8 @@ async function kindChecks(browser, base, viewport, errors) {
   await probe(page, `${label} Startseite: Meldungen öffnen`, `() => document.querySelector('#app [data-k="kd-mel"]')`, { reflow: true, ms: 900, anim: true });
   const mel = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
   report(mel === 'm1290000003,m1290000005', `${label} Meldungen: nur die des Teams ohne Auftrag, neueste zuerst`, mel);
+  const melGb = await page.evaluate(() => ({ mittel: (document.querySelector('#app [data-k="m1290000003"] .tag.gb-2') || {}).textContent, cls: document.querySelector('#app [data-k="m1290000003"]').className, schaden: !document.querySelector('#app [data-k="m1290000005"] .tag.gb') && !/gb-c/.test(document.querySelector('#app [data-k="m1290000005"]').className) }));
+  report(/Gebrechen · mittel/.test(melGb.mittel || '') && /gb-c2/.test(melGb.cls) && melGb.schaden, `${label} Meldungen: Gebrechen mittel hervorgehoben, Schaden nicht`, JSON.stringify(melGb));
   await page.click('#app input[type=search]');
   await page.keyboard.type('Graffiti');
   await pause(page, 600);
