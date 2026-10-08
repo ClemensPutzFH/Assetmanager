@@ -18,7 +18,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload und Ansichten der Auftragsarten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -199,7 +199,8 @@ async function probe(page, name, target, { ms = 750, scroll = null, at = null, a
           const appAnims = () =>
               document.getAnimations().filter(a => {
                 const t = a.effect && a.effect.target;
-                return t && t.closest && t.closest('#app') && !a.transitionProperty && !a.animationName && a.playState === 'running';
+                // (data-ghost: Kopien, die außerhalb von #app ausblenden, z. B. das schließende Fenster der Disposition)
+                return t && t.closest && t.closest('#app, [data-ghost]') && !a.transitionProperty && !a.animationName && a.playState === 'running';
               }).length,
             looksStuck = () =>
               [...document.querySelectorAll('#app > *')].filter(n => {
@@ -262,6 +263,14 @@ async function probe(page, name, target, { ms = 750, scroll = null, at = null, a
         }),
       { target, act, ms, SEL, smooth }
     );
+    // Fehlersuche: TEST_TRACE=<Teil des Namens> schreibt für diese Prüfung Bild für Bild die Scroll-Stelle und die Lage der Elemente
+    // (TEST_TRACE_KEYS = Muster für deren Kennung, Standard: Diagramm und Offen-Karten) – damit sieht man, WAS springt
+    if (process.env.TEST_TRACE && name.includes(process.env.TEST_TRACE)) {
+      const keys = new RegExp(process.env.TEST_TRACE_KEYS || '^DIV\\|(gt|dp-)'),
+        pick = m => m.filter(([k]) => keys.test(k)).slice(0, 5).map(([k, v]) => `${k.slice(0, 22)}=${v}`).join('  ');
+      console.log(`   [trace] ${name}\n   vor: sy=${res.sy0} ${pick(res.before)}`);
+      res.frames.forEach((f, i) => console.log(`   #${i} sy=${f.sy} ${pick(f.m)}`));
+    }
     const before = new Map(res.before),
       lastFrame = res.frames[res.frames.length - 1],
       last = new Map(lastFrame.m),
@@ -903,29 +912,22 @@ async function monteurChecks(browser, base, viewport, errors) {
 
 // ---------- Auftragsarten: Reparatur, Entstörung, Dauerauftrag, Meldungen ----------
 // ---------- Disposition per API ----------
-// Reparaturen und Entstörungen sehen Monteure erst, wenn der Disponent sie disponiert hat (Tab „Disposition“). Für die Prüfungen der
-// Monteur-Ansicht übernimmt dispatchSuggestions() die Vorschläge aus SAP wie „Alle Vorschläge übernehmen“: SAP-Team, Beginn und Ende
-// laut SAP; fehlt das Ende, gilt die geplante Arbeit (Stunden), sonst 2 Stunden.
+// Reparaturen und Entstörungen sehen Monteure erst, wenn der Disponent sie disponiert hat (Tab „Disposition“). dispositionChecks()
+// übernimmt am Ende „Alle Vorschläge“ (SAP-Team, Beginn und Ende laut SAP; fehlt das Ende, gilt die geplante Arbeit in Stunden, sonst
+// 2 Stunden): so sehen die Monteur-Prüfungen danach feste, bekannte Zeiten.
 const apiJson = async (base, method, url, body, headers = {}) =>
   (await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined })).json();
 const dispoHeaders = async base => ({ Authorization: 'Bearer ' + (await apiJson(base, 'POST', '/api/login', { pin: DISPO_PIN })).token });
-const isoDay = t => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(t || '')) || /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(String(t || '')); return m ? (m[1].length === 4 ? `${m[1]}-${m[2]}-${m[3]}` : `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`) : ''; };
 const plusMinutes = (stamp, min) => new Date(Date.parse(stamp + ':00Z') + min * 6e4).toISOString().slice(0, 16);
-function suggestionOf(o) {
-  const sap = o.sap || o,
-    day = isoDay(sap.start);
-  if (!day) return null;
-  const von = day + 'T' + (sap.uhr || '07:00'),
-    endDay = isoDay(sap.ende) || day;
-  let bis = sap.uhr2 ? endDay + 'T' + sap.uhr2 : '';
-  if (!bis || bis <= von) bis = plusMinutes(von, Math.round(((+o.arb > 0 ? +o.arb : 2) * 60) / 15) * 15);
-  return { a: o.auftrag, team: sap.team, von, bis };
+// Reparaturen und Entstörungen laut Server (Sicht des Disponenten) · Dispositionen aller Aufträge aufheben (nur über die API)
+async function dispatchOrders(base) {
+  const H = await dispoHeaders(base);
+  return (await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H)).orders.filter(o => o.kind === 'rep' || o.kind === 'ent');
 }
-async function dispatchSuggestions(base) {
+async function undispatchAll(base) {
   const H = await dispoHeaders(base),
-    state = await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H),
-    items = state.orders.filter(o => (o.kind === 'rep' || o.kind === 'ent') && !o.dis).map(suggestionOf).filter(Boolean);
-  return { items, result: await apiJson(base, 'POST', '/api/dispo', { items }, H) };
+    items = (await dispatchOrders(base)).filter(o => o.dis).map(o => ({ a: o.auftrag, off: true }));
+  if (items.length) await apiJson(base, 'POST', '/api/dispo', { items }, H);
 }
 // Aufträge, die ein Monteur des Teams (Test-Monteur) vom Server bekommt, nach Auftragsart
 async function monteurKinds(base) {
@@ -1074,6 +1076,7 @@ async function kindUploadChecks(browser, base, errors) {
   report(reps.some(t => /65900001.*Vorgang 0010.*FW-IH01/.test(t)) && reps.some(t => /65900001.*Vorgang 0020.*FW-IH02/.test(t)), 'Dispo Übersicht: jeder Vorgang einer Reparatur ist ein eigener Auftrag (mit seinem Team)');
   report(await page.evaluate(() => { const c = document.querySelector('#app [data-k="o65900008-0010"]'); return !!c && /im Verzug · 3 Tage/.test(c.textContent) && /\bdue\b/.test(c.className); }), 'Dispo Übersicht: Reparatur im Verzug ist hervorgehoben');
   report(reps.some(t => /65900001.*Vorgang 0010.*Testgasse 1/.test(t)), 'Dispo Übersicht: Auftrag und Vorgang sind zusammengesetzt (Adresse aus den Aufträgen)');
+  report(reps.length === 5 && reps.every(t => /nicht disponiert/.test(t)), 'Dispo Übersicht: Reparaturen tragen das Etikett „nicht disponiert“, solange nichts disponiert ist', String(reps.filter(t => /nicht disponiert/.test(t)).length));
   const teamsSeen = await page.evaluate(() => [...document.querySelectorAll('#app select option')].map(o => o.textContent.trim().split(' ')[0]));
   report(!teamsSeen.some(t => /EXT$|\dP$/.test(t)) && !reps.some(t => /Vorgang 0030|Vorgang 0040|65900010/.test(t)), 'Dispo Übersicht: weder FW-IHEXT noch Teams mit „P“ erscheinen als Team oder Auftrag', teamsSeen.join(', '));
   report(reps.some(t => /65900009.*FW-IH01/.test(t) && /Externe Firma/.test(t)) && reps.some(t => /65900001.*Vorgang 0010.*Externe Firma/.test(t)), 'Dispo Übersicht: Aufträge mit externer Firma sind gekennzeichnet (auch bei nur externen Vorgängen)');
@@ -1120,11 +1123,292 @@ async function kindUploadChecks(browser, base, errors) {
   // Disposition: Monteure sehen Reparaturen und Entstörungen erst, wenn der Disponent sie disponiert hat
   const undispatched = await monteurKinds(base);
   report(!undispatched.rep && !undispatched.ent && undispatched.war > 0 && undispatched.dau === 1, 'Disposition: Monteure sehen Reparaturen und Entstörungen erst nach der Disposition (Wartung und Dauerauftrag wie bisher)', JSON.stringify(undispatched));
-  const done = await dispatchSuggestions(base);
-  report(done.result.ok && done.result.changed === 7 && !done.result.skipped.length, 'Disposition: Vorschläge aus SAP übernommen (5 Reparaturen, 2 Entstörungen)', JSON.stringify(done.result));
-  const dispatched = await monteurKinds(base);
-  report(dispatched.rep === 4 && dispatched.ent === 2, 'Disposition: danach sieht der Monteur seine disponierten Aufträge (Team FW-IH01)', JSON.stringify(dispatched));
+  // (disponiert wird anschließend in dispositionChecks über den Tab „Disposition“)
 }
+// ---------- Disposition: Gantt-Diagramm (Tab „Disposition“) ----------
+// Reparaturen und Entstörungen sind nach dem Upload noch nicht disponiert (siehe kindUploadChecks). Hier wird das Diagramm bedient:
+// Vorschlag übernehmen, Fenster (Team, Beginn, Ende), Antippen in der Zeitachse, Balken ziehen (Zeit und Team), Länge ändern, Karte ziehen,
+// Zoom/Navigation, Filter, Rückgängig, „Alle Vorschläge übernehmen“. Gemessen wird wie überall: nichts springt, alles läuft über mehrere Bilder.
+// Am Ende ist alles mit dem Vorschlag aus SAP disponiert (die Monteur-Prüfungen danach rechnen mit diesen Zeiten).
+async function dispositionChecks(browser, base, viewport, errors) {
+  const label = `${viewport.width}px`,
+    wide = viewport.width >= 900,
+    todayIso = new Date().toLocaleDateString('sv-SE'),
+    dayIso = n => new Date(Date.now() + n * 864e5).toLocaleDateString('sv-SE');
+  console.log(`\n=== Disposition: Gantt-Diagramm (${label}) ===`);
+  await undispatchAll(base);
+  const page = await newPage(browser, base, viewport, errors);
+  await loginDispo(page);
+  const orderOf = async a => (await dispatchOrders(base)).find(o => o.auftrag === a);
+  const view = () =>
+    page.evaluate(() => ({
+      pool: [...document.querySelectorAll('#app .gt-pc')].map(c => c.dataset.k.slice(3)),
+      bars: [...document.querySelectorAll('#app .gt-bar:not(.draft)')].map(b => b.dataset.k.slice(3)),
+      draft: [...document.querySelectorAll('#app .gt-bar.draft')].map(b => b.closest('.gt-row').dataset.team),
+      tab: [...document.querySelectorAll('#app .tabs button')].find(b => /^Disposition/.test(b.textContent)).textContent.trim(),
+      sheet: !!document.querySelector('#app .gt-sheet'),
+      undo: [...document.querySelectorAll('#app .msg')].some(m => /Rückgängig/.test(m.textContent)),
+      head: (document.querySelector('#app .gt-ph b') || {}).textContent
+    }));
+  const barRow = a => page.evaluate(a => { const b = document.querySelector(`#app .gt-bar[data-k="gb-${a}"]`); return b ? b.closest('.gt-row').dataset.team : null; }, a);
+  const field = key => page.evaluate(key => { const n = document.querySelector(`#app .gt-sheet [data-keep="${key}"]`); return n ? n.value : null; }, key);
+  const selectTeam = team => `el => { el.value = '${team}'; el.dispatchEvent(new Event('change', { bubbles: true })); }`;
+  const settle = ms => pause(page, ms);
+  await probe(page, `${label} Tab „Disposition“: Leiste bleibt stehen, Inhalt blendet ein`, btn('/^Disposition/', '#app .tabs'), { reflow: true, ms: 900, anim: true });
+  let v = await view();
+  const wanted = ['65900008-0010', '65900004', '65900003', '65900002-0010', '65900001-0010', '65900001-0020', '65900009'];
+  report(v.pool.join() === wanted.join() && v.bars.length === 0 && v.tab === 'Disposition (7)', `${label} Disposition: 7 offene Aufträge, das Älteste zuerst (Datum laut SAP), Zahl am Tab`, `${v.tab} · ${v.pool.join(', ')}`);
+  const rows = await page.evaluate(() => [...document.querySelectorAll('#app .gt-name')].map(n => n.firstChild.textContent));
+  report(rows.includes('FW-IH01') && rows.includes('FW-IH02') && rows.join() === [...rows].sort((a, b) => a.localeCompare(b, 'de', { numeric: true })).join(), `${label} Diagramm: eine Zeile je Team, sortiert`, `${rows.length} Teams`);
+  const card = await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900002-0010"]'); return c && c.textContent.replace(/\s+/g, ' '); });
+  report(/Reparatur/.test(card || '') && /FW-IH01/.test(card) && /SAP: .*13:30 Uhr/.test(card) && /4 Std geplant/.test(card) && /Vorschlag übernehmen/.test(card), `${label} Offen-Karte: Auftragsart, SAP-Team, SAP-Termin, geplante Stunden`, card);
+  const nodate = await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900009"] .gt-go'); return c && !c.disabled; });
+  report(nodate === true, `${label} Offen-Karte: auch ohne Uhrzeit gibt es einen Vorschlag (07:00)`);
+
+  // ---- Vorschlag übernehmen: Karte verschwindet, Balken erscheint, Hinweis mit „Rückgängig“ ----
+  await probe(page, `${label} Offen-Liste: „Vorschlag übernehmen“ (Karte geht, Balken blendet ein, Liste rückt nach)`, `() => document.querySelector('#app [data-k="dp-65900003"] .gt-go')`, { at: 330, ms: 1100, anim: true });
+  v = await view();
+  const o3 = await orderOf('65900003');
+  report(!v.pool.includes('65900003') && v.pool.length === 6 && v.bars.includes('65900003') && v.undo && v.tab === 'Disposition (6)', `${label} Vorschlag übernehmen: Karte weg, Balken da, „Rückgängig“-Hinweis, Zahl am Tab`, `${v.tab} · ${v.bars.join()}`);
+  report(o3 && o3.dis === 1 && o3.team === 'FW-IH01' && o3.start === todayIso && o3.uhr === '08:30' && o3.uhr2 === '10:15' && o3.sap && o3.sap.team === 'FW-IH01', `${label} Vorschlag übernehmen: Server hat Team FW-IH01, heute 08:30–10:15 und die SAP-Angaben`, JSON.stringify(o3 && { team: o3.team, start: o3.start, uhr: o3.uhr, uhr2: o3.uhr2 }));
+  const geo = await page.evaluate(() => { const b = document.querySelector('#app .gt-bar[data-k="gb-65900003"]'); return { left: parseFloat(b.style.left), width: parseFloat(b.style.width), row: b.closest('.gt-row').dataset.team }; });
+  report(Math.abs(geo.left - 8.5 * 48) < 1 && Math.abs(geo.width - 1.75 * 48) < 1 && geo.row === 'FW-IH01', `${label} Balken sitzt richtig auf der Zeitachse (Tag: 48 px je Stunde, 08:30 + 1:45 Std)`, JSON.stringify(geo));
+  await probe(page, `${label} Hinweis „Rückgängig“ (Balken weg, Karte wieder da)`, btn('/^Rückgängig$/'), { scroll: 0, ms: 1100, tapTol: 400, smooth: '#app .gtb' });
+  v = await view();
+  report(v.pool.includes('65900003') && !v.bars.includes('65900003') && !(await orderOf('65900003')).dis, `${label} Rückgängig: Auftrag ist wieder offen (auch am Server)`, v.pool.join());
+  await probe(page, `${label} Offen-Liste: „Vorschlag übernehmen“ nochmal`, `() => document.querySelector('#app [data-k="dp-65900003"] .gt-go')`, { at: 330, ms: 1100, anim: true });
+
+  // ---- Fenster: Team, Beginn, Ende ----
+  await probe(page, `${label} Offen-Karte antippen (Fenster gleitet von unten herein, Karte bleibt stehen)`, `() => document.querySelector('#app [data-k="dp-65900002-0010"]')`, { at: 300, ms: 1000, anim: true });
+  v = await view();
+  const sheetInfo = await page.evaluate(() => { const s = document.querySelector('#app .gt-sheet'); const r = s.getBoundingClientRect(); return { text: s.textContent.replace(/\s+/g, ' '), team: s.querySelector('select').value, bottom: Math.round(innerHeight - r.bottom), inside: r.top >= 0 && r.left >= 0 && r.right <= innerWidth + 1 }; });
+  report(v.sheet && /65900002-0010/.test(sheetInfo.text) && /noch offen/.test(sheetInfo.text) && sheetInfo.team === 'FW-IH01' && sheetInfo.inside, `${label} Fenster: Auftrag, „noch offen“, Team FW-IH01 vorbelegt, liegt im Bild`, sheetInfo.text.slice(0, 120));
+  report((await field('gv-d')) === dayIso(1) && (await field('gv-t')) === '13:30' && (await field('gb-t')) === '17:30', `${label} Fenster: Beginn und Ende mit dem Vorschlag aus SAP vorbelegt`, [await field('gv-d'), await field('gv-t'), await field('gb-d'), await field('gb-t')].join(' '));
+  await probe(page, `${label} Fenster: Team wechseln (Entwurf wandert in die andere Zeile)`, `() => document.querySelector('#app .gt-sheet select')`, { act: selectTeam('FW-IH02'), ms: 700 });
+  v = await view();
+  report(v.draft.join() === 'FW-IH02', `${label} Fenster: gestrichelter Entwurfsbalken steht bei FW-IH02`, v.draft.join());
+  await probe(page, `${label} Fenster: Dauer „4 Std“`, btn('/^4 Std$/', '#app .gt-sheet'), { ms: 700 });
+  await probe(page, `${label} Fenster: Dauer „1 Std“ (Zeilen im Fenster bleiben stehen)`, btn('/^1 Std$/', '#app .gt-sheet'), { ms: 700 });
+  report((await field('gb-t')) === '14:30' && (await field('gv-t')) === '13:30', `${label} Fenster: Dauer 1 Std setzt das Ende auf 14:30`, await field('gb-t'));
+  // Beginn ändern: das Ende zieht mit (Dauer bleibt)
+  await page.evaluate(() => { const n = document.querySelector('#app .gt-sheet [data-keep="gv-t"]'); n.value = '15:00'; n.dispatchEvent(new Event('change', { bubbles: true })); });
+  await settle(400);
+  report((await field('gv-t')) === '15:00' && (await field('gb-t')) === '16:00', `${label} Fenster: Beginn 15:00 verschiebt das Ende mit (16:00, Dauer bleibt)`, `${await field('gv-t')}–${await field('gb-t')}`);
+  // Ende vor Beginn: Speichern gesperrt
+  await page.evaluate(() => { const n = document.querySelector('#app .gt-sheet [data-keep="gb-t"]'); n.value = '14:00'; n.dispatchEvent(new Event('change', { bubbles: true })); });
+  await settle(400);
+  report(await page.evaluate(() => { const b = [...document.querySelectorAll('#app .gt-sheet button')].find(b => /Disponieren/.test(b.textContent)); return !!b && b.disabled && /nicht nach dem Beginn/.test(document.querySelector('#app .gt-sheet .qk').textContent); }), `${label} Fenster: Ende vor dem Beginn sperrt „Disponieren“ und sagt warum`);
+  await probe(page, `${label} Fenster: Dauer „2 Std“ (Ende wieder gültig)`, btn('/^2 Std$/', '#app .gt-sheet'), { ms: 700 });
+  // Tippen in eine Teamzeile setzt den Entwurf dorthin
+  await probe(page, `${label} Zeitachse: Tipp in die Zeile FW-IH03 setzt den Entwurf dorthin`, `() => document.querySelector('#app .gt-row[data-team="FW-IH03"]')`, { ms: 700, act: `el => { const sc = document.querySelector('#app .gt-scroll').getBoundingClientRect(); const r = el.getBoundingClientRect(); el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: sc.left + 150, clientY: r.top + 10 })); }` });
+  v = await view();
+  report(v.draft.join() === 'FW-IH03', `${label} Zeitachse: der Entwurf steht jetzt bei FW-IH03`, v.draft.join());
+  report((await field('gv-d')) !== null && (await field('gb-t')) !== null && /FW-IH03/.test(await page.evaluate(() => document.querySelector('#app .gt-sheet select').selectedOptions[0].textContent)), `${label} Zeitachse: das Fenster zeigt das neue Team`);
+  await probe(page, `${label} Fenster: „↶ Vorschlag aus SAP“ (Entwurf zurück zu FW-IH01, 13:30–17:30)`, btn('/Vorschlag aus SAP/', '#app .gt-sheet'), { ms: 700 });
+  report((await field('gv-t')) === '13:30' && (await field('gb-t')) === '17:30' && (await page.evaluate(() => document.querySelector('#app .gt-sheet select').value)) === 'FW-IH01', `${label} Vorschlag aus SAP stellt Team und Zeit zurück`);
+  await probe(page, `${label} Fenster: Team FW-IH02`, `() => document.querySelector('#app .gt-sheet select')`, { act: selectTeam('FW-IH02'), ms: 600 });
+  await probe(page, `${label} Fenster: „✓ Disponieren“ (Fenster gleitet weg, Balken blendet ein, Karte geht)`, btn('/Disponieren$/', '#app .gt-sheet'), { ms: 1100, anim: true });
+  v = await view();
+  const o2 = await orderOf('65900002-0010');
+  report(!v.sheet && v.bars.includes('65900002-0010') && !v.pool.includes('65900002-0010') && (await barRow('65900002-0010')) === 'FW-IH02', `${label} Disponieren: Fenster zu, Balken bei FW-IH02, Karte aus der Liste`, `${v.bars.join()} · ${await barRow('65900002-0010')}`);
+  report(o2 && o2.dis === 1 && o2.team === 'FW-IH02' && o2.start === dayIso(1) && o2.uhr === '13:30' && o2.uhr2 === '17:30', `${label} Disponieren: Server hat Team FW-IH02, morgen 13:30–17:30`, JSON.stringify(o2 && { team: o2.team, start: o2.start, uhr: o2.uhr, uhr2: o2.uhr2 }));
+
+  // ---- Balken antippen, Überschneidung, aufheben ----
+  await probe(page, `${label} Balken antippen (Fenster mit „disponiert“, Balken bleibt stehen)`, `() => document.querySelector('#app .gt-bar[data-k="gb-65900002-0010"]')`, { at: 330, ms: 1000, anim: true });
+  report(await page.evaluate(() => { const s = document.querySelector('#app .gt-sheet'); return !!s && /disponiert/.test(s.textContent) && [...s.querySelectorAll('button')].some(b => /Disposition aufheben/.test(b.textContent)) && /Änderung speichern|Gespeichert/.test(s.textContent) && document.querySelector('#app .gt-bar.sel'); }), `${label} Fenster zu einem Balken: „Disposition aufheben“ da, Balken hervorgehoben`);
+  await probe(page, `${label} Fenster: „Disposition aufheben“ (Balken weg, Karte kommt zurück)`, btn('/^Disposition aufheben$/', '#app .gt-sheet'), { ms: 1100, anim: true });
+  v = await view();
+  report(!v.sheet && !v.bars.includes('65900002-0010') && v.pool.includes('65900002-0010') && !(await orderOf('65900002-0010')).dis, `${label} Aufheben: Auftrag ist wieder offen (Liste, Diagramm, Server)`, v.pool.join());
+  await probe(page, `${label} Hinweis „Rückgängig“ (Disposition kommt zurück)`, btn('/^Rückgängig$/'), { scroll: 0, ms: 1100, tapTol: 400, smooth: '#app .gtb' });
+  report((await orderOf('65900002-0010')).dis === 1 && (await orderOf('65900002-0010')).team === 'FW-IH02', `${label} Rückgängig stellt die Disposition (FW-IH02, 13:30–17:30) wieder her`);
+  // Überschneidung: 65900001-0010 (FW-IH01, 06:00–14:00 in zwei Tagen) und Vorgang 0020 ebenfalls auf FW-IH01 legen
+  await page.evaluate(() => [...document.querySelectorAll('#app [data-k="dp-65900001-0010"] .gt-go, #app [data-k="dp-65900001-0020"] .gt-go')].forEach(b => b.click()));
+  await settle(900);
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.evaluate(() => document.querySelector('#app .gt-bar[data-k="gb-65900001-0020"]').click());
+  await settle(500);
+  await page.evaluate(() => { const s = document.querySelector('#app .gt-sheet select'); s.value = 'FW-IH01'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  await settle(400);
+  report(await page.evaluate(() => /Überschneidet sich bei FW-IH01 mit 65900001-0010/.test(document.querySelector('#app .gt-sheet .gt-warn').textContent)), `${label} Fenster: Überschneidung im selben Team wird gemeldet`, await page.evaluate(() => document.querySelector('#app .gt-sheet .gt-warn').textContent));
+  await probe(page, `${label} Überschneidung speichern (beide Balken teilen sich die Zeile)`, btn('/Änderung speichern/', '#app .gt-sheet'), { ms: 1000, anim: true });
+  const cf = await page.evaluate(() => { const bars = [...document.querySelectorAll('#app .gt-row[data-team="FW-IH01"] .gt-bar.cf')]; const row = document.querySelector('#app .gt-row[data-team="FW-IH01"]'); return { n: bars.length, tops: bars.map(b => parseFloat(b.style.top)), rowH: Math.round(row.getBoundingClientRect().height), heights: bars.map(b => parseFloat(b.style.height)) }; });
+  report(cf.n === 2 && cf.tops[0] !== cf.tops[1] && cf.heights.every(h => h < cf.rowH / 2) && cf.tops.every((t, i) => t + cf.heights[i] <= cf.rowH), `${label} Überschneidung: beide Balken markiert, teilen sich die Zeile, Zeile bleibt gleich hoch`, JSON.stringify(cf));
+  // zurück: Vorgang 0020 gehört wieder zu FW-IH02
+  await page.evaluate(() => document.querySelector('#app .gt-bar[data-k="gb-65900001-0020"]').click());
+  await settle(500);
+  await page.evaluate(() => { const s = document.querySelector('#app .gt-sheet select'); s.value = 'FW-IH02'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  await settle(300);
+  await page.evaluate(() => [...document.querySelectorAll('#app .gt-sheet button')].find(b => /Änderung speichern/.test(b.textContent)).click());
+  await settle(900);
+
+  // ---- Zoom, Navigation, Filter, Suche ----
+  // (der Hinweis „Rückgängig“ läuft nach 10 s von selbst ab und schöbe sonst mitten in einer Prüfung den Inhalt weg)
+  await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 20000 });
+  await settle(500);
+  await probe(page, `${label} Zoom „Woche“`, btn('/^Woche$/', '#app .gt-seg'), { at: 250, ms: 800 });
+  report(await page.evaluate(() => document.querySelectorAll('#app .gt-day').length === 7 && parseFloat(getComputedStyle(document.querySelector('#app .gt-in')).width) === 7 * 24 * 14), `${label} Woche: 7 Tage, 14 px je Stunde`);
+  await probe(page, `${label} Navigation „›“ (nächste Woche)`, btn('/^›$/', '#app .gt-top'), { at: 250, ms: 700 });
+  await probe(page, `${label} Navigation „Heute“`, btn('/^Heute$/', '#app .gt-top'), { at: 250, ms: 700 });
+  await probe(page, `${label} Zoom „Tag“`, btn('/^Tag$/', '#app .gt-seg'), { at: 250, ms: 800 });
+  await probe(page, `${label} Navigation „‹“ (Vortag)`, btn('/^‹$/', '#app .gt-top'), { at: 250, ms: 700 });
+  const rangeBack = await page.evaluate(() => document.querySelector('#app .gt-range').textContent);
+  await probe(page, `${label} Navigation „Heute“ (zurück)`, btn('/^Heute$/', '#app .gt-top'), { at: 250, ms: 700 });
+  report(rangeBack.startsWith(dayIso(-1).split('-').reverse().slice(0, 2).join('.')) && (await page.evaluate(() => document.querySelector('#app .gt-range').textContent)).startsWith(todayIso.split('-').reverse().slice(0, 2).join('.')), `${label} Navigation: ‹ zeigt ab gestern, „Heute“ ab heute`, rangeBack);
+  await probe(page, `${label} Filter „Reparaturen“`, btn('/^🛠️ Reparaturen/'), { at: 300, ms: 800 });
+  v = await view();
+  report(v.pool.every(a => !['65900003', '65900004'].includes(a)) && v.bars.every(a => !['65900003', '65900004'].includes(a)), `${label} Filter Reparaturen: Liste und Diagramm ohne Entstörungen`, v.pool.join() + ' | ' + v.bars.join());
+  await probe(page, `${label} Filter „Entstörungen“`, btn('/^🚨 Entstörungen/'), { at: 300, ms: 800 });
+  v = await view();
+  report(v.pool.every(a => ['65900003', '65900004'].includes(a)) && v.bars.every(a => ['65900003', '65900004'].includes(a)), `${label} Filter Entstörungen: nur Entstörungen`, v.pool.join() + ' | ' + v.bars.join());
+  await probe(page, `${label} Filter „Alle“`, btn('/^Alle \\(/', '#app .gtb'), { at: 300, ms: 800 });
+  await page.fill('#app input[data-keep="gs"]', '65900009');
+  await settle(500);
+  v = await view();
+  report(v.pool.join() === '65900009' && /\(1\)/.test(v.head), `${label} Suche in der Offen-Liste findet 65900009`, v.pool.join());
+  await page.fill('#app input[data-keep="gs"]', '');
+  await settle(400);
+
+  if (wide) {
+    // ---- Mit der Maus: Balken ziehen, Länge ändern, Karte auf eine Zeile ziehen ----
+    await page.evaluate(() => scrollTo(0, 260));
+    await settle(400);
+    const geom = () => page.evaluate(() => {
+      const sc = document.querySelector('#app .gt-scroll').getBoundingClientRect(), scr = document.querySelector('#app .gt-scroll').scrollLeft;
+      const rows = Object.fromEntries([...document.querySelectorAll('#app .gt-row')].map(r => [r.dataset.team, r.getBoundingClientRect().top + r.getBoundingClientRect().height / 2]));
+      return { left: sc.left - scr, rows, tops: [...document.querySelectorAll('#app .gt-row')].map(r => Math.round(r.getBoundingClientRect().top)) };
+    });
+    let g = await geom();
+    const b3 = await page.evaluate(() => { const r = document.querySelector('#app .gt-bar[data-k="gb-65900003"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+    await page.mouse.move(b3.x, b3.y);
+    await page.mouse.down();
+    await page.mouse.move(b3.x + 24, b3.y + 6, { steps: 4 });
+    await page.mouse.move(b3.x + 48, g.rows['FW-IH03'], { steps: 10 });
+    const during = await page.evaluate(() => ({ tip: (document.querySelector('.gt-tip') || {}).textContent, target: [...document.querySelectorAll('#app .gt-row.tgt')].map(r => r.dataset.team) }));
+    await page.mouse.up();
+    await settle(1000);
+    const o3b = await orderOf('65900003');
+    report(/FW-IH03/.test(during.tip || '') && during.target.join() === 'FW-IH03', `${label} Ziehen: Hinweis zeigt Team und Zeit, Zielzeile ist hervorgehoben`, `${during.tip} · ${during.target.join()}`);
+    report(o3b.team === 'FW-IH03' && o3b.uhr === '09:30' && o3b.uhr2 === '11:15' && o3b.start === todayIso, `${label} Ziehen: Auftrag liegt bei FW-IH03, eine Stunde später (09:30–11:15)`, JSON.stringify({ team: o3b.team, uhr: o3b.uhr, uhr2: o3b.uhr2 }));
+    const g2 = await geom();
+    report(JSON.stringify(g.tops) === JSON.stringify(g2.tops), `${label} Ziehen: die Zeilen des Diagramms bleiben an derselben Bildschirmstelle (feste Zeilenhöhe, die Seite hält den Hinweis oben aus)`, `${g.tops.slice(0, 4)} → ${g2.tops.slice(0, 4)}`);
+    // Länge ändern: Balken antippen, dann den rechten Rand ziehen (+2 Std)
+    await page.evaluate(() => document.querySelector('#app .gt-bar[data-k="gb-65900003"]').click());
+    await settle(500);
+    const rz = await page.evaluate(() => { const r = document.querySelector('#app .gt-bar.sel .gt-rz').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+    await page.mouse.move(rz.x, rz.y);
+    await page.mouse.down();
+    await page.mouse.move(rz.x + 48, rz.y, { steps: 5 });
+    await page.mouse.move(rz.x + 96, rz.y, { steps: 5 });
+    await page.mouse.up();
+    await settle(900);
+    const o3c = await orderOf('65900003');
+    report(o3c.uhr === '09:30' && o3c.uhr2 === '13:15' && o3c.team === 'FW-IH03', `${label} Länge ändern: rechter Rand +2 Std (Ende 13:15), Beginn bleibt`, `${o3c.uhr}–${o3c.uhr2}`);
+    // Entwurf eines Offenen ziehen (Fenster offen): nur der Entwurf bewegt sich, gespeichert wird erst mit „Disponieren“
+    await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900008-0010"]'); c.click(); });
+    await settle(600);
+    report((await view()).draft.length === 0, `${label} Entwurf: ein gewählter offener Auftrag, dessen SAP-Termin 3 Tage zurückliegt (außerhalb des gezeigten Zeitraums), hat keinen Balken im Bild`);
+    await page.evaluate(() => document.querySelector('#app .gt-sheet .gt-x').click());
+    await settle(500);
+    // Karte mit der Maus auf eine Zeile ziehen (Beginn = Stelle des Zeigers, Dauer aus SAP)
+    g = await geom();
+    const card0 = await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900004"]'); const r = c.getBoundingClientRect(); return { x: r.left + 60, y: r.top + 30 }; });
+    const xAt = hour => g.left + hour * 48;
+    await page.mouse.move(card0.x, card0.y);
+    await page.mouse.down();
+    await page.mouse.move(card0.x + 40, card0.y + 10, { steps: 4 });
+    await page.mouse.move(xAt(14), g.rows['FW-IH02'], { steps: 12 });
+    const dragging = await page.evaluate(() => ({ ghost: (document.querySelector('.gt-ghost') || {}).textContent, target: [...document.querySelectorAll('#app .gt-row.tgt')].map(r => r.dataset.team) }));
+    await page.mouse.up();
+    await settle(1000);
+    const o4 = await orderOf('65900004');
+    report(/FW-IH02/.test(dragging.ghost || '') && dragging.target.join() === 'FW-IH02', `${label} Karte ziehen: Zeiger zeigt Ziel, Zielzeile hervorgehoben`, `${dragging.ghost} · ${dragging.target.join()}`);
+    report(o4.dis === 1 && o4.team === 'FW-IH02' && o4.start === todayIso && o4.uhr === '14:00', `${label} Karte ziehen: Auftrag liegt bei FW-IH02 ab 14:00 (Stelle des Zeigers, aufs Raster gerundet)`, JSON.stringify({ team: o4.team, start: o4.start, uhr: o4.uhr, uhr2: o4.uhr2 }));
+    report(!(await view()).pool.includes('65900004'), `${label} Karte ziehen: die Karte ist aus der Offen-Liste verschwunden`);
+    // Loslassen außerhalb des Diagramms ändert nichts; Esc bricht ab
+    const before = (await view()).pool.join();
+    const c2 = await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900008-0010"]'); const r = c.getBoundingClientRect(); return { x: r.left + 60, y: r.top + 30 }; });
+    await page.mouse.move(c2.x, c2.y);
+    await page.mouse.down();
+    await page.mouse.move(c2.x + 80, c2.y + 40, { steps: 5 });
+    await page.mouse.up();
+    await settle(500);
+    report((await view()).pool.join() === before && !(await orderOf('65900008-0010')).dis, `${label} Karte ziehen: Loslassen außerhalb des Diagramms ändert nichts`);
+  }
+
+  // ---- Alle Vorschläge übernehmen (mit Rückfrage) ----
+  await undispatchAll(base);
+  await page.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
+  await settle(500);
+  report((await view()).tab === 'Disposition (7)' && (await view()).bars.length === 0, `${label} Live: nach dem Aufheben per Server sind wieder alle 7 offen (Karten, Diagramm, Tab)`);
+  await probe(page, `${label} „Alle Vorschläge übernehmen“ (Rückfrage erscheint)`, btn('/^Alle Vorschläge übernehmen/'), { at: 330, ms: 700 });
+  report(await page.evaluate(() => [...document.querySelectorAll('#app button')].some(b => /^Wirklich 7 Aufträge disponieren\?/.test(b.textContent.trim()))), `${label} „Alle Vorschläge“: Rückfrage nennt die Zahl (7)`);
+  await probe(page, `${label} „Wirklich 7 Aufträge disponieren?“ (alle Karten gehen, Balken erscheinen)`, btn('/^Wirklich 7/'), { at: 330, ms: 1300, anim: true });
+  v = await view();
+  const all = await dispatchOrders(base);
+  report(all.length === 7 && all.every(o => o.dis === 1) && v.pool.length === 0 && /Alles disponiert/.test(await page.evaluate(() => document.querySelector('#app .gt-empty').textContent)) && v.tab === 'Disposition', `${label} Alle Vorschläge: alle 7 disponiert, Liste leer („✓ Alles disponiert.“), keine Zahl am Tab`, `${all.filter(o => o.dis).length} disponiert`);
+  const exp = { '65900008-0010': ['FW-IH01', '09:00', '11:00'], '65900004': ['FW-IH01', '22:00', '05:30'], '65900003': ['FW-IH01', '08:30', '10:15'], '65900002-0010': ['FW-IH01', '13:30', '17:30'], '65900001-0010': ['FW-IH01', '06:00', '14:00'], '65900001-0020': ['FW-IH02', '06:00', '10:00'], '65900009': ['FW-IH01', '07:00', '19:00'] }; // (nur Fremdfirma: deren 12 geplante Stunden zählen)
+  const wrong = all.filter(o => exp[o.auftrag] && [o.team, o.uhr, o.uhr2].join() !== exp[o.auftrag].join()).map(o => `${o.auftrag}: ${o.team} ${o.uhr}–${o.uhr2}`);
+  report(wrong.length === 0, `${label} Vorschläge: SAP-Team, SAP-Beginn und Ende (aus SAP, sonst geplante Stunden, sonst 2 Std)`, wrong.join(' | ') || 'alle wie erwartet');
+  const mk = await monteurKinds(base);
+  report(mk.rep === 4 && mk.ent === 2, `${label} Der Monteur (Team FW-IH01) sieht jetzt 4 Reparaturen und 2 Entstörungen`, JSON.stringify(mk));
+  // Seite wird nie breiter als der Bildschirm (auch mit Fenster)
+  await page.evaluate(() => document.querySelector('#app .gt-bar').click());
+  await settle(600);
+  report(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), `${label} Diagramm mit Fenster: Seite nicht breiter als der Bildschirm`);
+  await page.evaluate(() => document.querySelector('#app .gt-sheet .gt-x').click());
+  await settle(400);
+  await page.context().close();
+}
+// Disposition auf dem schmalsten Handy (320 px): nichts ragt über den Rand, das Bearbeiten-Fenster liegt im Bild, Dunkelmodus lesbar.
+// Endet wie dispositionChecks mit „Alle Vorschläge übernehmen“ (die Monteur-Prüfungen danach rechnen mit diesen Zeiten).
+async function dispositionNarrowChecks(browser, base, errors) {
+  console.log('\n=== Disposition: schmales Handy (320 px) und Dunkelmodus ===');
+  await undispatchAll(base);
+  const page = await newPage(browser, base, { width: 320, height: 640 }, errors);
+  await loginDispo(page);
+  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => /^Disposition/.test(b.textContent.trim())).click());
+  await page.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
+  await pause(page, 800);
+  const wide = () =>
+    page.evaluate(() => [...document.querySelectorAll('#app *')].filter(n => n.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && !n.closest('.tabs, .gt-scroll') && getComputedStyle(n).position !== 'fixed').map(n => n.tagName + '.' + n.className + '"' + n.textContent.trim().slice(0, 20) + '"').slice(0, 3));
+  let w = await wide();
+  report(!w.length && (await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)), '320px Disposition: Liste und Diagramm ragen nicht über den Rand', w.join(', '));
+  await page.evaluate(() => document.querySelector('#app [data-k="dp-65900003"]').click());
+  await pause(page, 700);
+  const sheet = await page.evaluate(() => { const r = document.querySelector('#app .gt-sheet').getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: innerWidth, h: innerHeight, fields: [...document.querySelectorAll('#app .gt-sheet input, #app .gt-sheet select')].map(n => Math.round(n.getBoundingClientRect().right)).every(x => x <= innerWidth) }; });
+  report(sheet.l >= 0 && sheet.r <= sheet.w && sheet.b <= sheet.h && sheet.t >= 0 && sheet.fields, '320px Fenster: liegt im Bild, alle Felder innerhalb des Randes', JSON.stringify(sheet));
+  w = await wide();
+  report(!w.length, '320px Disposition mit Fenster: nichts ragt über den Rand', w.join(', '));
+  // Dunkelmodus: Balken, Entwurf, Zeilen und Fenster bleiben lesbar (Text hebt sich vom Grund ab)
+  await page.evaluate(() => [...document.querySelectorAll('#app .gt-sheet button')].find(b => /^1 Std$/.test(b.textContent.trim())).click());
+  await pause(page, 400);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await pause(page, 400);
+  const lum = c => { const m = c.match(/\d+(\.\d+)?/g).map(Number), f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; return 0.2126 * f(m[0]) + 0.7152 * f(m[1]) + 0.0722 * f(m[2]); };
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  await page.evaluate(() => document.querySelector('#app .gt-sheet .gt-x').click());
+  await pause(page, 400);
+  await page.evaluate(() => document.querySelector('#app [data-k="dp-65900003"] .gt-go').click());
+  await pause(page, 700);
+  const dark = await page.evaluate(() => {
+    const bar = document.querySelector('#app .gt-bar:not(.draft)'), cs = getComputedStyle(bar), card = getComputedStyle(document.querySelector('#app .gt'));
+    return { fg: cs.color, bg: cs.backgroundColor, cardBg: card.backgroundColor, text: getComputedStyle(document.querySelector('#app .gt-name')).color };
+  });
+  report(ratio(dark.fg, dark.bg) >= 4.5 && ratio(dark.text, dark.cardBg) >= 4.5, 'Dunkelmodus: Balkenschrift und Teamnamen sind gut lesbar (Kontrast ≥ 4,5)', `Balken ${ratio(dark.fg, dark.bg).toFixed(1)}, Team ${ratio(dark.text, dark.cardBg).toFixed(1)}`);
+  await page.emulateMedia({ colorScheme: 'light' });
+  // alles wieder auf den Vorschlag aus SAP
+  await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 20000 });
+  await undispatchAll(base);
+  await page.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
+  await pause(page, 500);
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /^Alle Vorschläge übernehmen/.test(b.textContent.trim())).click());
+  await pause(page, 400);
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /^Wirklich 7/.test(b.textContent.trim())).click());
+  await pause(page, 1200);
+  report((await dispatchOrders(base)).every(o => o.dis === 1), '320px: zuletzt sind wieder alle mit dem Vorschlag aus SAP disponiert');
+  await page.context().close();
+}
+
 // Monteur: Startseite mit der Auswahl der Auftragsart, die Listen (Termin & Uhrzeit), Detail ohne Prüfobjekte, Meldungen
 async function kindChecks(browser, base, viewport, errors) {
   const label = `${viewport.width}px`,
@@ -1406,6 +1690,12 @@ async function overflowChecks(browser, base, errors) {
   await page.context().close();
 }
 
+// Ergebnis ausgeben und mit Exit-Code beenden (auch bei TEST_ONLY=…: sonst bliebe der Code 0 trotz Fehlern)
+function summary(t0) {
+  console.log(`\n${failures.length ? 'FEHLGESCHLAGEN' : 'BESTANDEN'}: ${passed} Prüfungen ok, ${failures.length} Fehler (${Math.round((Date.now() - t0) / 1000)} s)`);
+  for (const f of failures) console.log('  ✗ ' + f);
+  process.exit(failures.length ? 1 : 0);
+}
 // ================================================================================================
 (async () => {
   const pw = loadPlaywright(),
@@ -1418,18 +1708,33 @@ async function overflowChecks(browser, base, errors) {
   try {
     if (process.env.TEST_ONLY === 'geraete') {
       await deviceChecks(browser, base, errors);
-      return;
+      return summary(t0);
+    }
+    if (process.env.TEST_ONLY === 'disposition') {
+      // schnell: Upload, dann nur das Gantt-Diagramm (breit und am Handy)
+      await kindUploadChecks(browser, base, errors);
+      await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
+      await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
+      await dispositionNarrowChecks(browser, base, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
     }
     if (process.env.TEST_ONLY === 'auftragsarten') {
       await kindUploadChecks(browser, base, errors);
+      await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
+      await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
+      await dispositionNarrowChecks(browser, base, errors);
       await kindChecks(browser, base, { width: 390, height: 844 }, errors);
       await kindChecksWide(browser, base, { width: 1280, height: 800 }, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
-      return;
+      return summary(t0);
     }
     const found = await waitForCoordinates(base);
     console.log(`Adressen mit Koordinaten: ${found} (Mini-Geocoder: ${geocoder.requests()} Anfragen)`);
     await kindUploadChecks(browser, base, errors);
+    await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
+    await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
+    await dispositionNarrowChecks(browser, base, errors);
     await kindChecks(browser, base, { width: 390, height: 844 }, errors);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);
@@ -1448,9 +1753,7 @@ async function overflowChecks(browser, base, errors) {
     server.stop();
     geocoder.stop();
   }
-  console.log(`\n${failures.length ? 'FEHLGESCHLAGEN' : 'BESTANDEN'}: ${passed} Prüfungen ok, ${failures.length} Fehler (${Math.round((Date.now() - t0) / 1000)} s)`);
-  for (const f of failures) console.log('  ✗ ' + f);
-  process.exit(failures.length ? 1 : 0);
+  summary(t0);
 })().catch(e => {
   console.error(e);
   process.exit(2);

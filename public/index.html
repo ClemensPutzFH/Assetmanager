@@ -1910,6 +1910,559 @@
         pointer-events: none;
         user-select: none;
       }
+      /* ---- Disposition (Disponent): Gantt-Diagramm, Offen-Liste, Bearbeiten-Fenster ----
+         .gtb = Werkzeugleiste · .gtp = Raster (breit: Offen-Liste links, Diagramm rechts; schmal untereinander) · .gt = Diagramm ·
+         .gt-names = Teamspalte (steht still) · .gt-scroll = Zeitachse (seitlich wischbar) · .gt-row = eine Zeile je Team (feste Höhe:
+         überschneidende Aufträge teilen sie sich, nichts wächst) · .gt-bar = ein disponierter Auftrag · .gt-pc = Karte „noch offen“ ·
+         .gt-sheet = Bearbeiten-Fenster (fest am unteren Rand, verändert das Layout nicht) */
+      .gtb {
+        margin-bottom: 12px;
+      }
+      .gtb .chips {
+        margin-bottom: 8px;
+      }
+      .gtp {
+        display: grid;
+        gap: 12px;
+        align-items: start;
+        /* Platz für das Bearbeiten-Fenster unter dem Inhalt: bleibt immer gleich, damit sich beim Öffnen und Schließen nichts verschiebt */
+        padding-bottom: 21rem;
+      }
+      .gtp > * {
+        min-width: 0;
+      }
+      .gt-ph {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: space-between;
+        margin: 0 0 8px;
+      }
+      .gt-ph b {
+        font-size: 1.0625rem;
+      }
+      .gt-ph button {
+        padding: 6px 12px;
+        font-size: 0.875rem;
+      }
+      .gt-pool {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .gt-pc {
+        margin: 0;
+        cursor: pointer;
+        user-select: none;
+        touch-action: pan-y;
+      }
+      .gt-pc.sel {
+        border-color: var(--ac);
+        box-shadow:
+          0 0 0 2px color-mix(in srgb, var(--ac) 35%, transparent),
+          var(--sh1);
+      }
+      .gt-pc .gt-sap {
+        font-size: 0.875rem;
+        margin-top: 4px;
+      }
+      .gt-pc .gt-go {
+        margin-top: 8px;
+        padding: 8px 12px;
+        font-size: 0.875rem;
+      }
+      .gt-pc .gt-go:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .gt-empty {
+        padding: 12px 14px;
+        border: 1px dashed var(--bd);
+        border-radius: var(--rc);
+      }
+      .gt {
+        padding: 0;
+        overflow: hidden;
+        margin: 0;
+      }
+      .gt-top {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--bd);
+      }
+      .gt-top button {
+        padding: 6px 12px;
+        font-size: 0.875rem;
+        flex: 0 0 auto;
+      }
+      /* schmal: der Zeitraum steht in einer eigenen Zeile unter den Knöpfen (sonst bliebe von ihm nur „08.1…“) */
+      .gt-top {
+        flex-wrap: wrap;
+      }
+      .gt-range {
+        order: 9;
+        flex: 1 0 100%;
+        min-width: 0;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .gt-seg {
+        display: flex;
+        flex: 0 0 auto;
+        margin-left: auto;
+      }
+      @media (min-width: 700px) {
+        .gt-top {
+          flex-wrap: nowrap;
+        }
+        .gt-range {
+          order: 0;
+          flex: 1 1 0;
+        }
+        .gt-seg {
+          margin-left: 0;
+        }
+      }
+      .gt-seg button {
+        border-radius: 0;
+        box-shadow: none;
+      }
+      .gt-seg button:first-child {
+        border-radius: var(--r) 0 0 var(--r);
+      }
+      .gt-seg button:last-child {
+        border-radius: 0 var(--r) var(--r) 0;
+        margin-left: -1px;
+      }
+      .gt-seg button.on {
+        background: var(--ac);
+        border-color: var(--ac);
+        color: #fff;
+        position: relative;
+      }
+      .gt-wrap {
+        display: flex;
+      }
+      .gt-names {
+        flex: 0 0 var(--gnw);
+        border-right: 1px solid var(--bd);
+        background: var(--card);
+        position: relative;
+        z-index: 2;
+      }
+      .gt-corner {
+        height: var(--gth);
+        box-sizing: border-box;
+        border-bottom: 1px solid var(--bd);
+        padding: 0 8px;
+        display: flex;
+        align-items: flex-end;
+        padding-bottom: 4px;
+        font-size: 0.75rem;
+        color: var(--mu);
+      }
+      .gt-name {
+        height: var(--grh);
+        box-sizing: border-box;
+        padding: 0 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 4px;
+        border-bottom: 1px solid var(--bd);
+        font-size: 0.8125rem;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .gt-name span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .gt-name .gt-n {
+        font-weight: 500;
+        font-size: 0.6875rem;
+        color: var(--mu);
+        flex: 0 0 auto;
+      }
+      .gt-name.sap {
+        color: var(--act);
+        background: var(--acs);
+      }
+      .gt-name.tgt,
+      .gt-row.tgt {
+        background-color: color-mix(in srgb, var(--ac) 12%, var(--card));
+      }
+      .gt-scroll {
+        flex: 1 1 0;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        scrollbar-width: thin;
+      }
+      .gt-in {
+        position: relative;
+        width: var(--giw);
+      }
+      .gt-head {
+        position: relative;
+        height: var(--gth);
+        box-sizing: border-box;
+        border-bottom: 1px solid var(--bd);
+      }
+      .gt-day {
+        position: absolute;
+        top: 0;
+        height: 50%;
+        box-sizing: border-box;
+        border-left: 1px solid var(--bd);
+        font-size: 0.8125rem;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      /* der Tag steht am linken Rand der sichtbaren Zeitachse, solange man in seinem Bereich wischt */
+      .gt-day span {
+        position: sticky;
+        left: 6px;
+        display: inline-block;
+        padding: 4px 0 0 6px;
+      }
+      .gt-day.we {
+        color: var(--mu);
+      }
+      .gt-day.td {
+        color: var(--act);
+      }
+      .gt-hr {
+        position: absolute;
+        bottom: 0;
+        height: 50%;
+        box-sizing: border-box;
+        border-left: 1px solid var(--bd);
+        padding: 5px 0 0 3px;
+        font-size: 0.6875rem;
+        color: var(--mu);
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      .gt-row {
+        position: relative;
+        height: var(--grh);
+        box-sizing: border-box;
+        border-bottom: 1px solid var(--bd);
+        /* senkrechte Linien: Tage (kräftig) und Stunden */
+        background-image:
+          linear-gradient(to right, var(--bd) 1px, transparent 1px), linear-gradient(to right, color-mix(in srgb, var(--bd) 55%, transparent) 1px, transparent 1px);
+        background-size:
+          var(--gdp) 100%,
+          var(--ghp) 100%;
+      }
+      .gt-now {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        margin-left: -1px;
+        background: var(--er);
+        opacity: 0.7;
+        pointer-events: none;
+        z-index: 1;
+      }
+      .gt-bar {
+        --bc: var(--ac);
+        position: absolute;
+        box-sizing: border-box;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 0 8px 0 6px;
+        border-radius: 6px;
+        background: var(--bc);
+        border: 1px solid color-mix(in srgb, var(--bc) 65%, #000);
+        color: #fff;
+        font-size: 0.75rem;
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+        box-shadow: var(--sh1);
+      }
+      .gt-bar.ent {
+        --bc: var(--nk);
+      }
+      .gt-bar b {
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+      }
+      .gt-bar span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .gt-bar.sel,
+      .gt-bar.drag {
+        z-index: 3;
+        box-shadow:
+          0 0 0 2px var(--card),
+          0 0 0 4px var(--tx);
+      }
+      .gt-bar.drag {
+        cursor: grabbing;
+        opacity: 0.92;
+      }
+      .gt-bar.cf {
+        box-shadow: 0 0 0 2px var(--gb1);
+      }
+      .gt-bar.sel.cf {
+        box-shadow:
+          0 0 0 2px var(--card),
+          0 0 0 4px var(--gb1);
+      }
+      .gt-bar.late {
+        border-style: dashed;
+      }
+      .gt-bar.draft {
+        background: color-mix(in srgb, var(--bc) 16%, var(--card));
+        border: 2px dashed var(--bc);
+        color: var(--tx);
+        z-index: 4;
+      }
+      .gt-bar.gh {
+        opacity: 0.4;
+      }
+      .gt-bar.cl {
+        border-top-left-radius: 0;
+        border-bottom-left-radius: 0;
+      }
+      .gt-bar.cr {
+        border-top-right-radius: 0;
+        border-bottom-right-radius: 0;
+      }
+      .gt-rz {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 10px;
+        cursor: ew-resize;
+        touch-action: none;
+        background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.45));
+      }
+      .gt-bar.draft .gt-rz {
+        background: linear-gradient(to right, transparent, color-mix(in srgb, var(--bc) 35%, transparent));
+      }
+      .gt-leg {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 14px;
+        padding: 8px 12px;
+        font-size: 0.8125rem;
+        color: var(--mu);
+        border-top: 1px solid var(--bd);
+      }
+      .gt-leg i {
+        display: inline-block;
+        width: 0.8em;
+        height: 0.8em;
+        border-radius: 3px;
+        margin-right: 5px;
+        vertical-align: -0.05em;
+        background: var(--ac);
+      }
+      .gt-leg i.ent {
+        background: var(--nk);
+      }
+      .gt-leg i.dr {
+        background: transparent;
+        border: 2px dashed var(--ac);
+        box-sizing: border-box;
+      }
+      .gt-tip,
+      .gt-ghost {
+        position: fixed;
+        left: 0;
+        top: 0;
+        z-index: 9;
+        pointer-events: none;
+        font-size: 0.8125rem;
+        user-select: none;
+      }
+      .gt-tip {
+        background: var(--tx);
+        color: var(--card);
+        border-radius: 8px;
+        padding: 4px 8px;
+        white-space: nowrap;
+        box-shadow: var(--sh2);
+      }
+      .gt-ghost {
+        background: var(--ac);
+        color: #fff;
+        border-radius: 6px;
+        padding: 3px 8px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        box-shadow: var(--sh2);
+        opacity: 0.92;
+      }
+      .gt-ghost.ent {
+        background: var(--nk);
+      }
+      .gt-sheet {
+        position: fixed;
+        z-index: 7;
+        left: max(8px, env(safe-area-inset-left));
+        right: max(8px, env(safe-area-inset-right));
+        bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+        max-width: 46rem;
+        margin: 0 auto;
+        box-sizing: border-box;
+        max-height: calc(100vh - 72px);
+        overflow-y: auto;
+        background: var(--card);
+        border: 1px solid var(--bd);
+        border-radius: var(--rc);
+        box-shadow:
+          var(--sh2),
+          0 12px 36px rgba(0, 0, 0, 0.18);
+        padding: 12px 14px;
+      }
+      .gt-sheet .gt-sh {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+      .gt-sheet .gt-x {
+        flex: 0 0 auto;
+        padding: 4px 10px;
+        box-shadow: none;
+      }
+      .gt-f {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        margin: 10px 0;
+      }
+      .gt-f > .mu {
+        font-size: 0.875rem;
+      }
+      .gt-f select {
+        grid-column: 2 / -1;
+        width: 100%;
+        min-width: 0;
+      }
+      .gt-f input {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        font: inherit;
+        color: var(--tx);
+        background: var(--card);
+        border: 1px solid var(--bd);
+        border-radius: var(--r);
+        padding: 8px 10px;
+      }
+      .gt-sheet .qk {
+        margin: 4px 0 8px;
+        align-items: center;
+      }
+      /* die Beschriftung der Dauer hat eine eigene Zeile: ändert sich ihr Text, bricht nichts anders um (das Fenster bleibt gleich hoch) */
+      .gt-dur {
+        flex: 1 0 100%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .gt-sheet .gt-btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .gt-sheet .gt-btns button {
+        flex: 1 1 auto;
+      }
+      .gt-warn {
+        color: var(--gb2);
+        font-size: 0.875rem;
+        margin: 4px 0;
+        min-height: 1.4em;
+      }
+      .gt-sheet .gt-btns button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        .gt-pc {
+          transition: box-shadow 0.15s;
+        }
+      }
+      /* breit: das Bearbeiten-Fenster ist eine flache Leiste (Felder in einer Zeile) und verdeckt nur die untersten Teamzeilen */
+      @media (min-width: 900px) {
+        .gtp {
+          padding-bottom: 12rem;
+        }
+        .gt-sheet {
+          max-width: 72rem;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 0 16px;
+          align-items: center;
+        }
+        .gt-sheet .gt-sh,
+        .gt-sheet .gt-f {
+          grid-column: 1 / -1;
+        }
+        .gt-sheet .qk {
+          grid-row: 3;
+          grid-column: 1;
+        }
+        .gt-sheet .gt-btns {
+          grid-row: 3;
+          grid-column: 2;
+          margin-top: 0;
+          flex-wrap: nowrap;
+        }
+        .gt-sheet .gt-btns button {
+          white-space: nowrap;
+        }
+        .gt-sheet .gt-warn {
+          grid-row: 4;
+          grid-column: 1 / -1;
+        }
+        .gt-dur {
+          flex: 0 0 14rem;
+        }
+        .gt-f {
+          grid-template-columns: auto minmax(9rem, 1.4fr) auto minmax(0, 1fr) minmax(0, 1fr) auto minmax(0, 1fr) minmax(0, 1fr);
+        }
+        .gt-f select {
+          grid-column: auto;
+        }
+      }
+      @media (min-width: 1000px) {
+        .gtp {
+          grid-template-columns: 21rem minmax(0, 1fr);
+        }
+        .gt-pool {
+          max-height: 72vh;
+          overflow-x: hidden;
+          overflow-y: auto;
+          padding: 3px;
+          margin: -3px;
+        }
+      }
     </style>
   </head>
   <body>
@@ -2132,6 +2685,36 @@
       let uploadToken = '',
         uploadPinInput = '',
         uploadPinError = false;
+      // Disposition (Disponent, Tab „Disposition“): Reparaturen und Entstörungen bekommen erst hier ein Team und einen Zeitraum – vorher
+      // sieht sie kein Monteur. Zustand des Gantt-Diagramms (Beschreibung: Abschnitt „Disposition“ weiter unten)
+      // gZoom: 'tag' (3 Tage, Stunden) | 'woche' (7 Tage) · gFrom: erster angezeigter Tag (JJJJ-MM-TT, '' = heute) · gKind: '' beide | 'rep' | 'ent' ·
+      // gSearch: Suche in der Offen-Liste · gPoolMax: so viele Karten zeigt die Offen-Liste (wächst mit „Weitere anzeigen“) ·
+      // gSel / gDraft: gewählter Auftrag und sein Entwurf { a, team, von, bis } im Bearbeiten-Fenster · gArmAll: „Alle Vorschläge übernehmen“
+      // wurde einmal angetippt · gScrollX: Wisch-Stand der Zeitachse · gDrag: laufendes Ziehen · gDragEnd: Zeitpunkt des letzten Ziehens (das
+      // folgende click-Ereignis zählt nicht) · gUndo: letzte Disposition für „Rückgängig“ · gSheetStart: Start der Einblendung des
+      // Bearbeiten-Fensters · gFresh: Auftrag -> Startzeit, wenn sein Balken neu ist oder verschoben wurde · gGeo: Maße des gezeichneten
+      // Diagramms (für das Ziehen) · dispoTeamNames: Teams, auf die disponiert werden kann (vom Server)
+      let gZoom = 'tag',
+        gFrom = '',
+        gKind = '',
+        gSearch = '',
+        gPoolMax = 20,
+        gSel = '',
+        gDraft = null,
+        gArmAll = false,
+        gScrollX = null,
+        gDrag = null,
+        gDragEnd = 0,
+        gUndo = null,
+        gUndoTimer = null,
+        gSheetStart = 0,
+        gFresh = new Map(),
+        gGeo = null,
+        dispoTeamNames = [];
+      try {
+        const saved = localStorage.getItem('gz');
+        if (saved === 'tag' || saved === 'woche') gZoom = saved;
+      } catch (e) {}
       // ---- Geräteübersicht (Disponent) ----
       // deviceList: Geräte vom Server (null = noch nicht geladen) · deviceListOffset: Serveruhr minus Geräteuhr (für „vor … Min“) ·
       // deviceListError: Ladefehler · deviceRenameId / deviceRenameText: Gerät, dessen Spitzname gerade bearbeitet wird ·
@@ -4042,6 +4625,7 @@
         melMeta = null;
         messages = [];
         devices = {};
+        dispoTeamNames = [];
         gasRows = new Map();
         gasReady = false;
         meldungen = new Map();
@@ -4070,6 +4654,7 @@
           for (const g of cached.gas || []) gasRows.set(g.d + '|' + g.t, g);
           messages = cached.msgs || [];
           devices = cached.devs || {};
+          dispoTeamNames = cached.dt || [];
           if (cached.pcfg) pushConfig = cached.pcfg;
           rebuildOrdersByTeam();
           dataReady = true;
@@ -4098,6 +4683,7 @@
             msgs: messages,
             devs: devices,
             pcfg: pushConfig,
+            dt: dispoTeamNames,
             gas: [...gasRows.values()]
           })
           .catch(() => {});
@@ -4218,6 +4804,7 @@
               messages = response.msgs.map(m => (ackQueue.includes(m.id) ? { ...m, ack: true } : m));
             if (response.devs) devices = response.devs;
             if (response.cfg) pushConfig = response.cfg;
+            if (response.dteams) dispoTeamNames = response.dteams;
             clearTimeout(cacheSaveTimer);
             cacheSaveTimer = setTimeout(saveCache, 1500);
             if (((checklistMeta && checklistMeta.at) || 0) !== oldChecklistStamp) {
@@ -4231,7 +4818,7 @@
               }
             }
             // neu zeichnen nur, wenn sich für diese Ansicht etwas geändert hat (nicht bei jedem Abgleich)
-            const sig = JSON.stringify([response.teams, response.meta, response.msgs, response.devs, response.cfg, !!response.users]),
+            const sig = JSON.stringify([response.teams, response.meta, response.msgs, response.devs, response.cfg, !!response.users, response.dteams]),
               viewChanged =
                 response.full ||
                 sig !== lastSyncSig ||
@@ -4242,7 +4829,7 @@
                 (response.marks && response.marks.length);
             lastSyncSig = sig;
             const a = document.activeElement;
-            if (viewChanged && editIndex === null && !(a && a.dataset && a.dataset.nr)) render();
+            if (viewChanged && editIndex === null && !gDrag && !(a && a.dataset && a.dataset.nr)) render();
           }
           if (outboxOffline && !outbox.size) outboxOffline = false;
           if (outbox.size) sendAllPending();
@@ -4395,6 +4982,17 @@
         } else if (d.k === 'm') {
           for (const a of d.ids) marks.set(a, { v: d.v, at: d.at, sq: m.s });
           dropEditsOfLockedOrder(); // der offene Auftrag wurde abgehakt: Eingaben schließen
+        } else if (d.k === 'o') {
+          // Disposition geändert (Disponent): die geänderten Aufträge und die neue Teamliste. Stimmen sie mit dem überein, was das Gerät
+          // schon zeigt (eigenes Speichern, siehe dispoSave), muss nichts neu gezeichnet werden
+          const same = d.rows.every(r => {
+            const o = ordersMap.get(r.auftrag);
+            return !!o && ['team', 'start', 'ende', 'uhr', 'uhr2', 'dis'].every(k => (o[k] || '') === (r[k] || ''));
+          });
+          for (const r of d.rows) ordersMap.set(r.auftrag, r);
+          if (d.teams) teamList = d.teams;
+          rebuildOrdersByTeam();
+          if (same) return;
         }
         // höchstens alle 80 ms neu zeichnen (mehrere Änderungen auf einmal -> ein Zeichnen), Cache höchstens alle 3 s schreiben
         liveDirty = true;
@@ -4409,7 +5007,7 @@
         liveRenderTimer = null;
         const a = document.activeElement;
         // nicht mitten in einer Eingabe und nicht im Hintergrund (dann beim Zurückkehren, siehe visibilitychange)
-        if (document.hidden || editIndex !== null || (a && a.dataset && a.dataset.nr)) return;
+        if (document.hidden || editIndex !== null || gDrag || (a && a.dataset && a.dataset.nr)) return;
         liveDirty = false;
         const t0 = performance.now();
         render();
@@ -5025,6 +5623,7 @@
               el('span', { class: 'tag st-teil' }, melds.length === 1 ? '📋 Meldung' : `📋 ${melds.length} Meldungen`),
             ext.length > 0 && el('span', { class: 'tag st-teil' }, '🏗 Externe Firma'),
             isLocked(order.auftrag) && el('span', { class: 'tag' }, '🔒 Abgehakt'),
+            isDispo && isDispatchKind(kind) && !order.dis && el('span', { class: 'tag st-zf', title: 'Im Tab „Disposition“ einem Team zuweisen – bis dahin sieht kein Monteur den Auftrag' }, '⏳ nicht disponiert'),
             clickable && el('span', { class: 'chev' }, kind === 'war' ? 'Prüfobjekte ›' : 'Details ›')
           ),
           // Termin mit Uhrzeit gleich unter der Nummer (Reparatur, Entstörung): wann es ausgeführt wird, ist das Wichtigste
@@ -6829,6 +7428,860 @@
         infoMsg = 'Dieses Gerät wurde vom Disponenten abgemeldet.';
         render();
       }
+      // ---- Disposition (Disponent): Gantt-Diagramm ----
+      // Reparaturen und Entstörungen muss der Disponent disponieren: Team + Zeitraum (von bis). Erst dann sehen Monteure den Auftrag (Server:
+      // POST /api/dispo). Der Tab „Disposition“ zeigt links die noch offenen Aufträge (mit dem Vorschlag aus SAP) und rechts das Diagramm:
+      // eine Zeile je Team, die Zeitachse läuft seitlich (Tag: 3 Tage à 48 px je Stunde, Woche: 7 Tage à 14 px je Stunde).
+      // Bedienung:
+      //   · Offen-Liste: „Vorschlag übernehmen“ (SAP-Team und -Termin) oder die Karte antippen → Bearbeiten-Fenster (Team, Beginn, Ende);
+      //     mit der Maus lässt sich die Karte auch auf eine Teamzeile ziehen. „Alle Vorschläge übernehmen“ (mit Rückfrage) für alle gelisteten.
+      //   · Diagramm: Balken ziehen (Zeit und Team), am rechten Rand die Länge ändern, antippen → Bearbeiten-Fenster. Ist ein Auftrag gewählt,
+      //     setzt ein Tipp in eine Zeile den Entwurf dorthin (der Balken ist gestrichelt, gespeichert wird mit „Disponieren“).
+      //   · Überschneidungen im selben Team sind erlaubt, werden aber markiert (gelber Rand, Hinweis im Fenster); die Zeile behält ihre Höhe,
+      //     überlappende Balken teilen sie sich.
+      // Alle Zeiten sind Ortszeit als Text „JJJJ-MM-TTTHH:MM“ und werden wie UTC gerechnet (keine Sommerzeit-Sprünge im Raster).
+      const stampMs = s => Date.parse(s + ':00Z');
+      const validStamp = s => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s) && !isNaN(stampMs(s)) && new Date(stampMs(s)).toISOString().slice(0, 16) === s;
+      const msStamp = t => new Date(t).toISOString().slice(0, 16);
+      const addMinutes = (s, m) => msStamp(stampMs(s) + m * 6e4);
+      const minutesBetween = (a, b) => Math.round((stampMs(b) - stampMs(a)) / 6e4);
+      const shiftDay = (iso, n) => msStamp(stampMs(iso + 'T00:00') + n * 864e5).slice(0, 10);
+      const mondayOf = iso => shiftDay(iso, -((new Date(iso + 'T12:00:00Z').getUTCDay() + 6) % 7));
+      const G_PXH = { tag: 48, woche: 14 }, // Pixel je Stunde
+        G_DAYS = { tag: 3, woche: 7 },
+        G_SNAP = { tag: 15, woche: 30 }, // Raster beim Ziehen (Minuten)
+        G_DEFAULT_MIN = 120; // Dauer, wenn SAP keine Angabe hat
+      const isDispatchKind = k => k === 'rep' || k === 'ent';
+      // Team und Termin laut SAP (bei einem disponierten Auftrag liefert der Server sie als `sap`)
+      const sapOf = o => o.sap || { team: o.team, start: o.start, ende: o.ende, uhr: o.uhr || '', uhr2: o.uhr2 || '' };
+      // Team und Zeitraum der Disposition eines disponierten Auftrags, sonst null
+      const slotOf = o =>
+        o.dis ? { team: o.team, von: isoOfDate(o.start) + 'T' + (o.uhr || '00:00'), bis: isoOfDate(o.ende) + 'T' + (o.uhr2 || '00:00') } : null;
+      /**
+       * Vorschlag aus SAP: SAP-Team, Beginn laut SAP (ohne Uhrzeit 07:00), Ende laut SAP – fehlt es oder liegt es nicht nach dem Beginn, gilt die
+       * geplante Arbeit (Stunden, höchstens 24), sonst 2 Stunden. null, wenn SAP gar keinen Termin nennt.
+       */
+      function suggestSlot(o) {
+        const sap = sapOf(o),
+          day = isoOfDate(sap.start);
+        if (!day || !sap.team) return null;
+        const von = day + 'T' + (sap.uhr || '07:00');
+        let bis = sap.uhr2 ? (isoOfDate(sap.ende) || day) + 'T' + sap.uhr2 : '';
+        if (!validStamp(von)) return null;
+        if (!validStamp(bis) || stampMs(bis) <= stampMs(von))
+          bis = addMinutes(von, Math.round(((+o.arb > 0 ? Math.min(+o.arb, 24) : G_DEFAULT_MIN / 60) * 60) / 15) * 15);
+        return { team: sap.team, von, bis };
+      }
+      // Entwurf für einen Auftrag: seine Disposition, sonst der Vorschlag aus SAP, sonst 2 Stunden ab 07:00 am ersten angezeigten Tag
+      const draftFor = o => {
+        const slot = slotOf(o) || suggestSlot(o) || { team: sapOf(o).team, von: (gFrom || today()) + 'T07:00', bis: (gFrom || today()) + 'T09:00' };
+        return { a: o.auftrag, team: slot.team, von: slot.von, bis: slot.bis };
+      };
+      // Auftragsart als Wort für Etiketten: „🛠️ Reparatur“
+      const kindTag = k => `${kindInfo(k).icon} ${kindInfo(k).name}`;
+      // Zeitraum als Text: „Do 08.10. 07:00–09:30“ (über Mitternacht: „Mi 07.10. 22:00 – Do 08.10. 05:30“)
+      const slotText = s => {
+        const d1 = s.von.slice(0, 10),
+          d2 = s.bis.slice(0, 10),
+          day = d => weekdayShort(d) + ' ' + formatIsoDate(d).slice(0, 6);
+        return d1 === d2 ? `${day(d1)} ${s.von.slice(11)}–${s.bis.slice(11)}` : `${day(d1)} ${s.von.slice(11)} – ${day(d2)} ${s.bis.slice(11)}`;
+      };
+      const durationText = min => {
+        const h = Math.floor(min / 60),
+          m = min % 60;
+        return (h ? h + ' Std' : '') + (h && m ? ' ' : '') + (m ? m + ' Min' : '');
+      };
+      // Aufträge zur Disposition: alle Reparaturen/Entstörungen (Auftragsart ggf. gefiltert), disponiert oder offen
+      const dispatchOrders = () => allOrders().filter(o => isDispatchKind(orderKind(o)) && (!gKind || orderKind(o) === gKind));
+      // Anzahl noch nicht disponierter Reparaturen und Entstörungen (Zahl am Tab)
+      const openDispatchCount = () => allOrders().filter(o => isDispatchKind(orderKind(o)) && !o.dis).length;
+      const poolMatches = o => {
+        const keep = searchText;
+        searchText = gSearch;
+        const ok = matchesSearch(o);
+        searchText = keep;
+        return ok;
+      };
+      // noch nicht disponiert, nach Datum laut SAP (das Älteste zuerst), ohne Datum ans Ende
+      const poolOrders = () =>
+        dispatchOrders()
+          .filter(o => !o.dis && poolMatches(o))
+          .sort((a, b) => {
+            const da = isoOfDate(sapOf(a).start),
+              db = isoOfDate(sapOf(b).start);
+            if (!da || !db) return !da - !db || naturalCompare(a.auftrag, b.auftrag);
+            return da.localeCompare(db) || (sapOf(a).uhr || '').localeCompare(sapOf(b).uhr || '') || naturalCompare(a.auftrag, b.auftrag);
+          });
+      // Zeilen des Diagramms: alle Teams, auf die disponiert werden kann (Server) plus jedes Team, das schon Aufträge hat
+      const gTeams = () =>
+        [...new Set([...dispoTeamNames, ...ordersByTeam.keys(), ...(gDraft ? [gDraft.team] : [])])]
+          .filter(t => t && !/EXT$|\dP$/i.test(t))
+          .sort(naturalCompare);
+      // disponierte Aufträge eines Teams, die sich mit dem Zeitraum überschneiden (ohne den Auftrag `skip`)
+      const overlapsOf = (slot, skip) => {
+        const s = stampMs(slot.von),
+          e = stampMs(slot.bis);
+        return allOrders().filter(o => {
+          if (!o.dis || o.auftrag === skip || o.team !== slot.team) return false;
+          const x = slotOf(o);
+          return stampMs(x.von) < e && stampMs(x.bis) > s;
+        });
+      };
+      const gReduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      /**
+       * Speichert Dispositionen (POST /api/dispo): items = [{ a, team, von, bis } | { a, off: true }]. Das Diagramm zeigt sie sofort (die
+       * Antwort des Servers kommt gleich danach); schlägt das Speichern fehl, kehrt es zurück und die Meldung erscheint. what = Text für die
+       * Meldung mit „Rückgängig“ (10 Sekunden), leer = ohne.
+       */
+      function applyDispoLocal(items) {
+        for (const it of items) {
+          const o = ordersMap.get(it.a);
+          if (!o) continue;
+          const sap = sapOf(o),
+            next = { ...o };
+          if (it.off) {
+            Object.assign(next, { team: sap.team, start: sap.start, ende: sap.ende, uhr: sap.uhr, uhr2: sap.uhr2 });
+            delete next.dis;
+            delete next.sap;
+            if (!next.uhr) delete next.uhr;
+            if (!next.uhr2) delete next.uhr2;
+          } else
+            Object.assign(next, {
+              team: it.team,
+              start: it.von.slice(0, 10),
+              uhr: it.von.slice(11),
+              ende: it.bis.slice(0, 10),
+              uhr2: it.bis.slice(11),
+              dis: 1,
+              sap
+            });
+          ordersMap.set(it.a, next);
+          gFresh.set(it.a, performance.now());
+        }
+        rebuildOrdersByTeam();
+      }
+      async function dispoSave(items, what) {
+        const prev = items.map(it => {
+          const o = ordersMap.get(it.a),
+            slot = o && slotOf(o);
+          return slot ? { a: it.a, ...slot } : { a: it.a, off: true };
+        });
+        errorMsg = '';
+        gArmAll = false;
+        // Alles, was nach dem Speichern zu sehen ist (Diagramm, Liste, Hinweis „Rückgängig“), erscheint schon jetzt in EINEM Zeichnen:
+        // ein zweites mitten in der Gleit-Animation der Karten würde die Seite anders festhalten und springen lassen
+        clearTimeout(gUndoTimer);
+        gUndo = what ? { txt: what, prev } : null;
+        if (gUndo)
+          gUndoTimer = setTimeout(() => {
+            gUndo = null;
+            render();
+          }, 10000);
+        applyDispoLocal(items);
+        render();
+        let failed = '';
+        try {
+          let skipped = 0;
+          // (der Server nimmt höchstens 1000 Aufträge je Aufruf)
+          for (let i = 0; i < items.length; i += 500) {
+            const r = await api('POST', '/api/dispo', { items: items.slice(i, i + 500) }, 60000);
+            skipped += (r.skipped || []).length;
+          }
+          if (skipped) failed = `${skipped} ${skipped === 1 ? 'Auftrag gibt' : 'Aufträge geben'} es nicht mehr – bitte neu laden.`;
+        } catch (e) {
+          applyDispoLocal(prev);
+          clearTimeout(gUndoTimer);
+          gUndo = null;
+          failed = e.net ? 'Keine Verbindung – die Disposition wurde nicht gespeichert' : errorMessageOf(e);
+        }
+        // nur bei einem Problem noch einmal zeichnen (sonst steht schon alles da)
+        if (failed) {
+          errorMsg = failed;
+          render();
+        }
+      }
+      // „Rückgängig“: stellt die vorherigen Dispositionen wieder her
+      function undoDispo() {
+        const u = gUndo;
+        gUndo = null;
+        clearTimeout(gUndoTimer);
+        if (u) dispoSave(u.prev, '');
+        else render();
+      }
+      // Meldung über dem Fenster: Beschreibung + „Rückgängig“ (siehe drawStatusBanners)
+      const dispoUndoBanner = () => gUndo && el('div', { class: 'msg' }, gUndo.txt, el('button', { onclick: undoDispo }, 'Rückgängig'));
+
+      // ---- Auswahl und Bearbeiten-Fenster ----
+      function selectOrder(a) {
+        const o = ordersMap.get(a);
+        if (!o) return;
+        if (gSel === a) return closeSheet();
+        gSel = a;
+        gDraft = draftFor(o);
+        gSheetStart = performance.now();
+        render();
+      }
+      // schließt das Fenster; eine Kopie gleitet aus (das Fenster liegt fest am Rand, die Kopie beeinflusst das Layout nicht).
+      // dismissSheet() zeichnet nicht neu (der Aufrufer tut es gleich danach), closeSheet() schon.
+      function dismissSheet() {
+        const node = app.querySelector('.gt-sheet');
+        if (node && node.animate && !gReduced()) {
+          const ghost = node.cloneNode(true);
+          ghost.style.pointerEvents = 'none';
+          ghost.setAttribute('aria-hidden', 'true');
+          ghost.setAttribute('data-ghost', '1');
+          document.body.append(ghost);
+          ghost
+            .animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(28px)' }], {
+              duration: 200,
+              easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)'
+            })
+            .finished.then(() => ghost.remove(), () => ghost.remove());
+        }
+        gSel = '';
+        gDraft = null;
+      }
+      function closeSheet() {
+        dismissSheet();
+        render();
+      }
+      function gtSheet() {
+        const o = gSel && ordersMap.get(gSel);
+        if (!o || !gDraft) return null;
+        const d = gDraft,
+          sap = sapOf(o),
+          sug = suggestSlot(o),
+          mins = minutesBetween(d.von, d.bis),
+          bad = !(mins >= 1) || mins > 31 * 1440,
+          overlaps = bad ? [] : overlapsOf(d, o.auftrag),
+          cur = slotOf(o),
+          same = cur && cur.team === d.team && cur.von === d.von && cur.bis === d.bis,
+          teams = gTeams(),
+          setVon = (day, time) => {
+            const von = day + 'T' + time;
+            if (validStamp(von)) gDraft = { ...d, von, bis: addMinutes(von, Math.max(mins, 15)) }; // der Beginn verschiebt das Ende mit
+            render();
+          },
+          setBis = (day, time) => {
+            const bis = day + 'T' + time;
+            if (validStamp(bis)) gDraft = { ...d, bis };
+            render();
+          },
+          save = () => {
+            const item = { a: o.auftrag, team: d.team, von: d.von, bis: d.bis };
+            dismissSheet();
+            dispoSave([item], `${o.auftrag} → ${d.team}, ${slotText(d)}`);
+          };
+        const field = (type, key, label, value, onchange, extra) =>
+          el('input', { type, value, 'data-nr': '1', 'data-keep': key, 'aria-label': label, onchange: e => onchange(e.target.value), ...extra });
+        return el(
+          'div',
+          { class: 'gt-sheet', role: 'dialog', 'aria-label': 'Auftrag disponieren', 'data-k': 'gt-sheet' },
+          el(
+            'div',
+            { class: 'gt-sh' },
+            el(
+              'div',
+              {},
+              el('div', { class: 'row' }, el('b', {}, o.auftrag), el('span', { class: 'tag' }, kindTag(orderKind(o))), o.dis ? el('span', { class: 'tag st-ok' }, 'disponiert') : el('span', { class: 'tag st-zf' }, 'noch offen')),
+              el('div', { class: 'kt' }, (orderKind(o) === 'rep' && o.vtxt ? o.vtxt : o.kurz) || '–'),
+              el('div', { class: 'mu' }, [[o.plz, o.str].filter(Boolean).join(' '), `SAP: ${sap.team}${isoOfDate(sap.start) ? ', ' + termText({ start: sap.start, ende: sap.ende, uhr: sap.uhr, uhr2: sap.uhr2 }) : ', kein Termin'}`].filter(Boolean).join(' · '))
+            ),
+            el('button', { class: 'gt-x', 'aria-label': 'Schließen', onclick: () => closeSheet() }, '✕')
+          ),
+          el(
+            'div',
+            { class: 'gt-f' },
+            el('span', { class: 'mu' }, 'Team'),
+            el(
+              'select',
+              {
+                'data-nr': '1',
+                'aria-label': 'Team',
+                onchange: e => {
+                  gDraft = { ...d, team: e.target.value };
+                  render();
+                }
+              },
+              (teams.includes(d.team) ? teams : [...teams, d.team]).map(t =>
+                el('option', { value: t, ...(t === d.team ? { selected: 'selected' } : {}) }, t + (t === sap.team ? ' (SAP)' : ''))
+              )
+            ),
+            el('span', { class: 'mu' }, 'Von'),
+            field('date', 'gv-d', 'Beginn, Datum', d.von.slice(0, 10), v => setVon(v, d.von.slice(11))),
+            field('time', 'gv-t', 'Beginn, Uhrzeit', d.von.slice(11), v => setVon(d.von.slice(0, 10), v), { step: '900' }),
+            el('span', { class: 'mu' }, 'Bis'),
+            field('date', 'gb-d', 'Ende, Datum', d.bis.slice(0, 10), v => setBis(v, d.bis.slice(11))),
+            field('time', 'gb-t', 'Ende, Uhrzeit', d.bis.slice(11), v => setBis(d.bis.slice(0, 10), v), { step: '900' })
+          ),
+          el(
+            'div',
+            { class: 'qk' },
+            el('span', { class: 'mu gt-dur' }, bad ? 'Ende liegt nicht nach dem Beginn' : 'Dauer ' + durationText(mins) + (d.von.slice(0, 10) !== d.bis.slice(0, 10) ? ' (über Nacht)' : '')),
+            [1, 2, 4, 8].map(h =>
+              el('button', { onclick: () => { gDraft = { ...d, bis: addMinutes(d.von, h * 60) }; render(); } }, h + ' Std')
+            )
+          ),
+          // (die Zeile bleibt immer stehen, auch leer: erschiene sie erst bei einer Überschneidung, spränge alles darüber)
+          el('div', { class: 'gt-warn' }, overlaps.length ? `⚠ Überschneidet sich bei ${d.team} mit ${overlaps.map(x => x.auftrag).join(', ')}` : '\u00a0'),
+          el(
+            'div',
+            { class: 'gt-btns' },
+            el('button', { class: 'pri', disabled: bad || same ? 'disabled' : null, onclick: save }, same ? '✓ Gespeichert' : o.dis ? '✓ Änderung speichern' : '✓ Disponieren'),
+            el(
+              'button',
+              {
+                disabled: sug && (sug.team !== d.team || sug.von !== d.von || sug.bis !== d.bis) ? null : 'disabled',
+                title: sug ? `${sug.team}, ${slotText(sug)}` : 'SAP nennt keinen Termin',
+                onclick: () => {
+                  gDraft = { a: o.auftrag, ...sug };
+                  render();
+                }
+              },
+              '↶ Vorschlag aus SAP'
+            ),
+            o.dis &&
+              el('button', { class: 'er', onclick: () => { dismissSheet(); dispoSave([{ a: o.auftrag, off: true }], `${o.auftrag}: Disposition aufgehoben`); } }, 'Disposition aufheben')
+          )
+        );
+      }
+
+      // ---- Diagramm ----
+      // Maße des Diagramms; gGeo hält sie für das Ziehen fest
+      function ganttGeometry() {
+        const compact = innerWidth < 700,
+          pxh = G_PXH[gZoom],
+          days = G_DAYS[gZoom],
+          axis = gZoom === 'woche' ? mondayOf(gFrom || today()) : gFrom || today();
+        return {
+          zoom: gZoom,
+          rowH: compact ? 44 : 52,
+          headH: compact ? 48 : 52,
+          nameW: compact ? 78 : 104,
+          pxh,
+          days,
+          dayPx: pxh * 24,
+          axis,
+          axisMs: stampMs(axis + 'T00:00'),
+          snap: G_SNAP[gZoom],
+          teams: []
+        };
+      }
+      // Zeit (ms) -> Pixel in der Zeitachse
+      const gX = (g, ms) => ((ms - g.axisMs) / 36e5) * g.pxh;
+      /**
+       * Verteilt die Balken einer Zeile auf Bahnen: Balken, die sich überschneiden, teilen sich die feste Höhe der Zeile (n Bahnen = je 1/n).
+       * items: [{ s, e }] (ms) – ergänzt um lane, lanes und cf (überschneidet sich mit einem anderen Balken).
+       */
+      function layoutLanes(items) {
+        items.sort((a, b) => a.s - b.s || a.e - b.e);
+        let cluster = [],
+          clusterEnd = -Infinity,
+          laneEnds = [];
+        const flush = () => {
+          for (const x of cluster) x.lanes = laneEnds.length || 1;
+          cluster = [];
+          laneEnds = [];
+        };
+        for (const it of items) {
+          if (it.s >= clusterEnd) flush();
+          let lane = laneEnds.findIndex(end => end <= it.s);
+          if (lane < 0) lane = laneEnds.push(0) - 1;
+          laneEnds[lane] = it.e;
+          it.lane = lane;
+          cluster.push(it);
+          clusterEnd = Math.max(clusterEnd, it.e);
+        }
+        flush();
+        for (const it of items) it.cf = items.some(o => o !== it && o.s < it.e && o.e > it.s);
+      }
+      // Balken eines Auftrags (disponiert oder Entwurf)
+      function ganttBar(g, it) {
+        const { o, draft } = it,
+          h = Math.max(10, Math.floor((g.rowH - 8) / it.lanes)),
+          x0 = gX(g, it.s),
+          x1 = gX(g, it.e),
+          left = Math.max(0, x0),
+          right = Math.min(g.days * g.dayPx, x1),
+          kind = orderKind(o),
+          sel = gSel === o.auftrag && (draft || !it.ghosted),
+          late = lateInfo(o),
+          label = o.auftrag,
+          text = (kind === 'rep' && o.vtxt ? o.vtxt : o.kurz) || '',
+          node = el(
+            'div',
+            {
+              class: ['gt-bar', kind, draft && 'draft', it.ghosted && 'gh', sel && 'sel', it.cf && 'cf', late && 'late', x0 < 0 && 'cl', x1 > g.days * g.dayPx && 'cr']
+                .filter(Boolean)
+                .join(' '),
+              'data-k': (draft ? 'gd-' : 'gb-') + o.auftrag,
+              role: 'button',
+              tabindex: '0',
+              'aria-label': `${label} ${text}, ${it.slot.team}, ${slotText(it.slot)}${it.cf ? ', Überschneidung' : ''}`,
+              title: `${label}${text ? ' · ' + text : ''}\n${it.slot.team} · ${slotText(it.slot)} (${durationText(minutesBetween(it.slot.von, it.slot.bis))})${o.str ? '\n' + [o.plz, o.str].filter(Boolean).join(' ') : ''}${it.cf ? '\n⚠ Überschneidet sich mit einem anderen Auftrag' : ''}${late ? '\n⏰ im Verzug' : ''}`,
+              style: `left:${left}px;width:${Math.max(6, right - left)}px;top:${4 + it.lane * h}px;height:${h - 2}px`,
+              onpointerdown: e => startBarDrag(e, o, it.slot, 'move', !!draft),
+              onclick: e => {
+                e.stopPropagation();
+                if (performance.now() - gDragEnd < 350) return;
+                selectOrder(o.auftrag);
+              },
+              onkeydown: e => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectOrder(o.auftrag);
+                }
+              }
+            },
+            el('b', {}, label),
+            text && h >= 16 && el('span', {}, text),
+            (sel || draft) && el('div', { class: 'gt-rz', onpointerdown: e => { e.stopPropagation(); startBarDrag(e, o, it.slot, 'resize', !!draft); } })
+          );
+        return node;
+      }
+      function ganttChart() {
+        const g = ganttGeometry(),
+          teams = gTeams();
+        g.teams = teams;
+        gGeo = g;
+        const endMs = g.axisMs + g.days * 864e5,
+          byTeam = new Map(teams.map(t => [t, []])),
+          sel = gSel && ordersMap.get(gSel),
+          curSlot = sel && slotOf(sel),
+          draftDiffers = !!gDraft && (!curSlot || curSlot.team !== gDraft.team || curSlot.von !== gDraft.von || curSlot.bis !== gDraft.bis);
+        const place = (o, slot, extra) => {
+          const s = stampMs(slot.von),
+            e = stampMs(slot.bis);
+          if (!(e > g.axisMs && s < endMs) || !byTeam.has(slot.team)) return;
+          byTeam.get(slot.team).push({ o, slot, s, e, ...extra });
+        };
+        for (const o of dispatchOrders()) if (o.dis) place(o, slotOf(o), { ghosted: draftDiffers && o.auftrag === gSel });
+        if (draftDiffers && validStamp(gDraft.von) && validStamp(gDraft.bis) && stampMs(gDraft.bis) > stampMs(gDraft.von))
+          place(sel, gDraft, { draft: true });
+        const names = el('div', { class: 'gt-names' }, el('div', { class: 'gt-corner' }, 'Team')),
+          inner = el('div', { class: 'gt-in' }),
+          sapTeam = sel && !sel.dis ? sapOf(sel).team : '';
+        // Kopf: Tage und Stunden
+        const head = el('div', { class: 'gt-head' }),
+          hourStep = gZoom === 'tag' ? 1 : 6;
+        for (let d = 0; d < g.days; d++) {
+          const iso = shiftDay(g.axis, d),
+            wd = new Date(iso + 'T12:00:00Z').getUTCDay();
+          head.append(
+            el('div', { class: 'gt-day' + (iso === today() ? ' td' : '') + (wd === 0 || wd === 6 ? ' we' : ''), style: `left:${d * g.dayPx}px;width:${g.dayPx}px` }, el('span', {}, weekdayShort(iso) + ' ' + formatIsoDate(iso).slice(0, 6))),
+            ...Array.from({ length: 24 / hourStep }, (_, i) =>
+              el('div', { class: 'gt-hr', style: `left:${d * g.dayPx + i * hourStep * g.pxh}px;width:${hourStep * g.pxh}px` }, String(i * hourStep).padStart(2, '0'))
+            )
+          );
+        }
+        inner.append(head);
+        teams.forEach(team => {
+          const items = byTeam.get(team);
+          layoutLanes(items);
+          names.append(
+            el('div', { class: 'gt-name' + (team === sapTeam ? ' sap' : ''), title: team }, el('span', {}, team), items.some(x => !x.draft) && el('span', { class: 'gt-n' }, String(items.filter(x => !x.draft).length)))
+          );
+          inner.append(
+            el(
+              'div',
+              {
+                class: 'gt-row',
+                'data-k': 'gr-' + team,
+                'data-team': team,
+                onclick: e => {
+                  // Tipp in eine leere Stelle: der Entwurf des gewählten Auftrags zieht dorthin (Beginn auf das Raster gerundet, Dauer bleibt)
+                  if (!gDraft || e.target !== e.currentTarget || performance.now() - gDragEnd < 350) return;
+                  const at = laneTime(e.clientX),
+                    von = msStamp(Math.round(at / (g.snap * 6e4)) * g.snap * 6e4);
+                  gDraft = { ...gDraft, team, von, bis: addMinutes(von, Math.max(15, minutesBetween(gDraft.von, gDraft.bis))) };
+                  render();
+                }
+              },
+              items.map(it => ganttBar(g, it))
+            )
+          );
+        });
+        // „Jetzt“
+        const nowMs = Date.now() + new Date().getTimezoneOffset() * -6e4;
+        if (nowMs > g.axisMs && nowMs < endMs) inner.append(el('div', { class: 'gt-now', style: `left:${gX(g, nowMs)}px` }));
+        const scroller = el('div', { class: 'gt-scroll' }, inner);
+        scroller.addEventListener('scroll', () => (gScrollX = scroller.scrollLeft), { passive: true });
+        const card = el(
+          'div',
+          {
+            class: 'card gt',
+            'data-k': 'gt',
+            style: `--grh:${g.rowH}px;--gth:${g.headH}px;--gnw:${g.nameW}px;--giw:${g.days * g.dayPx}px;--gdp:${g.dayPx}px;--ghp:${(gZoom === 'tag' ? 1 : 6) * g.pxh}px`
+          },
+          el(
+            'div',
+            { class: 'gt-top' },
+            el('button', { 'aria-label': 'Zurück', onclick: () => gtShift(-1) }, '‹'),
+            el('button', { onclick: () => { gFrom = ''; gScrollX = null; render(); } }, 'Heute'),
+            el('button', { 'aria-label': 'Weiter', onclick: () => gtShift(1) }, '›'),
+            el('span', { class: 'gt-range' }, formatIsoDate(g.axis).slice(0, 6) + ' – ' + formatIsoDate(shiftDay(g.axis, g.days - 1))),
+            el(
+              'div',
+              { class: 'gt-seg' },
+              [['tag', 'Tag'], ['woche', 'Woche']].map(([z, l]) =>
+                el('button', { class: gZoom === z ? 'on' : null, 'aria-pressed': gZoom === z ? 'true' : 'false', onclick: () => gtZoom(z) }, l)
+              )
+            )
+          ),
+          el('div', { class: 'gt-wrap' }, names, scroller),
+          el('div', { class: 'gt-leg' }, el('span', {}, el('i', {}), 'Reparatur'), el('span', {}, el('i', { class: 'ent' }), 'Entstörung'), el('span', {}, el('i', { class: 'dr' }), 'Entwurf'), el('span', {}, '⚠ gelber Rand = Überschneidung im Team'))
+        );
+        return card;
+      }
+      // Zeit (ms, Ortszeit als UTC) unter der Mausstelle x in der Zeitachse
+      function laneTime(clientX) {
+        const scroller = app.querySelector('.gt-scroll'),
+          r = scroller.getBoundingClientRect();
+        return gGeo.axisMs + ((clientX - r.left + scroller.scrollLeft) / gGeo.pxh) * 36e5;
+      }
+      // Teamzeile unter der Mausstelle y (nur innerhalb des Diagramms), sonst -1
+      function laneRow(clientY) {
+        const first = app.querySelector('.gt-row');
+        if (!first) return -1;
+        const top = first.getBoundingClientRect().top,
+          i = Math.floor((clientY - top) / gGeo.rowH);
+        return clientY >= top && i < gGeo.teams.length ? i : -1;
+      }
+      function gtShift(dir) {
+        const step = gZoom === 'woche' ? 7 : 1;
+        gFrom = shiftDay(gGeo ? gGeo.axis : gFrom || today(), dir * step);
+        gScrollX = null;
+        render();
+      }
+      function gtZoom(z) {
+        if (z === gZoom) return;
+        gZoom = z; // (gFrom bleibt: Woche zeigt die Woche dieses Tages, Tag wieder diesen Tag)
+        gScrollX = null;
+        try {
+          localStorage.setItem('gz', z);
+        } catch (e) {}
+        render();
+      }
+
+      // ---- Ziehen ----
+      // Balken ziehen (move: Zeit und Team, resize: Ende) mit Maus, Stift oder Finger. Während des Ziehens wird nur der Balken verschoben
+      // (kein Neuzeichnen: Live-Änderungen warten); beim Loslassen wird gespeichert (Entwurf: nur der Entwurf geändert).
+      let gTip = null;
+      function startBarDrag(e, o, slot, mode, isDraft) {
+        if (gDrag || (e.button != null && e.button > 0)) return;
+        const node = e.currentTarget,
+          scroller = node.closest('.gt-scroll'),
+          d = (gDrag = { a: o.auftrag, kind: orderKind(o), mode, draft: isDraft, node, scroller, id: e.pointerId, x0: e.clientX, y0: e.clientY, sx0: scroller.scrollLeft, slot, next: slot, moved: false, last: e, w0: node.offsetWidth, row0: gGeo.teams.indexOf(slot.team), raf: 0 });
+        try {
+          node.setPointerCapture(e.pointerId);
+        } catch (x) {}
+        // (die Ereignisse hören am Fenster, nicht am Balken: zeichnet die Seite während des Ziehens neu, ist der Balken weg, das Ziehen endet trotzdem)
+        const onMove = ev => {
+            if (ev.pointerId !== d.id) return;
+            d.last = ev;
+            dragUpdate(d);
+          },
+          finish = commit => {
+            removeEventListener('pointermove', onMove);
+            removeEventListener('pointerup', onUp);
+            removeEventListener('pointercancel', onCancel);
+            document.removeEventListener('keydown', onKey);
+            cancelAnimationFrame(d.raf);
+            if (gTip) gTip.remove();
+            gTip = null;
+            document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
+            gDrag = null;
+            if (!d.moved) return;
+            gDragEnd = performance.now();
+            const next = d.next;
+            if (!commit || (next.team === d.slot.team && next.von === d.slot.von && next.bis === d.slot.bis)) {
+              render();
+            } else if (d.draft) {
+              gDraft = { ...gDraft, ...next };
+              render();
+            } else dispoSave([{ a: d.a, ...next }], `${d.a} → ${next.team}, ${slotText(next)}`);
+            if (liveDirty) renderLive();
+          },
+          onUp = ev => ev.pointerId === d.id && finish(true),
+          onCancel = ev => ev.pointerId === d.id && finish(false),
+          onKey = ev => ev.key === 'Escape' && finish(false);
+        addEventListener('pointermove', onMove);
+        addEventListener('pointerup', onUp);
+        addEventListener('pointercancel', onCancel);
+        document.addEventListener('keydown', onKey);
+      }
+      // berechnet aus der Mausstelle den neuen Zeitraum, verschiebt den Balken und zeigt ihn im Hinweis
+      function dragUpdate(d) {
+        const ev = d.last,
+          g = gGeo,
+          dx = ev.clientX - d.x0 + (d.scroller.scrollLeft - d.sx0),
+          dy = ev.clientY - d.y0;
+        if (!d.moved) {
+          if (Math.hypot(dx, dy) < 5) return;
+          d.moved = true;
+          d.node.classList.add('drag');
+          gTip = el('div', { class: 'gt-tip' });
+          document.body.append(gTip);
+          autoScroll(d);
+        }
+        const dMin = Math.round(((dx / g.pxh) * 60) / g.snap) * g.snap;
+        let next;
+        if (d.mode === 'resize') {
+          next = { ...d.slot, bis: addMinutes(d.slot.bis, dMin) };
+          if (minutesBetween(d.slot.von, next.bis) < g.snap) next.bis = addMinutes(d.slot.von, g.snap);
+          d.node.style.width = Math.max(6, d.w0 + ((minutesBetween(d.slot.bis, next.bis)) / 60) * g.pxh) + 'px';
+        } else {
+          const row = Math.max(0, laneRow(ev.clientY) < 0 ? d.row0 : laneRow(ev.clientY)),
+            team = g.teams[row] || d.slot.team;
+          next = { team, von: addMinutes(d.slot.von, dMin), bis: addMinutes(d.slot.bis, dMin) };
+          d.node.style.transform = `translate(${(dMin / 60) * g.pxh}px, ${(row - d.row0) * g.rowH}px)`;
+          document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
+          const names = app.querySelectorAll('.gt-name'),
+            rows = app.querySelectorAll('.gt-row');
+          if (rows[row] && team !== d.slot.team) rows[row].classList.add('tgt'), names[row] && names[row].classList.add('tgt');
+        }
+        d.next = next;
+        gTip.textContent = `${next.team} · ${slotText(next)} (${durationText(minutesBetween(next.von, next.bis))})`;
+        gTip.style.transform = `translate(${Math.min(ev.clientX + 14, innerWidth - gTip.offsetWidth - 8)}px, ${Math.max(8, ev.clientY - 38)}px)`;
+      }
+      // am Rand der Zeitachse scrollt sie beim Ziehen von selbst weiter
+      function autoScroll(d) {
+        const step = () => {
+          if (gDrag !== d) return;
+          const r = d.scroller.getBoundingClientRect(),
+            x = d.last.clientX;
+          const v = x < r.left + 40 ? -14 : x > r.right - 40 ? 14 : 0;
+          if (v) {
+            d.scroller.scrollLeft += v;
+            dragUpdate(d);
+          }
+          d.raf = requestAnimationFrame(step);
+        };
+        d.raf = requestAnimationFrame(step);
+      }
+      // Karte aus der Offen-Liste mit der Maus auf eine Teamzeile ziehen (am Handy: Karte antippen und im Fenster einstellen)
+      function startPoolDrag(e, o) {
+        if (gDrag || e.pointerType === 'touch' || (e.button != null && e.button > 0) || e.target.closest('button')) return;
+        const card = e.currentTarget,
+          sug = suggestSlot(o),
+          minutes = sug ? minutesBetween(sug.von, sug.bis) : G_DEFAULT_MIN,
+          label = o.auftrag + ' ' + ((orderKind(o) === 'rep' && o.vtxt ? o.vtxt : o.kurz) || ''),
+          d = (gDrag = { a: o.auftrag, id: e.pointerId, x0: e.clientX, y0: e.clientY, moved: false, ghost: null, drop: null });
+        try {
+          card.setPointerCapture(e.pointerId);
+        } catch (x) {}
+        const onMove = ev => {
+            if (ev.pointerId !== d.id) return;
+            if (!d.moved) {
+              if (Math.hypot(ev.clientX - d.x0, ev.clientY - d.y0) < 6) return;
+              d.moved = true;
+              d.ghost = el('div', { class: 'gt-ghost ' + orderKind(o) }, label);
+              document.body.append(d.ghost);
+            }
+            const row = laneRow(ev.clientY),
+              scroller = app.querySelector('.gt-scroll'),
+              r = scroller && scroller.getBoundingClientRect(),
+              inside = row >= 0 && r && ev.clientX >= r.left && ev.clientX <= r.right;
+            d.drop = null;
+            document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
+            if (inside) {
+              const snap = gGeo.snap * 6e4,
+                von = msStamp(Math.round(laneTime(ev.clientX) / snap) * snap);
+              d.drop = { team: gGeo.teams[row], von, bis: addMinutes(von, minutes) };
+              app.querySelectorAll('.gt-row')[row].classList.add('tgt');
+              app.querySelectorAll('.gt-name')[row].classList.add('tgt');
+            }
+            d.ghost.style.transform = `translate(${ev.clientX + 12}px, ${ev.clientY + 12}px)`;
+            d.ghost.style.maxWidth = (inside ? Math.max(60, (minutes / 60) * gGeo.pxh) : 220) + 'px';
+            d.ghost.textContent = d.drop ? `${d.drop.team} · ${slotText(d.drop)}` : label;
+          },
+          finish = commit => {
+            removeEventListener('pointermove', onMove);
+            removeEventListener('pointerup', onUp);
+            removeEventListener('pointercancel', onCancel);
+            document.removeEventListener('keydown', onKey);
+            if (d.ghost) d.ghost.remove();
+            document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
+            gDrag = null;
+            if (!d.moved) return;
+            gDragEnd = performance.now();
+            if (commit && d.drop) dispoSave([{ a: d.a, ...d.drop }], `${d.a} → ${d.drop.team}, ${slotText(d.drop)}`);
+            else if (liveDirty) renderLive();
+          },
+          onUp = ev => ev.pointerId === d.id && finish(true),
+          onCancel = ev => ev.pointerId === d.id && finish(false),
+          onKey = ev => ev.key === 'Escape' && finish(false);
+        addEventListener('pointermove', onMove);
+        addEventListener('pointerup', onUp);
+        addEventListener('pointercancel', onCancel);
+        document.addEventListener('keydown', onKey);
+      }
+      // Esc schließt das Bearbeiten-Fenster
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && gSel && !gDrag && session.role === 'dispo' && dispoTab === 'di') closeSheet();
+      });
+
+      // ---- Tab „Disposition“ ----
+      // Karte „noch offen“ in der Liste links
+      function poolCard(o) {
+        const sap = sapOf(o),
+          sug = suggestSlot(o),
+          melds = bySeverity(meldungenOf(o)),
+          gebrechen = worstGebrechen(melds),
+          late = lateInfo(o),
+          title = (orderKind(o) === 'rep' && o.vtxt ? o.vtxt : o.kurz) || '–';
+        return el(
+          'div',
+          {
+            class: 'card gt-pc cl' + (gSel === o.auftrag ? ' sel' : '') + (gebrechen ? ' gb-c' + gebrechen.lvl : late ? ' due' : ''),
+            'data-k': 'dp-' + o.auftrag,
+            role: 'button',
+            tabindex: '0',
+            onpointerdown: e => startPoolDrag(e, o),
+            onclick: () => {
+              if (performance.now() - gDragEnd < 350) return;
+              selectOrder(o.auftrag);
+            },
+            onkeydown: e => {
+              if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                selectOrder(o.auftrag);
+              }
+            }
+          },
+          el(
+            'div',
+            { class: 'row' },
+            el('b', {}, o.auftrag),
+            el('span', { class: 'tag' }, kindTag(orderKind(o))),
+            el('span', { class: 'tag' }, sap.team),
+            late && el('span', { class: 'tag st-nok' }, `⏰ im Verzug · ${late.days === 1 ? '1 Tag' : late.days + ' Tage'}`),
+            gebrechen && gebrechenTag(gebrechen),
+            (o.ext || []).length > 0 && el('span', { class: 'tag st-teil' }, '🏗 Externe Firma')
+          ),
+          el('div', { class: 'kt' }, title),
+          (o.str || o.plz) && el('div', { class: 'mu' }, [o.plz, o.str].filter(Boolean).join(' ')),
+          el('div', { class: 'gt-sap' }, isoOfDate(sap.start) ? '🕒 SAP: ' + termText({ start: sap.start, ende: sap.ende, uhr: sap.uhr, uhr2: sap.uhr2 }) + (o.arb ? ` · ${o.arb} Std geplant` : '') : el('span', { class: 'mu' }, 'SAP nennt keinen Termin')),
+          el(
+            'button',
+            {
+              class: 'gt-go',
+              disabled: sug ? null : 'disabled',
+              title: sug ? `${sug.team}, ${slotText(sug)}` : 'SAP nennt keinen Termin – bitte im Fenster einstellen',
+              onclick: e => {
+                e.stopPropagation();
+                if (gSel === o.auftrag) {
+                  gSel = '';
+                  gDraft = null;
+                }
+                dispoSave([{ a: o.auftrag, ...sug }], `${o.auftrag} → ${sug.team}, ${slotText(sug)}`);
+              }
+            },
+            '＋ Vorschlag übernehmen'
+          )
+        );
+      }
+      function ganttPool() {
+        const all = poolOrders(),
+          shown = all.slice(0, gPoolMax),
+          withSuggestion = all.filter(suggestSlot),
+          box = el('div', {});
+        box.append(
+          el(
+            'div',
+            { class: 'gt-ph' },
+            el('b', {}, `Noch nicht disponiert (${all.length})`),
+            withSuggestion.length > 0 &&
+              (gArmAll
+                ? el('button', { class: 'pri', onclick: () => disposeAll(withSuggestion) }, `Wirklich ${withSuggestion.length} Aufträge disponieren?`)
+                : el('button', { onclick: () => { gArmAll = true; render(); } }, `Alle Vorschläge übernehmen (${withSuggestion.length})`))
+          )
+        );
+        if (!all.length)
+          box.append(el('div', { class: 'gt-empty mu' }, dispatchOrders().length ? (gSearch.trim() ? 'Nichts gefunden.' : '✓ Alles disponiert.') : 'Noch keine Reparaturen oder Entstörungen – im Tab „Upload“ hochladen.'));
+        else {
+          box.append(el('div', { class: 'gt-pool', 'data-list': '1' }, shown.map(poolCard)));
+          if (shown.length < all.length)
+            box.append(el('button', { class: 'dl', style: 'margin-top:10px', onclick: () => { gPoolMax += 20; render(); } }, `Weitere anzeigen (${all.length - shown.length})`));
+        }
+        return box;
+      }
+      // alle gelisteten Vorschläge auf einmal übernehmen
+      function disposeAll(list) {
+        gArmAll = false;
+        if (gSel && list.some(o => o.auftrag === gSel)) {
+          gSel = '';
+          gDraft = null;
+        }
+        dispoSave(
+          list.map(o => ({ a: o.auftrag, ...suggestSlot(o) })),
+          `${list.length} ${list.length === 1 ? 'Auftrag' : 'Aufträge'} disponiert (Vorschlag aus SAP)`
+        );
+      }
+      function drawDispoPlan() {
+        if (!dataReady) {
+          app.append(skeletonPage());
+          return;
+        }
+        const all = allOrders().filter(o => isDispatchKind(orderKind(o))),
+          count = k => all.filter(o => orderKind(o) === k).length;
+        app.append(
+          el(
+            'div',
+            { class: 'gtb', 'data-k': 'gtb' },
+            el(
+              'div',
+              { class: 'chips ksw' },
+              [['', 'Alle', all.length], ...['rep', 'ent'].map(k => [k, `${kindInfo(k).icon} ${kindInfo(k).plural}`, count(k)])].map(([k, l, n]) =>
+                el(
+                  'button',
+                  {
+                    class: 'chip' + (gKind === k ? ' on' : ''),
+                    onclick: () => {
+                      gKind = k;
+                      gArmAll = false;
+                      gPoolMax = 20;
+                      render();
+                    }
+                  },
+                  `${l} (${n})`
+                )
+              )
+            ),
+            el(
+              'div',
+              { class: 'tools' },
+              el('input', {
+                type: 'search',
+                'data-keep': 'gs',
+                placeholder: 'Offene suchen (Auftrag, Kurztext, Straße …)',
+                value: gSearch,
+                oninput: e => {
+                  gSearch = e.target.value;
+                  gArmAll = false;
+                  gPoolMax = 20;
+                  render();
+                }
+              })
+            )
+          ),
+          el('div', { class: 'gtp' }, ganttPool(), ganttChart())
+        );
+        const sheet = gtSheet();
+        if (sheet) app.append(sheet);
+        // Wisch-Stand der Zeitachse setzen (erst jetzt, wo das Diagramm in der Seite steht)
+        const card = app.querySelector('.gt');
+        if (card && gGeo) {
+          const scroller = card.querySelector('.gt-scroll');
+          if (gScrollX === null) {
+            const dayIndex = Math.round((stampMs(today() + 'T00:00') - gGeo.axisMs) / 864e5);
+            gScrollX = gZoom === 'tag' ? 6 * gGeo.pxh : dayIndex >= 0 && dayIndex < gGeo.days ? dayIndex * gGeo.dayPx : 0;
+          }
+          scroller.scrollLeft = gScrollX;
+        }
+      }
+
       // ---- Zeichnen ----
       // tabsLeft: Wisch-Stand der Tab-Leiste des Disponenten vor dem Neuzeichnen (null = es gab keine) · tabsShown: zuletzt
       // zentrierter Tab · tabsSince: seit wann (ms), damit ein zweites Neuzeichnen das Gleiten fortsetzt
@@ -7104,6 +8557,16 @@
             LIST_MS,
             LIST_STAGGER_MS
           ),
+          // Disposition: das Bearbeiten-Fenster gleitet von unten herein, neue oder verschobene Balken blenden ein
+          ...fadeIn([...app.querySelectorAll('.gt-sheet')], 'translateY(28px)', gSheetStart, 240, 0),
+          ...[...gFresh].flatMap(([k, start]) => {
+            if (performance.now() - start > 600) {
+              gFresh.delete(k);
+              return [];
+            }
+            const bar = app.querySelector(`.gt-bar[data-k="gb-${k}"]`);
+            return bar && !viewChanged ? fadeIn([bar], 'scale(0.9)', start, 260, 0) : [];
+          }),
           // neue Tageseinträge eines Dauerauftrags blenden ein (mit eigener Startzeit, läuft bei weiterem Neuzeichnen weiter)
           ...[...entryFresh].flatMap(([k, start]) => {
             const row = [...app.querySelectorAll('.zrow')].find(n => n.dataset.k === 'ze' + k);
@@ -7500,6 +8963,7 @@
           app.append(
             el('div', { class: 'msg' }, undoInfo.txt, el('button', { onclick: undoLastMarks }, 'Rückgängig'))
           );
+        if (gUndo && session.role === 'dispo') app.append(dispoUndoBanner());
         if (!serverReachable && !outbox.size)
           app.append(el('div', { class: 'msg' }, '📴 Offline – angezeigt wird der zuletzt geladene Stand.'));
         if (outbox.size && (outboxOffline || !serverReachable || navigator.onLine === false))
@@ -9704,6 +11168,23 @@
             el(
               'button',
               {
+                class: dispoTab === 'di' ? 'on' : null,
+                onclick: () => {
+                  if (dispoTab !== 'di') {
+                    gSel = '';
+                    gDraft = null;
+                    gArmAll = false;
+                  }
+                  dispoTab = 'di';
+                  uploadToken = '';
+                  render();
+                }
+              },
+              'Disposition' + (openDispatchCount() ? ` (${openDispatchCount()})` : '')
+            ),
+            el(
+              'button',
+              {
                 class: dispoTab === 'st' ? 'on' : null,
                 onclick: () => {
                   dispoTab = 'st';
@@ -9798,6 +11279,10 @@
         }
         if (dispoTab === 'us') {
           drawUsers();
+          return;
+        }
+        if (dispoTab === 'di') {
+          drawDispoPlan();
           return;
         }
         if (dispoTab === 'dv') {
