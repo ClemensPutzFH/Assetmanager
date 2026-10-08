@@ -173,8 +173,10 @@ const report = (ok, name, detail = '') => {
  *  smooth: CSS-Selektor eines Elements, das sich durch die Bedienung verschiebt (z. B. der Inhalt unter einem Hinweis, der
  *    verschwindet): die Verschiebung muss sich über mehrere Bilder verteilen und darf nicht in einem Bild geschehen. (Die
  *    Sprung-Erkennung oben sieht nur Sprünge NACH dem ersten Bild; Sprünge direkt beim Antippen fängt erst diese Prüfung.)
+ *  anim: die Bedienung muss ANIMIEREN – gleich nach dem Antippen läuft mindestens eine Web-Animation in der Seite (Einblendung, Gleiten;
+ *    CSS-Übergänge der Knöpfe zählen nicht), am Ende ist alles fertig und nichts bleibt halb durchsichtig oder verschoben stehen
  */
-async function probe(page, name, target, { ms = 750, scroll = null, at = null, act = null, reflow = false, tapTol = 3, smooth = null } = {}) {
+async function probe(page, name, target, { ms = 750, scroll = null, at = null, act = null, reflow = false, tapTol = 3, smooth = null, anim = false } = {}) {
   try {
     if (scroll != null) {
       await page.evaluate(y => scrollTo(0, y), scroll);
@@ -193,6 +195,19 @@ async function probe(page, name, target, { ms = 750, scroll = null, at = null, a
     const res = await page.evaluate(
       ({ target, act, ms, SEL, smooth }) =>
         new Promise(resolve => {
+          // laufende Web-Animationen in #app (ohne CSS-Übergänge/-Animationen, die zählen nicht)
+          const appAnims = () =>
+              document.getAnimations().filter(a => {
+                const t = a.effect && a.effect.target;
+                return t && t.closest && t.closest('#app') && !a.transitionProperty && !a.animationName && a.playState === 'running';
+              }).length,
+            looksStuck = () =>
+              [...document.querySelectorAll('#app > *')].filter(n => {
+                const cs = getComputedStyle(n);
+                // (gesperrte Knöpfe sind absichtlich halb durchsichtig)
+                return !n.disabled && n.getBoundingClientRect().height > 0 && (+cs.opacity < 0.99 || (cs.transform !== 'none' && cs.position !== 'fixed'));
+              }).length;
+          let animRunning = -1;
           const vis = e => {
               const r = e.getBoundingClientRect();
               return r.height > 0 && r.width > 0 && r.bottom > 0 && r.top < innerHeight;
@@ -236,10 +251,11 @@ async function probe(page, name, target, { ms = 750, scroll = null, at = null, a
           const loop = () => {
             const f = { sy: Math.round(scrollY * 10) / 10, sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, sm: topOf(smooth), m: [...collect()] };
             frames.push(f);
+            if (frames.length === 3) animRunning = appAnims();
             if (performance.now() - t0 < ms) requestAnimationFrame(loop);
             else {
               removeEventListener('error', onerr);
-              resolve({ tapSig, tapTop0, before: [...before], sy0, sm0, frames, errors });
+              resolve({ tapSig, tapTop0, before: [...before], sy0, sm0, frames, errors, animRunning, animLeft: appAnims(), stuck: looksStuck() });
             }
           };
           requestAnimationFrame(loop);
@@ -298,6 +314,12 @@ async function probe(page, name, target, { ms = 750, scroll = null, at = null, a
       else if (maxStep > total * 0.6) problems.push(`„${smooth}“ springt (${maxStep.toFixed(0)} von ${total.toFixed(0)} px in einem Bild)`);
       else tapNote += ` · Verschiebung ${total.toFixed(0)} px weich (größter Schritt ${maxStep.toFixed(0)})`;
     }
+    if (anim) {
+      if (res.animRunning < 1) problems.push('keine Animation gestartet (Ansicht wechselt ohne Übergang)');
+      if (res.animLeft) problems.push(`${res.animLeft} Animationen laufen am Ende noch`);
+      if (res.stuck) problems.push(`${res.stuck} Bereiche bleiben halb durchsichtig/verschoben stehen`);
+      if (!problems.length) tapNote += ` · ${res.animRunning} Animationen`;
+    }
     const over = res.frames.filter(f => f.sw > f.cw).length;
     if (over) problems.push(`Seite breiter als der Bildschirm (${over} Bilder)`);
     if (res.errors.length) problems.push('Fehler: ' + res.errors.join(' / '));
@@ -332,8 +354,16 @@ async function newPage(browser, base, viewport, errorsOut, { geolocation = true,
   await pause(page, 600);
   return page;
 }
-// Auftragsart wählen: auf der Startseite der große Knopf, in einer Liste der Umschalter darüber (Name: „Wartung“, „Reparatur“ …)
+// Auftragsart wählen: Monteur auf der Startseite der große Knopf (aus einer Liste zuerst zurück), Disponent der Umschalter (Name: „Wartung“, „Reparatur“ …)
 async function chooseKind(page, name) {
+  // Monteur in einer Liste: erst zurück zur Startseite (dort liegt die Auswahl)
+  const back = await page.evaluate(() => {
+    if (document.querySelector('#app button.kind, #app .ksw button')) return false;
+    const b = [...document.querySelectorAll('#app button')].find(b => /Auftragsarten/.test(b.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  if (back) await pause(page, 700);
   await page.evaluate(name => {
     const b = [...document.querySelectorAll('#app button.kind, #app .ksw button')].find(b => b.textContent.includes(name));
     if (!b) throw new Error('Auftragsart fehlt: ' + name);
@@ -924,71 +954,122 @@ function kindFiles() {
     [excelDay(-2), '1290000004', 'Fremdes Team Schaden', 'Andere Gasse 1', '1020', '', 'Schaden', 'TP-9', 'prag', T2, 'Mängelkategorien'],
     [excelDay(-9), '1290000005', 'Graffiti am Schachtdeckel', 'Teststraße    7', '1210', '', 'Schaden', 'TP-7', 'prag', T, 'Mängelkategorien']
   ];
-  return [
-    { name: 'Aufträge_neu.xlsx', mimeType: xlsx, buffer: book(orders) },
-    { name: 'Vorgänge_neu.xlsx', mimeType: xlsx, buffer: book(steps) },
-    { name: 'Meldungen_neu.xlsx', mimeType: xlsx, buffer: book(meldungen) }
-  ];
+  return {
+    auftraege: { name: 'Aufträge_neu.xlsx', mimeType: xlsx, buffer: book(orders) },
+    vorgaenge: { name: 'Vorgänge_neu.xlsx', mimeType: xlsx, buffer: book(steps) },
+    meldungen: { name: 'Meldungen_neu.xlsx', mimeType: xlsx, buffer: book(meldungen) }
+  };
 }
-// Disponent lädt die drei Dateien auf der Upload-Seite hoch; Wartungsaufträge bleiben unberührt
+// Disponent lädt die drei Dateien einzeln (je eine Karte auf der Upload-Seite) hoch; Wartungsaufträge bleiben unberührt
 async function kindUploadChecks(browser, base, errors) {
-  console.log('\n=== Auftragsarten: Upload (Aufträge, Vorgänge, Meldungen) ===');
-  const page = await newPage(browser, base, { width: 1100, height: 900 }, errors);
+  console.log('\n=== Auftragsarten: Upload (Aufträge, Vorgänge, Meldungen – jede Datei einzeln) ===');
+  const files = kindFiles(),
+    page = await newPage(browser, base, { width: 1100, height: 900 }, errors);
   await loginDispo(page);
   const kindBar = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#app .ksw button')].map(b => [b.textContent.replace(/[^A-Za-zäöüÄÖÜß]/g, ' ').trim().split(/\s+/)[0], +(/\((\d+)\)/.exec(b.textContent) || [])[1]])));
-  const before = await kindBar();
-  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === 'Upload').click());
-  await pause(page, 600);
-  await page.click('input[data-keep="u"]');
-  await page.keyboard.type('1025');
-  await pause(page, 1500);
-  await page.setInputFiles('#app input[type=file]', kindFiles());
+  const tab = async name => {
+    await page.evaluate(n => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === n).click(), name);
+    await pause(page, 700);
+  };
+  const openUpload = async () => {
+    await tab('Upload');
+    await page.click('input[data-keep="u"]');
+    await page.keyboard.type('1025');
+    await pause(page, 1500);
+  };
+  const msgText = () => page.evaluate(() => [...document.querySelectorAll('#app .msg')].map(n => n.textContent).join(' | '));
+  // Datei in das Feld `part` legen und hochladen; Ergebnis: Text der Meldung und größter Schritt, den der Knopf beim Verschieben macht.
   // Die Meldungen „Lese Datei …“ → „Speichere …“ → Ergebnis erscheinen oben und schieben den Inhalt nach unten. Das muss weich geschehen:
-  // der Knopf wandert über mehrere Bilder, nie mehr als 12 px in einem Bild. (probe() verfolgt den Knopf über die Beschriftung und
-  // würde den Wechsel „Hochladen“ → „Speichere …“ als Sprung sehen – darum hier die Messung von Hand.)
-  await page.evaluate(() => scrollTo(0, 0));
-  const frames = await page.evaluate(
-    () =>
-      new Promise(resolve => {
-        const find = () => [...document.querySelectorAll('#app button.pri')].find(b => /Hochladen|Speichere/.test(b.textContent)),
-          tops = [],
-          t0 = performance.now();
-        find().click();
-        const loop = () => {
-          const b = find();
-          if (b) tops.push(Math.round(b.getBoundingClientRect().top * 10) / 10);
-          if (performance.now() - t0 < 2500) requestAnimationFrame(loop);
-          else resolve(tops);
-        };
-        requestAnimationFrame(loop);
-      })
-  );
-  const steps = frames.slice(1).map((v, i) => Math.abs(v - frames[i]));
-  report(Math.max(...steps) <= 12 && Math.abs(frames[frames.length - 1] - frames[0]) > 20, 'Upload Auftragsarten: Hinweise schieben den Inhalt weich nach unten', `${frames[0]} → ${frames[frames.length - 1]} px, größter Schritt ${Math.max(...steps).toFixed(0)} px`);
-  await pause(page, 500);
-  const info = await page.evaluate(() => [...document.querySelectorAll('#app .msg')].map(n => n.textContent).join(' | '));
-  report(/5 Reparaturen/.test(info) && /2 Entstörungen/.test(info) && /1 Dauerauftrag/.test(info) && /5 Meldungen/.test(info), 'Upload Auftragsarten: Meldung nennt die Anzahl je Auftragsart', info.slice(0, 220));
-  report(/2 geplante Vorgänge \(Team mit „P“\) noch nicht angezeigt/.test(info), 'Upload Auftragsarten: geplante Vorgänge (Team mit P) werden nicht geladen und gemeldet');
-  report(/1 Auftrag anderer Auftragsarten übergangen \(1× 3NAV\)/.test(info), 'Upload Auftragsarten: fremde Auftragsart (3NAV) wird übergangen und gemeldet');
+  // der Knopf wandert über mehrere Bilder, nie mehr als 12 px in einem Bild. (probe() verfolgt den Knopf über die Beschriftung und würde den
+  // Wechsel „Hochladen“ → „Speichere …“ als Sprung sehen – darum hier die Messung von Hand.)
+  const upload = async (part, file) => {
+    const slot = { auftraege: 'orders', vorgaenge: 'vorg', meldungen: 'mel' }[part],
+      prev = await msgText();
+    await page.setInputFiles(`#app input[data-up="${slot}"]`, file);
+    await page.evaluate(() => scrollTo(0, 0));
+    const frames = await page.evaluate(
+      slot =>
+        new Promise(resolve => {
+          const find = () => document.querySelector(`#app [data-k="up-${slot}"] button.pri`),
+            tops = [],
+            t0 = performance.now();
+          find().click();
+          const loop = () => {
+            const b = find();
+            if (b) tops.push(Math.round(b.getBoundingClientRect().top * 10) / 10);
+            if (performance.now() - t0 < 2200) requestAnimationFrame(loop);
+            else resolve(tops);
+          };
+          requestAnimationFrame(loop);
+        }),
+      slot
+    );
+    await page.waitForFunction(prev => { const t = [...document.querySelectorAll('#app .msg')].map(n => n.textContent).join(' | '); return t && t !== prev && !/Lese Datei|Speichere/.test(t); }, prev, { timeout: 20000 });
+    const steps = frames.slice(1).map((v, i) => Math.abs(v - frames[i]));
+    return { text: await msgText(), step: Math.max(...steps), moved: Math.abs(frames[frames.length - 1] - frames[0]) };
+  };
+  const before = await kindBar();
+  await openUpload();
+  const cards = await page.evaluate(() => [...document.querySelectorAll('#app .ugrid > .card > b')].map(n => n.textContent));
+  report(cards.join() === 'Aufträge,Vorgänge,Meldungen,Prüfobjekte', 'Upload: vier Felder – Aufträge, Vorgänge, Meldungen, Prüfobjekte', cards.join(', '));
+  // 1. nur die Aufträge: Reparaturen sind noch ein Auftrag je Auftragsnummer, die App weist auf die fehlenden Vorgänge hin
+  let r = await upload('auftraege', files.auftraege);
+  report(r.step <= 12 && r.moved > 20, 'Upload Aufträge: Hinweise schieben den Inhalt weich nach unten', `${r.moved.toFixed(0)} px, größter Schritt ${r.step.toFixed(0)} px`);
+  report(/Aufträge gespeichert/.test(r.text) && /5 Reparaturen/.test(r.text) && /2 Entstörungen/.test(r.text) && /1 Dauerauftrag/.test(r.text), 'Upload Aufträge: Meldung nennt die Anzahl je Auftragsart', r.text.slice(0, 260));
+  report(/1 Auftrag anderer Auftragsarten übergangen \(1× 3NAV\)/.test(r.text), 'Upload Aufträge: fremde Auftragsart (3NAV) wird übergangen und gemeldet');
+  report(/Für Reparaturen fehlt noch die Vorgänge-Excel/.test(r.text), 'Upload Aufträge: Hinweis, dass die Vorgänge-Excel für Reparaturen noch fehlt');
+  // 2. nur die Vorgänge: jeder Vorgang wird ein Auftrag, geplante Teams (P) entfallen
+  r = await upload('vorgaenge', files.vorgaenge);
+  report(/10 Vorgänge zu 7 Aufträgen gespeichert/.test(r.text) && /jetzt:.* 5 Reparaturen/.test(r.text), 'Upload Vorgänge: Meldung nennt Vorgänge und die neue Zahl der Reparaturen', r.text.slice(0, 220));
+  report(/2 geplante Vorgänge \(Team mit „P“\) noch nicht angezeigt/.test(r.text), 'Upload Vorgänge: geplante Vorgänge (Team mit P) werden nicht angezeigt und gemeldet');
+  // 3. nur die Meldungen
+  r = await upload('meldungen', files.meldungen);
+  report(/5 Meldungen gespeichert/.test(r.text), 'Upload Meldungen: Meldung nennt die Anzahl', r.text);
   await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 15000 }); // der Hinweis verschwindet nach 8 s von selbst
-  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === 'Übersicht').click());
-  await pause(page, 1200);
+  await tab('Übersicht');
+  await pause(page, 500);
   const after = await kindBar();
-  report(before.Wartungen > 0 && after.Wartungen === before.Wartungen, 'Upload Auftragsarten: Wartungsaufträge bleiben unversehrt', `${before.Wartungen} → ${after.Wartungen}`);
-  report(after.Reparaturen === 5 && after.Entstörungen === 2 && after.Daueraufträge === 1, 'Upload Auftragsarten: Dispo-Übersicht zählt je Auftragsart', JSON.stringify(after));
-  report(after.Meldungen === 3, 'Upload Auftragsarten: Meldungen ohne Auftrag gezählt (alle Teams)', String(after.Meldungen));
+  report(before.Wartungen > 0 && after.Wartungen === before.Wartungen, 'Upload: Wartungsaufträge bleiben unversehrt', `${before.Wartungen} → ${after.Wartungen}`);
+  report(after.Reparaturen === 5 && after.Entstörungen === 2 && after.Daueraufträge === 1, 'Upload: Dispo-Übersicht zählt je Auftragsart', JSON.stringify(after));
+  report(after.Meldungen === 3, 'Upload: Meldungen ohne Auftrag gezählt (alle Teams)', String(after.Meldungen));
   // Dispo: Umschalter der Auftragsart – Leiste bleibt stehen
-  await probe(page, 'Dispo Übersicht: Auftragsart Reparaturen', btn('/Reparaturen/'), { ms: 900, reflow: true });
-  const reps = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.textContent.replace(/\s+/g, ' ').slice(0, 90)));
+  await probe(page, 'Dispo Übersicht: Auftragsart Reparaturen (Inhalt blendet ein, Umschalter bleibt)', btn('/Reparaturen/'), { ms: 900, reflow: true, anim: true });
+  report(await page.evaluate(() => ![...document.querySelectorAll('#app button')].some(b => /^(Erledigt|In Arbeit|Nicht OK)/.test(b.textContent.trim()))), 'Dispo Übersicht: Reparaturen ohne Status-Filter (Erledigt, In Arbeit, Nicht OK)');
+  const cardsOf = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.textContent.replace(/\s+/g, ' ').slice(0, 300)));
+  const reps = await cardsOf();
   report(reps.some(t => /65900001.*Vorgang 0010.*FW-IH01/.test(t)) && reps.some(t => /65900001.*Vorgang 0020.*FW-IH02/.test(t)), 'Dispo Übersicht: jeder Vorgang einer Reparatur ist ein eigener Auftrag (mit seinem Team)');
+  report(reps.some(t => /65900001.*Vorgang 0010.*Testgasse 1/.test(t)), 'Dispo Übersicht: Auftrag und Vorgang sind zusammengesetzt (Adresse aus den Aufträgen)');
   const teamsSeen = await page.evaluate(() => [...document.querySelectorAll('#app select option')].map(o => o.textContent.trim().split(' ')[0]));
   report(!teamsSeen.some(t => /EXT$|\dP$/.test(t)) && !reps.some(t => /Vorgang 0030|Vorgang 0040|65900010/.test(t)), 'Dispo Übersicht: weder FW-IHEXT noch Teams mit „P“ erscheinen als Team oder Auftrag', teamsSeen.join(', '));
   report(reps.some(t => /65900009.*FW-IH01/.test(t) && /Externe Firma/.test(t)) && reps.some(t => /65900001.*Vorgang 0010.*Externe Firma/.test(t)), 'Dispo Übersicht: Aufträge mit externer Firma sind gekennzeichnet (auch bei nur externen Vorgängen)');
-  await probe(page, 'Dispo Übersicht: Auftragsart Meldungen', btn('/Meldungen/'), { ms: 900, reflow: true });
+  await probe(page, 'Dispo Übersicht: Auftragsart Meldungen', btn('/Meldungen/'), { ms: 900, reflow: true, anim: true });
   const mels = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].length);
   report(mels === 3, 'Dispo Übersicht: Liste Meldungen zeigt die Meldungen ohne Auftrag', String(mels));
   await probe(page, 'Dispo Übersicht: Meldungen „Mit Auftrag“', btn('/^Mit Auftrag/'), { at: 330 });
-  await probe(page, 'Dispo Übersicht: Auftragsart Wartungen', btn('/Wartungen/'), { ms: 900, reflow: true });
+  await probe(page, 'Dispo Übersicht: Auftragsart Wartungen', btn('/Wartungen/'), { ms: 900, reflow: true, anim: true });
+  report(await page.evaluate(() => [...document.querySelectorAll('#app button')].some(b => /^Erledigt/.test(b.textContent.trim())) && [...document.querySelectorAll('#app button')].some(b => /^Nicht OK/.test(b.textContent.trim()))), 'Dispo Übersicht: Wartungen mit Status-Filter (Nicht OK, Erledigt …)');
+  // Die Dateien sind unabhängig: erneut NUR die Aufträge hochladen lässt die Vorgänge in Ruhe (und umgekehrt die Adressen)
+  await openUpload();
+  r = await upload('auftraege', files.auftraege);
+  report(!/Für Reparaturen fehlt noch/.test(r.text), 'Upload Aufträge erneut: die vorhandenen Vorgänge werden weiter verwendet', r.text.slice(0, 200));
+  await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 15000 });
+  await tab('Übersicht');
+  await chooseKind(page, 'Reparaturen');
+  let again = await cardsOf();
+  report(again.length === 5 && again.some(t => /65900001.*Vorgang 0020/.test(t)), 'Upload Aufträge erneut: Reparaturen bleiben je Vorgang erhalten', `${again.length} Aufträge`);
+  await openUpload();
+  r = await upload('vorgaenge', files.vorgaenge);
+  await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 15000 });
+  await tab('Übersicht');
+  await chooseKind(page, 'Reparaturen');
+  again = await cardsOf();
+  report(again.length === 5 && again.some(t => /65900001.*Vorgang 0010.*Testgasse 1/.test(t)), 'Upload Vorgänge erneut: Adressen aus den Aufträgen bleiben erhalten', `${again.length} Aufträge`);
+  // eine Datei im falschen Feld: klare Fehlermeldung statt falscher Daten
+  await openUpload();
+  await page.setInputFiles('#app input[data-up="mel"]', files.vorgaenge);
+  await page.evaluate(() => document.querySelector('#app [data-k="up-mel"] button.pri').click());
+  await page.waitForFunction(() => /Das ist keine Meldungen-Excel/.test((document.querySelector('#app .msg.er') || {}).textContent || ''), null, { timeout: 15000 });
+  report(true, 'Upload: Vorgänge-Datei im Feld „Meldungen“ wird mit einem klaren Hinweis abgelehnt', await msgText());
   await page.context().close();
 }
 // Monteur: Startseite mit der Auswahl der Auftragsart, die Listen (Termin & Uhrzeit), Detail ohne Prüfobjekte, Meldungen
@@ -1000,21 +1081,23 @@ async function kindChecks(browser, base, viewport, errors) {
   const tiles = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#app button.kind')].map(b => [b.querySelector('.kn').textContent, b.textContent.replace(b.querySelector('.kn').textContent, '').replace(/\s+/g, ' ').trim()])));
   const t0 = await tiles();
   report(Object.keys(t0).join() === 'Wartungen,Reparaturen,Entstörungen,Daueraufträge,Meldungen', `${label} Startseite: Auswahl der Auftragsart`, Object.keys(t0).join(', '));
-  report(/4 offen · 4 gesamt/.test(t0.Reparaturen) && /2 offen · 2 gesamt/.test(t0.Entstörungen) && /📅 1 heute/.test(t0.Entstörungen) && /1 offen · 1 gesamt/.test(t0.Daueraufträge) && /2 ohne Auftrag/.test(t0.Meldungen) && /offen · \d+ gesamt/.test(t0.Wartungen), `${label} Startseite: Zahlen je Auftragsart (nur das eigene Team)`, JSON.stringify(t0).slice(0, 300));
+  // „offen/gesamt“ (Status) gibt es nur bei Wartungen, die übrigen Auftragsarten zählen nur die Aufträge
+  report(/4 Aufträge/.test(t0.Reparaturen) && /2 Aufträge/.test(t0.Entstörungen) && /📅 1 heute/.test(t0.Entstörungen) && /1 Auftrag/.test(t0.Daueraufträge) && !/offen/.test(t0.Reparaturen + t0.Entstörungen + t0.Daueraufträge) && /2 ohne Auftrag/.test(t0.Meldungen) && /offen · \d+ gesamt/.test(t0.Wartungen), `${label} Startseite: Zahlen je Auftragsart (nur das eigene Team), Status nur bei Wartungen`, JSON.stringify(t0).slice(0, 300));
   // Startseite: Hinweis schließen/öffnen lässt nichts springen
   const hasBanner = await page.evaluate(() => [...document.querySelectorAll('#app button')].some(b => b.textContent.trim() === '✕'));
   if (hasBanner) await probe(page, `${label} Startseite: Hinweis mit ✕ schließen`, btn('/^✕$/'), { scroll: 0, ms: 800, tapTol: 400, smooth: '#app .gasl' });
   // Fortschritt (Prozent, Wochenpensum) gibt es nur bei Wartungen
-  await chooseKind(page, 'Wartungen');
-  report(await page.evaluate(() => !!document.querySelector('#app .prg')), `${label} Wartungen: Fortschritt wird angezeigt`);
-  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Auftragsarten/.test(b.textContent)).click());
-  await pause(page, 600);
+  await probe(page, `${label} Startseite: Wartungen öffnen (Seite gleitet von rechts herein)`, `() => document.querySelector('#app [data-k="kd-war"]')`, { reflow: true, ms: 900, anim: true });
+  report(await page.evaluate(() => !!document.querySelector('#app .prg') && !!document.querySelector('#app [data-k="fc"]') && !document.querySelector('#app .ksw')), `${label} Wartungen: Fortschritt und Status-Filter werden angezeigt, kein Umschalter zwischen den Auftragsarten`);
+  await probe(page, `${label} Wartungen: ← Auftragsarten (Seite gleitet von links herein)`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
   // Reparaturen: nach Termin und Uhrzeit (ab heute aufsteigend, dann das Vergangene)
-  await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900 });
+  await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900, anim: true });
   const order = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k));
   const o1 = await order();
   report(o1.join() === 'o65900002-0010,o65900001-0010,o65900009,o65900008-0010', `${label} Reparaturen: Termin & Uhrzeit (zuerst die nächsten, dann Vergangenes)`, o1.join(', '));
-  report(await page.evaluate(() => !document.querySelector('#app .prg')), `${label} Reparaturen: kein Fortschritt (nur bei Wartungen)`);
+  // Fortschritt, Status-Filter (Offen/Erledigt), Status-Etiketten und der Umschalter zwischen den Auftragsarten gibt es hier nicht
+  const noStatus = await page.evaluate(() => ({ prg: !!document.querySelector('#app .prg'), fc: !!document.querySelector('#app [data-k="fc"]'), ksw: !!document.querySelector('#app .ksw'), tags: [...document.querySelectorAll('#app [data-list] .tag')].map(t => t.textContent).filter(t => /Erledigt|offen|Nicht OK|geprüft/.test(t)) }));
+  report(!noStatus.prg && !noStatus.fc && !noStatus.ksw && !noStatus.tags.length, `${label} Reparaturen: kein Fortschritt, keine Status-Filter und -Etiketten, kein Umschalter`, JSON.stringify(noStatus));
   const extTags = await page.evaluate(() => ({
     mixed: /Externe Firma/.test(document.querySelector('#app [data-k="o65900001-0010"]').textContent),
     only: /Externe Firma/.test(document.querySelector('#app [data-k="o65900009"]').textContent),
@@ -1023,11 +1106,10 @@ async function kindChecks(browser, base, viewport, errors) {
   }));
   report(extTags.mixed && extTags.only && extTags.none && extTags.planned, `${label} Reparaturen: externe Firma gekennzeichnet, Geplantes (P) fehlt`, JSON.stringify(extTags));
   // Auftrag mit externer Firma: im Detail die Vorgänge der Fremdfirma
-  await probe(page, `${label} Reparatur mit externer Firma öffnen`, `() => document.querySelector('#app [data-k="o65900001-0010"]')`, { reflow: true, ms: 900 });
+  await probe(page, `${label} Reparatur mit externer Firma öffnen`, `() => document.querySelector('#app [data-k="o65900001-0010"]')`, { reflow: true, ms: 900, anim: true });
   const extDetail = await page.evaluate(() => (document.querySelector('#app .extbox') || {}).textContent || '');
   report(/Externe Firma arbeitet mit/.test(extDetail) && /Vorgang 0030/.test(extDetail) && /Fremdfirma: Kabel ziehen/.test(extDetail) && /6 Std geplant/.test(extDetail), `${label} Reparatur: Detail zeigt die externe Firma mit ihrem Vorgang`, extDetail);
-  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
-  await pause(page, 700);
+  await probe(page, `${label} Reparatur schließen (← Zurück, Seite gleitet von links herein)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
   const trm = await page.evaluate(() => (document.querySelector('#app [data-k="o65900002-0010"] .trm') || {}).textContent);
   report(/13:30 Uhr/.test(trm || ''), `${label} Reparaturen: Karte zeigt Datum und Uhrzeit`, trm);
   const sortBtns = await page.evaluate(() => [...document.querySelectorAll('#app .chips.ab button')].map(b => b.textContent.trim()).join(','));
@@ -1036,14 +1118,15 @@ async function kindChecks(browser, base, viewport, errors) {
   const o2 = await order();
   report(o2.join() === 'o65900001-0010,o65900002-0010,o65900008-0010,o65900009', `${label} Reparaturen: nach Auftragsnummer`, o2.join(', '));
   await probe(page, `${label} Reparaturen: Sortierung Termin & Uhrzeit`, btn('/^Termin & Uhrzeit$/'), { at: 300 });
-  // Umschalter: Entstörungen
-  await probe(page, `${label} Umschalter: Entstörungen`, btn('/Entstörungen/'), { reflow: true, ms: 900 });
+  // zurück zur Startseite und die nächste Auftragsart öffnen (einen Umschalter in der Liste gibt es nicht)
+  await probe(page, `${label} Reparaturen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
+  await probe(page, `${label} Startseite: Entstörungen öffnen`, `() => document.querySelector('#app [data-k="kd-ent"]')`, { reflow: true, ms: 900, anim: true });
   const o3 = await order();
   report(o3.join() === 'o65900003,o65900004', `${label} Entstörungen: heute zuerst, dann gestern`, o3.join(', '));
   const ent = await page.evaluate(() => ({ a: document.querySelector('#app [data-k="o65900003"]').textContent.replace(/\s+/g, ' '), b: document.querySelector('#app [data-k="o65900004"] .trm').textContent }));
   report(/Heute/.test(ent.a) && /08:30–10:15 Uhr/.test(ent.a) && /📋/.test(ent.a) && /bis .* 05:30 Uhr/.test(ent.b), `${label} Entstörungen: Heute-Etikett, Uhrzeit von–bis, Meldung; Nachtschicht über Mitternacht`, ent.a.slice(0, 120) + ' | ' + ent.b);
   // Entstörung öffnen: keine Prüfobjekte, dafür die Meldung; Zeit ist mit dem Termin vorbelegt
-  await probe(page, `${label} Entstörung öffnen`, `() => document.querySelector('#app [data-k="o65900003"]')`, { reflow: true, ms: 900 });
+  await probe(page, `${label} Entstörung öffnen`, `() => document.querySelector('#app [data-k="o65900003"]')`, { reflow: true, ms: 900, anim: true });
   const det = await page.evaluate(() => ({ items: document.querySelectorAll('#app .it').length, text: document.querySelector('#app').textContent.replace(/\s+/g, ' ') }));
   report(/Dampf aus dem Schacht/.test(det.text) && /1290000001/.test(det.text) && !/Prüfobjekte/.test(det.text.replace(/Prüfobjekte bewerten/, '')), `${label} Entstörung: Detail zeigt die Meldung, keine Prüfobjekte`, det.text.slice(0, 160));
   const A = 330;
@@ -1054,26 +1137,27 @@ async function kindChecks(browser, base, viewport, errors) {
   await probe(page, `${label} Entstörung: Schnellwahl 1 Std`, btn('/^1 Std$/'), { at: A });
   await probe(page, `${label} Entstörung: Zeit speichern`, btn('/Zeit speichern/'), { at: A, ms: 1200 });
   await pause(page, 800);
-  const done = await page.evaluate(() => /Erledigt/.test(document.querySelector('#app [data-k="oc"]').textContent));
-  report(done, `${label} Entstörung: mit Zeit ist sie erledigt (ohne Prüfobjekte)`);
-  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
-  await pause(page, 700);
-  const openLeft = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
-  report(openLeft === 'o65900004', `${label} Entstörungen: erledigte verschwindet aus „Offen“`, openLeft || JSON.stringify(await page.evaluate(() => ({ kind: viewKind, state: history.state, open: !!openOrder, text: document.querySelector('#app').textContent.slice(0, 200) }))));
+  // die Zeit ist gespeichert; ein Status („Erledigt“) wird nicht angezeigt – nur die Zeit selbst
+  const saved = await page.evaluate(() => ({ status: /Erledigt|offen/.test(document.querySelector('#app [data-k="oc"]').textContent), time: /⏱ 1 Std/.test(document.querySelector('#app [data-k="oc"]').textContent) }));
+  report(!saved.status && saved.time, `${label} Entstörung: nach dem Speichern steht die Zeit auf der Karte, kein Status`, JSON.stringify(saved));
+  await probe(page, `${label} Entstörung schließen (← Zurück)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
+  const bothLeft = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
+  report(bothLeft === 'o65900003,o65900004', `${label} Entstörungen: alle bleiben in der Liste (kein Offen/Erledigt-Filter)`, bothLeft);
   // Dauerauftrag, Meldungen
-  await probe(page, `${label} Umschalter: Daueraufträge`, btn('/Daueraufträge/'), { reflow: true, ms: 900 });
+  await probe(page, `${label} Entstörungen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
+  await probe(page, `${label} Startseite: Daueraufträge öffnen`, `() => document.querySelector('#app [data-k="kd-dau"]')`, { reflow: true, ms: 900, anim: true });
   const dau = await order();
   report(dau.join() === 'o65900005', `${label} Daueraufträge: Liste`, dau.join(', '));
   report(await page.evaluate(() => !document.querySelector('#app .prg')), `${label} Daueraufträge: kein Fortschritt (nur bei Wartungen)`);
   // Dauerauftrag: mehrere Tageseinträge
-  await probe(page, `${label} Dauerauftrag öffnen`, `() => document.querySelector('#app [data-k="o65900005"]')`, { reflow: true, ms: 900 });
+  await probe(page, `${label} Dauerauftrag öffnen`, `() => document.querySelector('#app [data-k="o65900005"]')`, { reflow: true, ms: 900, anim: true });
   const rows = () => page.evaluate(() => [...document.querySelectorAll('#app .zrow')].map(n => n.textContent.replace(/\s+/g, ' ').trim()));
   const sum = () => page.evaluate(() => (document.querySelector('#app [data-k="zs0"]') || {}).textContent);
   report((await sum()) === 'Noch keine Einträge – für jeden Tag, an dem gearbeitet wurde, ein Eintrag.' && !(await page.evaluate(() => /Prüfobjekte/.test(document.querySelector('#app').textContent.replace('Prüfobjekte bewerten', '')))), `${label} Dauerauftrag: Tageseinträge statt Zeit und Prüfobjekte`, await sum());
   await probe(page, `${label} Dauerauftrag: Eintrag von Hand öffnen`, btn('/Eintrag von Hand/'), { at: A, ms: 800 });
   await page.fill('#app .d-time input[type=time]', '07:00');
   await probe(page, `${label} Dauerauftrag: Schnellwahl 1 Std`, btn('/^1 Std$/'), { at: A });
-  await probe(page, `${label} Dauerauftrag: Eintrag speichern (heute)`, btn('/^Eintrag speichern$/'), { at: A, ms: 1200 });
+  await probe(page, `${label} Dauerauftrag: Eintrag speichern (heute) – der Eintrag blendet ein`, btn('/^Eintrag speichern$/'), { at: A, ms: 1200, anim: true });
   await pause(page, 600);
   let r1 = await rows();
   report(r1.length === 1 && /ab 07:00 Uhr · 1 Std/.test(r1[0]) && (await sum()) === 'Gesamt 1 Std in 1 Eintrag', `${label} Dauerauftrag: erster Tageseintrag steht in der Liste`, r1.join(' | ') + ' / ' + (await sum()));
@@ -1082,7 +1166,7 @@ async function kindChecks(browser, base, viewport, errors) {
   await probe(page, `${label} Dauerauftrag: Datum „Gestern“`, btn('/^Gestern$/'), { at: A });
   await page.fill('#app .d-time input[type=time]', '13:00');
   await probe(page, `${label} Dauerauftrag: Schnellwahl 2 Std`, btn('/^2 Std$/'), { at: A });
-  await probe(page, `${label} Dauerauftrag: zweiten Eintrag speichern`, btn('/^Eintrag speichern$/'), { at: A, ms: 1200 });
+  await probe(page, `${label} Dauerauftrag: zweiten Eintrag speichern – er blendet ein, der erste rückt`, btn('/^Eintrag speichern$/'), { at: A, ms: 1200, anim: true });
   await pause(page, 600);
   const r2 = await rows();
   report(r2.length === 2 && /ab 07:00 Uhr · 1 Std/.test(r2[0]) && /ab 13:00 Uhr · 2 Std/.test(r2[1]) && (await sum()) === 'Gesamt 3 Std in 2 Einträgen', `${label} Dauerauftrag: zwei Tageseinträge, neuester zuerst, Summe`, r2.join(' | ') + ' / ' + (await sum()));
@@ -1099,8 +1183,7 @@ async function kindChecks(browser, base, viewport, errors) {
   await probe(page, `${label} Dauerauftrag: Eintrag löschen`, btn('/^Eintrag löschen$/'), { at: A, ms: 1200 });
   await pause(page, 600);
   report((await rows()).length === 1 && (await sum()) === 'Gesamt 30 Min in 1 Eintrag', `${label} Dauerauftrag: gelöschter Eintrag ist weg`, (await rows()).join(' | ') + ' / ' + (await sum()));
-  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
-  await pause(page, 700);
+  await probe(page, `${label} Dauerauftrag schließen (← Zurück)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
   const dauCard = await page.evaluate(() => document.querySelector('#app [data-k="o65900005"]').textContent.replace(/\s+/g, ' '));
   report(/⏱ 30 Min · 1 Eintrag/.test(dauCard) && !/Erledigt/.test(dauCard), `${label} Dauerauftrag: Karte zeigt die Gesamtzeit, ist nie „erledigt“`, dauCard.slice(0, 120));
   // nach dem Neuladen (Server-Stand) sind die Einträge noch da; der Server lehnt Tageseinträge bei anderen Auftragsarten ab
@@ -1116,7 +1199,8 @@ async function kindChecks(browser, base, viewport, errors) {
   report((await rows()).length === 2 && (await sum()) === 'Gesamt 1 Std 30 Min in 2 Einträgen', `${label} Dauerauftrag: Einträge nach dem Neuladen vom Server (und der eines anderen Geräts)`, (await rows()).join(' | ') + ' / ' + (await sum()));
   await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
   await pause(page, 700);
-  await probe(page, `${label} Umschalter: Meldungen`, btn('/Meldungen/'), { reflow: true, ms: 900 });
+  await probe(page, `${label} Daueraufträge: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
+  await probe(page, `${label} Startseite: Meldungen öffnen`, `() => document.querySelector('#app [data-k="kd-mel"]')`, { reflow: true, ms: 900, anim: true });
   const mel = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
   report(mel === 'm1290000003,m1290000005', `${label} Meldungen: nur die des Teams ohne Auftrag, neueste zuerst`, mel);
   await page.click('#app input[type=search]');
@@ -1127,10 +1211,10 @@ async function kindChecks(browser, base, viewport, errors) {
   await page.fill('#app input[type=search]', '');
   await pause(page, 500);
   // zurück zur Startseite (Knopf), erneut öffnen, Zurück-Taste des Geräts
-  await probe(page, `${label} Meldungen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900 });
+  await probe(page, `${label} Meldungen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
   const t1 = await tiles();
-  report(/1 offen · 2 gesamt/.test(t1.Entstörungen) && !/heute/.test(t1.Entstörungen), `${label} Startseite: erledigte Entstörung zählt nicht mehr als offen`, t1.Entstörungen);
-  await probe(page, `${label} Startseite: Entstörungen öffnen`, `() => document.querySelector('#app [data-k="kd-ent"]')`, { reflow: true, ms: 900 });
+  report(/2 Aufträge/.test(t1.Entstörungen) && /📅 1 heute/.test(t1.Entstörungen) && !/offen/.test(t1.Entstörungen), `${label} Startseite: Entstörungen zählen alle Aufträge (kein offen/erledigt), „heute“ bleibt`, t1.Entstörungen);
+  await probe(page, `${label} Startseite: Entstörungen öffnen`, `() => document.querySelector('#app [data-k="kd-ent"]')`, { reflow: true, ms: 900, anim: true });
   await page.goBack();
   await pause(page, 700);
   const back = await page.evaluate(() => document.querySelectorAll('#app button.kind').length);
@@ -1144,11 +1228,13 @@ async function kindChecksWide(browser, base, viewport, errors) {
     page = await newPage(browser, base, viewport, errors);
   console.log(`\n=== Auftragsarten: Monteur (${label}) ===`);
   await loginMonteur(page, null);
-  await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900 });
-  await probe(page, `${label} Umschalter: Entstörungen`, btn('/Entstörungen/'), { reflow: true, ms: 900 });
-  await probe(page, `${label} Umschalter: Meldungen`, btn('/Meldungen/'), { reflow: true, ms: 900 });
-  await probe(page, `${label} Umschalter: Reparaturen`, btn('/Reparaturen/'), { reflow: true, ms: 900 });
-  await probe(page, `${label} Reparatur öffnen`, `() => document.querySelector('#app [data-list] > [data-k]')`, { reflow: true, ms: 900 });
+  for (const k of ['rep', 'ent', 'mel'])
+    {
+      await probe(page, `${label} Startseite: ${k} öffnen`, `() => document.querySelector('#app [data-k="kd-${k}"]')`, { reflow: true, ms: 900, anim: true });
+      await probe(page, `${label} ${k}: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
+    }
+  await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900, anim: true });
+  await probe(page, `${label} Reparatur öffnen`, `() => document.querySelector('#app [data-list] > [data-k]')`, { reflow: true, ms: 900, anim: true });
   const wide = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   report(!wide, `${label} Reparatur: Seite nicht breiter als der Bildschirm`);
   await page.context().close();
@@ -1165,7 +1251,7 @@ async function dispoChecks(browser, base, viewport, errors) {
   };
   // Tabs: Kopfzeile und Tab-Leiste bleiben stehen, nur der Inhalt wechselt
   for (const n of ['Fortschritt', 'Upload', 'Vergleich', 'Geräte', 'Benutzer', 'Übersicht'])
-    await probe(page, `${label} Tab „${n}“: Leiste bleibt stehen`, btn(`/^${n}$/`, '#app .tabs'), { reflow: true, ms: 800 });
+    await probe(page, `${label} Tab „${n}“: Leiste bleibt stehen, Inhalt blendet ein`, btn(`/^${n}$/`, '#app .tabs'), { reflow: true, ms: 800, anim: true });
   // Übersicht: Filter
   await probe(page, `${label} Übersicht: Filter öffnen`, btn('/⚙ Filter/'), { at: 250, reflow: true });
   for (const f of ['Nicht OK', 'Erledigt', 'Alle \\('])

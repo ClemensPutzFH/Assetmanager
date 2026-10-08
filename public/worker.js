@@ -2,8 +2,8 @@
  * Excel-Worker: liest und schreibt Excel-Dateien im Hintergrund (Web Worker), damit die Oberfläche nicht einfriert.
  * Die Oberfläche (index.html, runExcelWorker) schickt je Aufgabe eine Nachricht { type, … } und bekommt
  * { res } oder { error } zurück:
- *   type 'orders'  { bufs }         -> { rows: Aufträge, meldungen, skip, ignored, files } (Aufträge-, Vorgänge- und Meldungen-Excel
- *                                       hochladen; jede Datei wird an ihren Spalten erkannt, siehe parseOrderFiles)
+ *   type 'orders'  { bufs, wanted } -> { rows, skip, hasLart }                          (Aufträge-, Vorgänge- oder Meldungen-Excel
+ *                                       hochladen; wanted = 'auftraege' | 'vorgaenge' | 'meldungen', siehe parseSource)
  *   type 'pruef'   { buf }          -> { by: { Auftrag: [Kurztexte] } }                (Prüflos-Excel hochladen)
  *   type 'cmp'     { buf }          -> { rows, hasStatus }                             (Vergleich Excel <-> Export)
  *   sonst          { A, P, dc, tc, E } -> ArrayBuffer der fertigen .xlsx                (Export; E = Tageseinträge der Daueraufträge)
@@ -121,156 +121,76 @@ const readRows = (rows, headerRow, spec, dates = [], times = []) => {
  *   ent  Entstörung  3NAE
  * Alle anderen (z. B. 3NAV, 3NIN, 3NBT, 3NAW mit anderer Leistungsart) gehören nicht dazu: '' .
  */
-// Team mit angehängtem „P“ („FW-IH01P“): geplant und vorgemerkt, aber noch nicht fix – wird nicht angezeigt
-const isPlanned = team => /\d+P$/i.test(String(team || '').trim());
-// Arbeitsplatz „FW-IHEXT“: externe Firmen
-const isExternal = team => /EXT$/i.test(String(team || '').trim());
-const kindOf = (art, lart, hasLart) => {
-  art = art.toUpperCase();
-  if (art === '3NAW') return !hasLart || lart === 'FWS' ? 'war' : lart === 'FWD' ? 'dau' : '';
-  return art === '3NAR' ? 'rep' : art === '3NAE' ? 'ent' : '';
-};
-
+const SOURCE_NAMES = { auftraege: 'Aufträge', vorgaenge: 'Vorgänge', meldungen: 'Meldungen' };
 /**
- * Aufträge aus einer oder mehreren Excel-Dateien lesen. Jede Datei wird an ihren Spalten erkannt (auch mehrere Blätter):
- *   Vorgänge   Spalten „Auftrag“ + „Vorgang“           -> je Vorgang eine Zeile (3NAR/3NAE)
- *   Meldungen  Spalten „Meldung“ + „Beschreibung“      -> Schäden, mit oder ohne Auftrag
- *   Aufträge   Spalten „Auftrag“ + „Verantw.ArbPl.“    -> ein Auftrag je Zeile
- * Zusammengeführt wird zu den Einheiten der App (rows):
- *   · Wartung, Dauerauftrag, Entstörung: ein Eintrag je Auftrag (Schlüssel = Auftragsnummer)
- *   · Reparatur: ein Eintrag je Vorgang (Schlüssel = „Auftragsnummer-Vorgang“, Team = Arbeitsplatz des Vorgangs)
- * Vorgänge geplanter Teams („…P“, z. B. FW-IH01P) sind noch nicht fix und entfallen (planned). Vorgänge der externen Firmen (FW-IHEXT)
- * sind kein Team: sie hängen als `ext` an den Aufträgen der internen Teams; hat eine Reparatur nur externe Vorgänge, bekommt das
- * verantwortliche Team des Auftrags einen Auftrag (ohne Vorgang). Ohne Vorgänge-Datei bleibt ein Reparaturauftrag ein Eintrag je
- * Auftrag. Aufträge anderer Auftragsarten werden übergangen (ignored: Auftragsart -> Anzahl), Zeilen ohne Team gezählt (skip).
- * files = was in den Dateien gefunden wurde.
+ * Art eines Blattes an seinen Spalten erkennen:
+ *   vorgaenge   Spalten „Auftrag“ + „Vorgang“
+ *   meldungen   Spalten „Meldung“ + „Beschreibung“
+ *   auftraege   Spalten „Auftrag“ + „Verantw.ArbPl.“
+ * Ergebnis { type, header (Zeile der Kopfzeile) } oder null (keines davon).
  */
-function parseOrderFiles(bufs) {
-  const orders = new Map(),
-    steps = [],
-    meldungen = new Map(),
-    ignored = {};
+function detectSheet(rows) {
+  for (const [type, ok] of [
+    ['vorgaenge', s => s.has('auftrag') && s.has('vorgang')],
+    ['meldungen', s => s.has('meldung') && s.has('beschreibung')],
+    ['auftraege', s => s.has('auftrag') && s.has('verantwarbpl')]
+  ]) {
+    const header = findHeader(rows, ok);
+    if (header >= 0) return { type, header };
+  }
+  return null;
+}
+/**
+ * Eine SAP-Excel lesen: wanted = welche Dateiart erwartet wird (Upload-Feld „Aufträge“, „Vorgänge“ oder „Meldungen“). Jede Datei steht für
+ * sich; zusammengeführt wird erst auf dem Server (die Dateien kommen zu verschiedenen Zeiten und in beliebiger Reihenfolge).
+ *   auftraege  -> rows [{ auftrag, team, tp, art, lart, plz, str, kurz, start, ende, mel }], hasLart (Spalte „IH-Leistungsart“ vorhanden),
+ *                 skip (Zeilen ohne Team)
+ *   vorgaenge  -> rows [{ auftrag, art, kurz, vg, vtxt, team (des Auftrags), vteam (Arbeitsplatz des Vorgangs), lart, start, ende, arb, uhr, uhr2 }]
+ *   meldungen  -> rows [{ nr, dat, txt, str, plz, auftrag, code, tp, stat, team, grp }]
+ * Passt kein Blatt, kommt ein Fehler, der sagt, was die Datei stattdessen ist (z. B. „das ist die Vorgänge-Excel“).
+ */
+function parseSource(bufs, wanted) {
+  const rows = [],
+    found = {};
   let skip = 0,
-    planned = 0; // Vorgänge/Aufträge geplanter Teams („…P“), die noch nicht angezeigt werden
-  const files = { orders: 0, vorgaenge: 0, meldungen: 0 };
+    hasLart = false;
   for (const buf of bufs)
-    for (const rows of readSheets(buf)) {
-      let h = findHeader(rows, s => s.has('auftrag') && s.has('vorgang'));
-      if (h >= 0) {
-        for (const o of readRows(rows, h, VORGANG_COLUMNS, ['start', 'ende'], ['uhr', 'uhr2'])) {
+    for (const sheet of readSheets(buf)) {
+      const d = detectSheet(sheet);
+      if (!d) continue;
+      found[d.type] = (found[d.type] || 0) + 1;
+      if (d.type !== wanted) continue;
+      if (wanted === 'vorgaenge')
+        for (const o of readRows(sheet, d.header, VORGANG_COLUMNS, ['start', 'ende'], ['uhr', 'uhr2'])) {
           o.auftrag = normalizeOrderNo(o.auftrag);
-          if (o.auftrag) steps.push(o);
+          if (o.auftrag) rows.push(o);
         }
-        files.vorgaenge++;
-        continue;
-      }
-      h = findHeader(rows, s => s.has('meldung') && s.has('beschreibung'));
-      if (h >= 0) {
-        for (const o of readRows(rows, h, MELDUNG_COLUMNS, ['dat'])) {
+      else if (wanted === 'meldungen')
+        for (const o of readRows(sheet, d.header, MELDUNG_COLUMNS, ['dat'])) {
           o.nr = normalizeOrderNo(o.nr);
           o.auftrag = normalizeOrderNo(o.auftrag);
-          if (o.nr) meldungen.set(o.nr, o);
+          if (o.nr) rows.push(o);
         }
-        files.meldungen++;
-        continue;
+      else {
+        for (const o of readRows(sheet, d.header, ORDER_COLUMNS, ['start', 'ende'])) {
+          o.auftrag = normalizeOrderNo(o.auftrag);
+          o.mel = normalizeOrderNo(o.mel);
+          if (!o.auftrag) continue;
+          if (!o.team) skip++;
+          else rows.push(o);
+          hasLart = o._present.lart >= 0;
+        }
       }
-      h = findHeader(rows, s => s.has('auftrag') && s.has('verantwarbpl'));
-      if (h < 0) continue;
-      for (const o of readRows(rows, h, ORDER_COLUMNS, ['start', 'ende'])) {
-        o.auftrag = normalizeOrderNo(o.auftrag);
-        o.mel = normalizeOrderNo(o.mel);
-        if (!o.auftrag) continue;
-        if (!o.team) skip++;
-        else orders.set(o.auftrag, o);
-      }
-      files.orders++;
     }
-  // Vorgänge je Auftrag (nach Vorgangsnummer)
-  const stepsOf = new Map();
-  for (const v of steps) (stepsOf.get(v.auftrag) || stepsOf.set(v.auftrag, []).get(v.auftrag)).push(v);
-  for (const l of stepsOf.values()) l.sort((a, b) => a.vg.localeCompare(b.vg, 'de', { numeric: true }));
-  // Aufträge, die nur in der Vorgänge-Datei stehen, werden aus ihr aufgebaut (ohne Adresse)
-  for (const [nr, l] of stepsOf)
-    if (!orders.has(nr)) {
-      const v = l[0];
-      if (v.team) orders.set(nr, { auftrag: nr, team: v.team, art: v.art, lart: v.lart, kurz: v.kurz, start: v.start, ende: v.ende, _present: { lart: 0 } });
-    }
-  const rows = [];
-  for (const o of orders.values()) {
-    const kind = kindOf(o.art, o.lart, o._present.lart >= 0);
-    if (!kind) {
-      ignored[o.art || '?'] = (ignored[o.art || '?'] || 0) + 1;
-      continue;
-    }
-    // Auftrag eines geplanten Teams (z. B. „FW-IH01P“): noch nicht fix, wird nicht angezeigt
-    if (isPlanned(o.team)) {
-      planned++;
-      continue;
-    }
-    const base = {
-      kind,
-      nr: o.auftrag,
-      vg: '',
-      vtxt: '',
-      lart: o.lart || '',
-      art: o.art,
-      tp: o.tp || '',
-      plz: o.plz || '',
-      str: o.str || '',
-      kurz: o.kurz,
-      mel: o.mel || ''
-    };
-    // Vorgänge: geplante („…P“) gibt es für die App noch nicht; Vorgänge der externen Firmen („FW-IHEXT“) sind kein Team, sondern
-    // werden beim Auftrag angezeigt (ext) – die externen arbeiten mit den internen Teams zusammen
-    const all = stepsOf.get(o.auftrag) || [],
-      fix = all.filter(v => !isPlanned(v.vteam)),
-      own = fix.filter(v => !isExternal(v.vteam)),
-      ext = fix.filter(v => isExternal(v.vteam)).map(v => ({ vg: v.vg, t: v.vtxt, ...(+v.arb ? { h: +v.arb } : {}) }));
-    planned += all.length - fix.length;
-    if (kind === 'rep' && own.length)
-      // Reparatur: jeder eigene Vorgang ist ein Auftrag seines Teams
-      for (const v of own)
-        rows.push({
-          ...base,
-          auftrag: o.auftrag + '-' + v.vg,
-          vg: v.vg,
-          vtxt: v.vtxt,
-          team: v.vteam || o.team,
-          start: v.start || o.start || '',
-          ende: v.ende || '',
-          uhr: v.uhr,
-          uhr2: v.uhr2,
-          arb: v.arb,
-          ext
-        });
-    else if (kind === 'rep' && all.length && !fix.length) continue; // nur geplante Vorgänge: noch nichts anzuzeigen
-    else {
-      // Entstörung, Dauerauftrag, Wartung (ohne Vorgänge) und Reparatur ohne eigenen Vorgang (nur externe Firmen oder gar keine
-      // Vorgänge-Datei): ein Auftrag des verantwortlichen Teams. Beginn laut erstem, Ende laut letztem Vorgang.
-      const first = fix[0],
-        last = fix[fix.length - 1];
-      rows.push({
-        ...base,
-        auftrag: o.auftrag,
-        vtxt: kind === 'rep' ? '' : (first && first.vtxt) || '',
-        team: o.team,
-        start: (first && first.start) || o.start || '',
-        ende: (last && last.ende) || o.ende || '',
-        uhr: (first && first.uhr) || '',
-        uhr2: (last && last.uhr2) || '',
-        arb: first ? fix.reduce((a, v) => a + (+v.arb || 0), 0) : '',
-        ext
-      });
-    }
+  if (!found[wanted]) {
+    const other = Object.keys(found).find(k => k !== wanted);
+    throw new Error(
+      other
+        ? `Das ist keine ${SOURCE_NAMES[wanted]}-Excel, sondern die ${SOURCE_NAMES[other]}-Excel – bitte im Feld „${SOURCE_NAMES[other]}“ hochladen.`
+        : `Keine ${SOURCE_NAMES[wanted]} gefunden (nötige Spalten: ${{ auftraege: 'Auftrag + Verantw.ArbPl.', vorgaenge: 'Auftrag + Vorgang', meldungen: 'Meldung + Beschreibung' }[wanted]}).`
+    );
   }
-  return {
-    rows,
-    meldungen: [...meldungen.values()].map(({ _present, ...m }) => m),
-    skip,
-    ignored,
-    planned,
-    files
-  };
+  return { rows: rows.map(({ _present, ...o }) => o), skip, hasLart };
 }
 /**
  * Prüfobjekte aus der Prüflos-Excel lesen: Spalten „Auftrag“ und „Kurztext des Prüfobjektes“.
@@ -379,7 +299,7 @@ onmessage = e => {
   try {
     const res =
       type === 'orders'
-        ? parseOrderFiles(bufs || [buf])
+        ? parseSource(bufs || [buf], e.data.wanted)
         : type === 'pruef'
           ? parseChecklists(buf)
           : type === 'cmp'

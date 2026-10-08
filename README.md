@@ -122,7 +122,8 @@ Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zus
 Die Oberfläche startet auch ohne Netz (nach dem ersten Öffnen mit Netz). Eingaben der Monteure werden im Gerät gesichert und automatisch gesendet, sobald der Server wieder erreichbar ist. Den letzten Stand der Aufträge und die Prüfobjekte des eigenen Teams merkt sich das Gerät in IndexedDB.
 
 ## Auftragsarten
-Die App kennt fünf Auftragsarten. Der Monteur wählt sie auf der **Startseite** (große Flächen mit der Zahl offener Aufträge, bei Reparatur/Entstörung auch „heute“) und wechselt in jeder Liste mit dem Umschalter oben (die Zurück-Taste des Geräts führt zur Startseite zurück). Der Disponent hat denselben Umschalter in der Übersicht.
+Die App kennt fünf Auftragsarten. Der Monteur wählt sie auf der **Startseite** (große Flächen mit der Zahl der Aufträge, bei Reparatur/Entstörung auch „heute“). In der Liste gibt es keinen Umschalter: Zurück zur Startseite geht mit „← Auftragsarten“ oder der Zurück-Taste des Geräts. Der Disponent hat in der Übersicht einen Umschalter zwischen den Auftragsarten.
+- **Status** (offen/erledigt, „Nicht OK“, Filter, Etiketten, Fortschritt) gibt es nur bei **Wartungen**. Alle anderen Auftragsarten zeigen ihre Aufträge ohne Status (Karte: Termin, Zeit, Meldung, externe Firma), der Monteur sieht sie alle, sortiert nach Termin.
 
 | Auftragsart | Quelle (SAP) | Besonderheiten |
 |---|---|---|
@@ -138,16 +139,16 @@ Die App kennt fünf Auftragsarten. Der Monteur wählt sie auf der **Startseite**
 - **Geplante Teams (`…P`, z. B. `FW-IH01P`):** geplant und vorgemerkt, aber noch nicht fix – diese Vorgänge werden **nicht angezeigt** (beim Upload nicht geladen; die Meldung nach dem Upload nennt ihre Anzahl). Sobald der Vorgang in SAP einem festen Team gehört, kommt er mit dem nächsten Upload dazu.
 - **Termin & Uhrzeit:** Reparaturen und Entstörungen zeigen unter der Nummer „🕒 Mi 07.01.2026 · 04:00–06:30 Uhr“ (über Mitternacht: „… 22:00 Uhr bis Mi 08.10.2026, 05:30 Uhr“), „📅 Heute/Morgen“ als Etikett und sind standardmäßig nach Termin und Uhrzeit sortiert (heute und später aufsteigend, danach das Vergangene mit dem Neuesten zuerst). Fehlt eine Uhrzeit (SAP liefert `00:00:00`), steht nur das Datum.
 - Andere Auftragsarten (`3NAV`, `3NIN`, `3NBT`, `3NAW` mit anderer Leistungsart) werden beim Upload **übergangen**; die Meldung nach dem Upload nennt sie.
-- **Fortschritt** (Prozent, Wochenpensum bis 31.12., Tab „Fortschritt“ des Disponenten) gibt es nur bei **Wartungen**; die anderen Auftragsarten zeigen nur Zähler (offen/gesamt).
+- **Fortschritt** (Prozent, Wochenpensum bis 31.12., Tab „Fortschritt“ des Disponenten) gibt es nur bei **Wartungen**.
 
 ## Excel-Spalten, die gelesen werden
-Im Tab „Upload“ können **mehrere Dateien auf einmal** gewählt werden; jede wird an ihren Spalten erkannt und mit den anderen zusammengeführt:
+Im Tab „Upload“ hat **jede SAP-Datei ihr eigenes Feld** (Aufträge, Vorgänge, Meldungen, Prüfobjekte). Sie können einzeln und in beliebiger Reihenfolge hochgeladen werden; eine Datei im falschen Feld wird mit einem klaren Hinweis abgelehnt. Der **Server** setzt die Aufträge aus den Rohdaten zusammen (Tabellen `src_auftrag` und `src_vorgang`, nach jedem Upload von Aufträgen oder Vorgängen wird `orders` daraus neu berechnet): ein neuer Upload der Aufträge lässt die Vorgänge in Ruhe und umgekehrt die Adressen. Spalten:
 - **Aufträge**: Auftrag, Verantw.ArbPl. (= Team), Techn. Platz, Auftragsart, IH-Leistungsart, Postleitzahl, Straße, Kurztext, Eckstarttermin bzw. Term. Start, Eckendtermin (bzw. Term. Ende), Meldung.
-- **Vorgänge** (Reparatur, Entstörung): Auftrag, Auftragsart, Eckstarttermin, Eckendtermin, Kurztext, Vorgang, Kurztext Vrg., VrgArbeitsplatz, Arbeit, Iststart Uzt, Istende Uzt. Ohne Vorgänge-Datei bleibt eine Reparatur ein einziger Auftrag; Aufträge, die nur in der Vorgänge-Datei stehen, werden aus ihr aufgebaut (ohne Adresse).
+- **Vorgänge** (Reparatur, Entstörung): Auftrag, Auftragsart, Eckstarttermin, Eckendtermin, Kurztext, Vorgang, Kurztext Vrg., VrgArbeitsplatz, Arbeit, Iststart Uzt, Istende Uzt. Ohne Vorgänge-Datei bleibt eine Reparatur ein einziger Auftrag; ein Auftrag entsteht nur, wenn er in der Aufträge-Datei steht (Vorgänge ohne Auftrag bleiben unbeachtet).
 - **Meldungen**: Angelegt am, Meldung, Beschreibung, Straße, Postleitzahl, Auftrag (leer = noch ohne Auftrag), Codier.Code.Txt, Techn. Platz, Anwenderstat., Verantw.ArbPl., Codier.Grp.Text. Eine Meldung gehört über die Spalte „Auftrag“ zu einem Auftrag (ein Auftrag kann mehrere haben); ohne Meldungen-Datei zeigt die Karte nur die Nummer aus der Aufträge-Datei.
 - **Prüflose**: Auftrag, Kurztext des Prüfobjektes.
 
-Beim Upload ersetzt die Datei je enthaltenem **Team und Auftragsart** die Aufträge, die in ihr fehlen (eine Datei nur mit Reparaturen lässt die Wartungen unberührt); „Nur ergänzen“ behält alles. Meldungen ersetzen je enthaltenem Team die fehlenden. Fehlt in einer neuen Aufträge-Datei der Eckendtermin, bleibt der bisherige erhalten.
+Beim Upload ersetzt die **Aufträge**-Datei je enthaltenem **Team und Auftragsart** die Aufträge, die in ihr fehlen (eine Datei nur mit Reparaturen lässt die Wartungen unberührt), die **Vorgänge**-Datei die Vorgänge der enthaltenen Aufträge, die **Meldungen**-Datei je enthaltenem Team die Meldungen; „Nur ergänzen“ behält alles. Fehlt in einer neuen Aufträge-Datei der Eckendtermin, bleibt der bisherige erhalten. „Alle … löschen“ gibt es je Feld.
 
 ## Benutzer (Monteur-Anmeldung)
 

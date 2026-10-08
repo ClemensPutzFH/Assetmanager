@@ -998,6 +998,9 @@
       .mel1 {
         margin-top: 2px;
       }
+      .zlist {
+        display: block;
+      }
       .zrow {
         padding: 8px 0;
         border-top: 1px solid var(--bd);
@@ -1035,9 +1038,8 @@
       .mld .kt {
         margin-top: 4px;
       }
-      .ukinds {
-        margin: 0 0 8px;
-        padding-left: 1.2rem;
+      .ucols {
+        font-size: 0.8125rem;
       }
       .ugrid {
         display: grid;
@@ -1990,8 +1992,8 @@
         infoMsg = '',
         // busy: Upload oder Export läuft (Schaltflächen gesperrt)
         busy = false,
-        // armWipeOrders / armWipeChecklists: erster Klick auf „Alle … löschen“ ist erfolgt, zweiter bestätigt
-        armWipeOrders = false,
+        // armWipe: erster Klick auf „Alle … löschen“ ist erfolgt (Feld: 'orders' | 'vorg' | 'mel' | 'pruef'), der zweite bestätigt
+        armWipe = '',
         // searchText: Suchfeld (Auftrag, Kurztext, Straße …)
         searchText = '',
         // teamFilter: Team-Filter in der Dispo-Übersicht ('' = alle)
@@ -2004,7 +2006,9 @@
         checklistMeta = null,
         // checklistsByOrder: Auftragsnummer -> Prüfobjekt-Liste (Zwischenspeicher)
         checklistsByOrder = new Map(),
-        armWipeChecklists = false,
+        // vorgMeta / melMeta: Infos zum letzten Upload der Vorgänge bzw. Meldungen { at, files, count }
+        vorgMeta = null,
+        melMeta = null,
         // listScrollY: Scroll-Position der Liste, bevor ein Auftrag geöffnet wurde (closeOrder stellt sie wieder her)
         listScrollY = 0,
         // results: Auftragsnummer -> Ergebnis-Dokument (Stand vom Server); outbox: noch nicht gesendete Ergebnisse
@@ -2384,52 +2388,53 @@
         );
 
       // ---- Upload (Disponent) ----
+      // Vier SAP-Dateien, jede im eigenen Feld und in beliebiger Reihenfolge: Aufträge, Vorgänge, Meldungen, Prüflose. Der Server setzt
+      // die Aufträge aus Aufträgen + Vorgängen zusammen (Reparatur: jeder Vorgang ein Auftrag), Meldungen und Prüflose hängen daran.
+      // part: Feld im Tab „Upload“ (UPLOAD_PARTS)
+      const UPLOAD_PARTS = {
+        auftraege: { name: 'Aufträge', url: '/api/orders', meta: () => uploadMeta, wipe: 'orders', wiped: 'Alle Aufträge gelöscht' },
+        vorgaenge: { name: 'Vorgänge', url: '/api/vorgaenge', meta: () => vorgMeta, wipe: 'vorg', wiped: 'Alle Vorgänge gelöscht' },
+        meldungen: { name: 'Meldungen', url: '/api/meldungen', meta: () => melMeta, wipe: 'mel', wiped: 'Alle Meldungen gelöscht' }
+      };
       /**
-       * Auftrags-Excel(s) lesen (im Web Worker) und hochladen. keep = true: nur ergänzen/aktualisieren,
-       * sonst werden Aufträge der enthaltenen Teams durch die Datei ersetzt (Server: POST /api/orders).
+       * Eine Excel-Datei (bzw. mehrere derselben Art) lesen (im Web Worker) und hochladen. keep = true: nur ergänzen/aktualisieren,
+       * sonst ersetzt die Datei die Einträge der enthaltenen Teams (Aufträge, Meldungen) bzw. Aufträge (Vorgänge) – siehe server.js.
        */
-      async function uploadOrders(files, keep) {
+      async function uploadSource(part, files, keep) {
+        const { name, url } = UPLOAD_PARTS[part];
         busy = true;
         errorMsg = '';
         infoMsg = 'Lese Datei …';
         render();
         try {
-          // Alle Dateien gemeinsam: Aufträge-, Vorgänge- und Meldungen-Excel werden an ihren Spalten erkannt und zusammengeführt
           const bufs = [];
           for (const f of files) bufs.push(await f.arrayBuffer());
-          const r = await runExcelWorker({ type: 'orders', bufs }, bufs);
-          if (!r.rows.length && !r.meldungen.length)
-            throw new Error(
-              'Keine Aufträge oder Meldungen gefunden (Aufträge: Spalten Auftrag + Verantw.ArbPl., Vorgänge: Auftrag + Vorgang, Meldungen: Meldung + Beschreibung)'
-            );
+          const r = await runExcelWorker({ type: 'orders', wanted: part, bufs }, bufs);
           infoMsg = 'Speichere …';
           render();
-          await api(
-            'POST',
-            '/api/orders',
-            { rows: r.rows, meldungen: r.meldungen, keep, ignored: r.ignored, planned: r.planned, files: files.map(f => f.name).join(', ') },
-            120000
-          );
+          const answer = await api('POST', url, { rows: r.rows, keep, hasLart: r.hasLart, files: files.map(f => f.name).join(', ') }, 120000);
           await poll();
-          const counts = {};
-          for (const o of r.rows) counts[o.kind] = (counts[o.kind] || 0) + 1;
-          const ignoredTotal = Object.values(r.ignored).reduce((a, n) => a + n, 0);
-          const plannedText = r.planned ? ` · ${r.planned} geplante Vorgänge (Team mit „P“) noch nicht angezeigt` : '';
-          infoMsg =
-            [
-              ...KINDS.filter(x => counts[x.k]).map(x => kindCount(x.k, counts[x.k])),
-              r.meldungen.length && kindCount('mel', r.meldungen.length)
-            ]
-              .filter(Boolean)
-              .join(' · ') +
-            ' gespeichert' +
-            plannedText +
-            (r.skip ? ` · ${r.skip} Zeilen ohne Team übersprungen` : '') +
-            (ignoredTotal
-              ? ` · ${ignoredTotal === 1 ? '1 Auftrag' : ignoredTotal + ' Aufträge'} anderer Auftragsarten übergangen (${Object.entries(r.ignored)
-                  .map(([art, n]) => `${n}× ${art}`)
-                  .join(', ')})`
-              : '');
+          const total = o => Object.values(o || {}).reduce((a, n) => a + n, 0),
+            kinds = KINDS.filter(x => answer.counts && answer.counts[x.k]).map(x => kindCount(x.k, answer.counts[x.k]));
+          if (part === 'auftraege')
+            infoMsg =
+              `Aufträge gespeichert: ${kinds.join(' · ') || 'keine'}` +
+              (answer.planned ? ` · ${answer.planned} geplante Vorgänge/Aufträge (Team mit „P“) noch nicht angezeigt` : '') +
+              (r.skip ? ` · ${r.skip} Zeilen ohne Team übersprungen` : '') +
+              (total(answer.ignored)
+                ? ` · ${total(answer.ignored) === 1 ? '1 Auftrag' : total(answer.ignored) + ' Aufträge'} anderer Auftragsarten übergangen (${Object.entries(answer.ignored)
+                    .map(([art, n]) => `${n}× ${art}`)
+                    .join(', ')})`
+                : '') +
+              (answer.counts && answer.counts.rep + answer.counts.ent > 0 && !answer.steps
+                ? ' · Für Reparaturen fehlt noch die Vorgänge-Excel'
+                : '');
+          else if (part === 'vorgaenge')
+            infoMsg =
+              `${answer.count} Vorgänge zu ${answer.orders} Aufträgen gespeichert` +
+              (kinds.length ? ` · jetzt: ${kinds.join(' · ')}` : '') +
+              (answer.planned ? ` · ${answer.planned} geplante Vorgänge (Team mit „P“) noch nicht angezeigt` : '');
+          else infoMsg = `${kindCount('mel', answer.count)} gespeichert`;
         } catch (e) {
           infoMsg = '';
           errorMsg = errorMessageOf(e);
@@ -2437,15 +2442,17 @@
         busy = false;
         render();
       }
-      // Alle Aufträge löschen (DELETE /api/orders, braucht den Upload-PIN)
-      async function wipeOrders() {
+      // Eine Dateiart löschen (braucht den Upload-PIN): part = 'orders' | 'vorg' | 'mel' | 'pruef'
+      async function wipePart(part) {
+        const spec = part === 'pruef' ? { url: '/api/pruef', wiped: 'Alle Prüfobjekte gelöscht' } : Object.values(UPLOAD_PARTS).find(x => x.wipe === part);
         busy = true;
-        armWipeOrders = false;
+        armWipe = '';
         render();
         try {
-          await api('DELETE', '/api/orders');
+          await api('DELETE', spec.url);
+          if (part === 'pruef') checklistsByOrder.clear();
           await poll();
-          infoMsg = 'Alle Aufträge gelöscht';
+          infoMsg = spec.wiped;
         } catch (e) {
           errorMsg = errorMessageOf(e);
         }
@@ -2491,22 +2498,6 @@
           infoMsg = `${n} Prüfobjekte zu ${cnt} Aufträgen gespeichert`;
         } catch (e) {
           infoMsg = '';
-          errorMsg = errorMessageOf(e);
-        }
-        busy = false;
-        render();
-      }
-      // Alle Prüfobjekte löschen (DELETE /api/pruef)
-      async function wipeChecklists() {
-        busy = true;
-        armWipeChecklists = false;
-        render();
-        try {
-          await api('DELETE', '/api/pruef');
-          checklistsByOrder.clear();
-          await poll();
-          infoMsg = 'Alle Prüfobjekte gelöscht';
-        } catch (e) {
           errorMsg = errorMessageOf(e);
         }
         busy = false;
@@ -2634,16 +2625,19 @@
               order.kurz,
               order.start,
               order.ende,
-              STATUS_LABELS[stale && status.st === 'done' ? 'teil' : status.st],
-              status.nx > 0
-                ? status.op > 0
-                  ? 'Nicht OK (unvollständig)'
-                  : 'Nicht OK'
-                : status.n > 0 && !status.op
-                  ? 'OK'
-                  : status.ok > 0
-                    ? 'unvollständig'
-                    : '',
+              // Status und Prüfergebnis gibt es nur bei Wartungen
+              orderKind(order) !== 'war' ? '' : STATUS_LABELS[stale && status.st === 'done' ? 'teil' : status.st],
+              orderKind(order) !== 'war'
+                ? ''
+                : status.nx > 0
+                  ? status.op > 0
+                    ? 'Nicht OK (unvollständig)'
+                    : 'Nicht OK'
+                  : status.n > 0 && !status.op
+                    ? 'OK'
+                    : status.ok > 0
+                      ? 'unvollständig'
+                      : '',
               total,
               status.ok,
               status.nx,
@@ -2875,6 +2869,8 @@
       };
       // Etiketten („Nicht OK“, „Erledigt“, „x von y offen“) für die Auftragskarte
       const statusTags = order => {
+        // Status (erledigt, Prüfobjekte offen, Nicht OK) gibt es nur bei Wartungen
+        if (orderKind(order) !== 'war') return [];
         const status = orderStatus(order);
         return [
           status.nx > 0 && el('span', { class: 'tag st-nok' }, `✗ Nicht OK (${status.nx})`),
@@ -3201,9 +3197,20 @@
         render();
       }
       // Kopf der Karte bei einem Dauerauftrag: Summe und die Tageseinträge (neueste zuerst); der Monteur kann sie ändern
+      // Tageseinträge, die gerade dazugekommen sind (Schlüssel -> Zeitpunkt): sie blenden ein – auch wenn währenddessen neu gezeichnet wird
+      // (siehe animateView). entrySeen: Einträge der letzten Zeichnung, entrySeenOrder: zu welchem Auftrag.
+      const entryFresh = new Map();
+      let entrySeen = new Set(),
+        entrySeenOrder = '';
       function entriesHead(order, isMonteur) {
         const list = entriesOf(order.auftrag).reverse(),
-          total = list.reduce((sum, e) => sum + e.min, 0),
+          keys = new Set(list.map(e => e.k));
+        if (entrySeenOrder === order.auftrag) {
+          for (const k of keys) if (!entrySeen.has(k)) entryFresh.set(k, performance.now());
+        } else entryFresh.clear(); // anderer Auftrag: nichts blendet ein
+        entrySeen = keys;
+        entrySeenOrder = order.auftrag;
+        const total = list.reduce((sum, e) => sum + e.min, 0),
           locked = isMonteur && isLocked(order.auftrag),
           shown = entriesAll ? list : list.slice(0, 8);
         return [
@@ -3215,7 +3222,10 @@
               ? `Gesamt ${formatMinutes(total)} in ${list.length === 1 ? '1 Eintrag' : list.length + ' Einträgen'}`
               : 'Noch keine Einträge – für jeden Tag, an dem gearbeitet wurde, ein Eintrag.'
           ),
-          ...shown.map(e =>
+          el(
+            'div',
+            { class: 'zlist' },
+            ...shown.map(e =>
             el(
               'div',
               { class: 'zrow' + (entryKey === e.k ? ' on' : ''), 'data-k': 'ze' + e.k },
@@ -3234,6 +3244,7 @@
                   { onclick: () => editEntry(order, entryKey === e.k ? '' : e.k) },
                   entryKey === e.k ? 'Wird bearbeitet' : '✎ Ändern'
                 )
+            )
             )
           ),
           list.length > shown.length &&
@@ -3974,6 +3985,8 @@
         teamList = [];
         uploadMeta = null;
         checklistMeta = null;
+        vorgMeta = null;
+        melMeta = null;
         messages = [];
         devices = {};
         gasRows = new Map();
@@ -3992,6 +4005,8 @@
           teamList = cached.teams || [];
           uploadMeta = cached.meta || null;
           checklistMeta = cached.pmeta || null;
+          vorgMeta = cached.vmeta || null;
+          melMeta = cached.mmeta || null;
           // Zwischenspeicher aus einer Version ohne Gaswarngerät (oder, beim Monteur, ohne Haken des Disponenten): komplett neu
           // laden, damit die Bestätigungen bzw. die gesperrten (abgehakten) Aufträge kommen
           // (ebenso aus einer Version ohne Auftragsarten und Meldungen: `kv`)
@@ -4019,6 +4034,8 @@
             teams: teamList,
             meta: uploadMeta,
             pmeta: checklistMeta,
+            vmeta: vorgMeta,
+            mmeta: melMeta,
             marks: Object.fromEntries(marks),
             mk: 1, // Haken sind enthalten (auch beim Monteur)
             kv: 1, // Auftragsarten und Meldungen sind enthalten
@@ -4138,6 +4155,8 @@
             teamList = response.teams;
             uploadMeta = response.meta.upload || null;
             checklistMeta = response.meta.pruef || null;
+            vorgMeta = response.meta.vorg || null;
+            melMeta = response.meta.mel || null;
             syncSeq = response.seq;
             dataReady = true;
             if (response.msgs)
@@ -4547,7 +4566,7 @@
       };
       // Etikett „Heute“ / „Morgen“ für noch nicht erledigte Reparaturen und Entstörungen (Termin = Beginndatum)
       const termTag = order => {
-        if (!isTimedKind(orderKind(order)) || isFinished(order)) return null;
+        if (!isTimedKind(orderKind(order))) return null;
         const from = isoOfDate(order.start);
         if (!from) return null;
         const days = Math.round((new Date(from + 'T12:00:00') - new Date(today() + 'T12:00:00')) / 864e5);
@@ -6943,8 +6962,15 @@
         );
       }
       function animateView() {
-        const shell = openOrder ? 'o' : [session.role, session.team, dispoUnlocked].join('|'),
-          key = openOrder ? 'o' : shell + '|' + (session.role === 'dispo' ? dispoTab : ''),
+        // Monteur: Startseite (Auswahl der Auftragsart) -> Liste -> Auftrag sind drei Ebenen (gehen: von rechts, zurück: von links);
+        // Disponent: Übersicht/Auftrag. Wechselt der Disponent nur die Auftragsart oder den Tab, bleiben Kopfzeile, Tab-Leiste und
+        // Umschalter stehen und nur der Inhalt blendet ein.
+        const monteurKind = session.role === 'monteur' && !openOrder ? viewKind : '',
+          shell = openOrder ? 'o' : [session.role, session.team, dispoUnlocked, monteurKind].join('|'),
+          key =
+            openOrder
+              ? 'o'
+              : shell + '|' + (session.role === 'dispo' ? dispoTab + '|' + (dispoTab === 'ue' ? viewKind : '') : ''),
           filters = [
             teamFilter,
             statusFilter,
@@ -6953,9 +6979,10 @@
             reportedFrom,
             reportedTo,
             monteurFilter,
-            deviceTeamFilter
+            deviceTeamFilter,
+            melFilter
           ].join('|'),
-          depth = openOrder ? 1 : 0,
+          depth = openOrder ? (session.role === 'monteur' && viewKind ? 2 : 1) : monteurKind ? 1 : 0,
           changed = viewKey !== null && key !== viewKey;
         if (changed) {
           viewFrom =
@@ -6975,7 +7002,7 @@
         viewAnim = [
           ...(viewFrom
             ? fadeIn(
-                [...app.children].filter(n => !(viewStatic && n.matches('.bar, .tabs'))).slice(0, 10),
+                [...app.children].filter(n => !(viewStatic && n.matches('.bar, .tabs, .ksw'))).slice(0, 10),
                 viewFrom,
                 viewStart,
                 VIEW_MS,
@@ -6988,7 +7015,12 @@
             listStart,
             LIST_MS,
             LIST_STAGGER_MS
-          )
+          ),
+          // neue Tageseinträge eines Dauerauftrags blenden ein (mit eigener Startzeit, läuft bei weiterem Neuzeichnen weiter)
+          ...[...entryFresh].flatMap(([k, start]) => {
+            const row = [...app.querySelectorAll('.zrow')].find(n => n.dataset.k === 'ze' + k);
+            return row && !viewChanged ? fadeIn([row], 'translateY(8px)', start, LIST_MS, 0) : [];
+          })
         ];
       }
       /**
@@ -7915,37 +7947,16 @@
             out[k] = { n, open: n, today: 0 };
             continue;
           }
-          const list = ordersOfKind(teamRows, k),
-            open = list.filter(r => !isFinished(r));
+          const list = ordersOfKind(teamRows, k);
+          // offen/erledigt gibt es nur bei Wartungen; Reparatur und Entstörung zählen, was heute ansteht
           out[k] = {
             n: list.length,
-            open: open.length,
-            today: isTimedKind(k) ? open.filter(r => isoOfDate(r.start) === today()).length : 0
+            open: k === 'war' ? list.filter(r => !isFinished(r)).length : list.length,
+            today: isTimedKind(k) ? list.filter(r => isoOfDate(r.start) === today()).length : 0
           };
         }
         return out;
       };
-      // Auswahl der Auftragsart oben in jeder Liste (Wechsel mit einem Tipp, ohne Umweg über die Startseite)
-      const kindSwitcher = counts =>
-        el(
-          'div',
-          { class: 'chips ksw', 'data-k': 'ks' },
-          KINDS.map(({ k, plural, icon }) =>
-            el(
-              'button',
-              {
-                class: 'chip' + (viewKind === k ? ' on' : ''),
-                onclick: () => {
-                  viewKind = k;
-                  monteurFilter = 'open';
-                  searchText = '';
-                  render();
-                }
-              },
-              `${icon} ${plural} (${counts[k].open})`
-            )
-          )
-        );
       // Startseite des Monteurs: eine große Fläche je Auftragsart mit der Zahl offener Aufträge (Reparatur/Entstörung: auch „heute“)
       function drawKindHome(counts) {
         app.append(
@@ -7971,7 +7982,11 @@
                         ? `${c.n} ohne Auftrag`
                         : 'Keine offenen Meldungen'
                       : c.n
+                        ? k === 'war'
                         ? `${c.open} offen · ${c.n} gesamt`
+                        : c.n === 1
+                          ? '1 Auftrag'
+                          : `${c.n} Aufträge`
                         : 'Keine Aufträge'
                   ),
                   el('span', { class: 'mu sm' }, note)
@@ -8068,22 +8083,25 @@
             app.append(el('p', { class: 'mu' }, 'Stand: ' + new Date(uploadMeta.at).toLocaleString('de-AT')));
           return;
         }
-        app.append(gasLine, kindSwitcher(counts));
+        app.append(gasLine);
         if (viewKind === 'mel') {
           drawMeldungenView();
           return;
         }
         const withList = viewKind === 'war';
+        // Filter (Offen/Erledigt/Nicht OK) und Fortschritt gibt es nur bei Wartungen; die anderen Auftragsarten zeigen alle Aufträge
         const view = () =>
-          rows.filter(
-            r =>
-              !monteurFilter ||
-              (monteurFilter === 'open'
-                ? !isFinished(r)
-                : monteurFilter === 'done'
-                  ? isFinished(r)
-                  : orderStatus(r).nx > 0)
-          );
+          withList
+            ? rows.filter(
+                r =>
+                  !monteurFilter ||
+                  (monteurFilter === 'open'
+                    ? !isFinished(r)
+                    : monteurFilter === 'done'
+                      ? isFinished(r)
+                      : orderStatus(r).nx > 0)
+              )
+            : rows;
         const doneCount = rows.filter(isFinished).length,
           nokCount = rows.filter(r => orderStatus(r).nx > 0).length;
         const container = el('div', {});
@@ -8095,18 +8113,19 @@
         const controls = el(
           'div',
           { class: 'ctl' },
-          filterChips(
-            [
-              ['', 'Alle', rows.length],
-              ['open', 'Offen', rows.length - doneCount],
-              ['done', 'Erledigt', doneCount],
-              ...(withList ? [['nok', 'Nicht OK', nokCount]] : [])
-            ],
-            monteurFilter,
-            k => {
-              monteurFilter = k;
-            }
-          ),
+          withList &&
+            filterChips(
+              [
+                ['', 'Alle', rows.length],
+                ['open', 'Offen', rows.length - doneCount],
+                ['done', 'Erledigt', doneCount],
+                ['nok', 'Nicht OK', nokCount]
+              ],
+              monteurFilter,
+              k => {
+                monteurFilter = k;
+              }
+            ),
           sortChips(),
           searchRow
         );
@@ -8209,49 +8228,29 @@
 
       // Dispo-Tab „Upload“: Aufträge und Prüflose hochladen, alles löschen
       function drawUploadTab() {
-        const ordersInput = el('input', { type: 'file', accept: '.xlsx,.xls', multiple: 'multiple' });
-        const keepExisting = el('input', { type: 'checkbox' });
-        const grid = el('div', { class: 'ugrid' });
-        app.append(grid);
-        grid.append(
-          el(
+        // eine Karte je SAP-Datei: Beschreibung, Dateiwahl, (Nur ergänzen), Hochladen, letzter Upload, Alle löschen
+        const card = ({ title, text, columns, onUpload, keepOption, meta, metaText, wipe }) => {
+          const input = el('input', { type: 'file', accept: '.xlsx,.xls', multiple: 'multiple', 'data-up': wipe }),
+            keep = keepOption ? el('input', { type: 'checkbox' }) : null;
+          return el(
             'div',
-            { class: 'card' },
-            el('b', {}, 'Excel hochladen'),
-            el(
-              'p',
-              { class: 'mu' },
-              'Aufträge, Vorgänge und Meldungen – eine oder mehrere Dateien auf einmal, jede wird an ihren Spalten erkannt. Spalte „Verantw.ArbPl." = Teamname. ' +
-                'Standard: Aufträge der enthaltenen Teams und Auftragsarten (und Meldungen der enthaltenen Teams) werden durch die neue Datei ersetzt.'
-            ),
-            el(
-              'ul',
-              { class: 'mu ukinds' },
-              el('li', {}, el('b', {}, 'Wartung'), ': 3NAW mit Leistungsart FWS'),
-              el('li', {}, el('b', {}, 'Dauerauftrag'), ': 3NAW mit Leistungsart FWD'),
-              el('li', {}, el('b', {}, 'Reparatur'), ': 3NAR – jeder Vorgang ist ein eigener Auftrag (Vorgänge-Excel)'),
-              el('li', {}, el('b', {}, 'Entstörung'), ': 3NAE (Termin und Uhrzeit aus dem Vorgang)'),
-              el('li', {}, el('b', {}, 'Meldungen'), ': Schäden – mit Auftrag beim Auftrag, sonst in der Liste „Meldungen“')
-            ),
+            { class: 'card', 'data-k': 'up-' + wipe },
+            el('b', {}, title),
+            el('p', { class: 'mu' }, text),
+            el('p', { class: 'mu ucols' }, 'Spalten: ' + columns),
             canWrite
               ? el(
                   'div',
                   {},
-                  ordersInput,
-                  el(
-                    'label',
-                    { class: 'ck' },
-                    keepExisting,
-                    ' Nur ergänzen/aktualisieren (bestehende Aufträge und Meldungen behalten)'
-                  ),
+                  input,
+                  keep && el('label', { class: 'ck' }, keep, ' Nur ergänzen/aktualisieren (bestehende behalten)'),
                   el(
                     'button',
                     {
                       class: 'pri',
                       disabled: busy ? 'disabled' : null,
                       onclick: () => {
-                        if (ordersInput.files.length)
-                          uploadOrders([...ordersInput.files], keepExisting.checked);
+                        if (input.files.length) onUpload([...input.files], !!(keep && keep.checked));
                         else {
                           errorMsg = 'Bitte erst eine Datei wählen.';
                           render();
@@ -8262,91 +8261,79 @@
                   )
                 )
               : el('p', { class: 'mu' }, 'Kein Schreibzugriff.'),
-            uploadMeta &&
-              el(
-                'p',
-                { class: 'mu' },
-                `Letzter Upload: ${new Date(uploadMeta.at).toLocaleString('de-AT')} · ${uploadMeta.files} · ${uploadMeta.count} Aufträge` +
-                  (uploadMeta.kinds
-                    ? ' (' + KINDS.filter(x => uploadMeta.kinds[x.k]).map(x => kindCount(x.k, uploadMeta.kinds[x.k])).join(', ') + ')'
-                    : '') +
-                  (uploadMeta.meldungen ? ` · ${kindCount('mel', uploadMeta.meldungen)}` : '')
-              )
-          )
-        );
-        const checklistInput = el('input', { type: 'file', accept: '.xlsx,.xls', multiple: 'multiple' });
-        grid.append(
-          el(
-            'div',
-            { class: 'card' },
-            el('b', {}, 'Prüflose hochladen'),
-            el(
-              'p',
-              { class: 'mu' },
-              'Spalten „Auftrag" und „Kurztext des Prüfobjektes". Aufträge, die in der Datei vorkommen, werden ersetzt – alle anderen bleiben erhalten.'
-            ),
-            canWrite
-              ? el(
-                  'div',
-                  {},
-                  checklistInput,
-                  el(
-                    'button',
-                    {
-                      class: 'pri',
-                      disabled: busy ? 'disabled' : null,
-                      onclick: () => {
-                        if (checklistInput.files.length) uploadChecklists([...checklistInput.files]);
-                        else {
-                          errorMsg = 'Bitte erst eine Datei wählen.';
-                          render();
-                        }
-                      }
-                    },
-                    busy ? 'Speichere …' : 'Hochladen & speichern'
-                  )
-                )
-              : el('p', { class: 'mu' }, 'Kein Schreibzugriff.'),
-            checklistMeta &&
-              el(
-                'p',
-                { class: 'mu' },
-                `Letzter Upload: ${new Date(checklistMeta.at).toLocaleString('de-AT')} · ${checklistMeta.files} · ${checklistMeta.count} Prüfobjekte (${checklistMeta.orders} Aufträge)`
-              ),
-            checklistMeta &&
+            meta && el('p', { class: 'mu' }, `Letzter Upload: ${new Date(meta.at).toLocaleString('de-AT')} · ${meta.files} · ${metaText(meta)}`),
+            meta &&
               canWrite &&
               !busy &&
-              (armWipeChecklists
-                ? el('button', { class: 'er', onclick: wipeChecklists }, 'Wirklich ALLE Prüfobjekte löschen?')
+              (armWipe === wipe
+                ? el('button', { class: 'er', onclick: () => wipePart(wipe) }, `Wirklich ALLE ${title} löschen?`)
                 : el(
                     'button',
                     {
                       class: 'er',
                       onclick: () => {
-                        armWipeChecklists = true;
+                        armWipe = wipe;
                         render();
                       }
                     },
-                    'Alle Prüfobjekte löschen'
+                    `Alle ${title} löschen`
                   ))
+          );
+        };
+        app.append(
+          el(
+            'p',
+            { class: 'mu' },
+            'Vier Excel-Dateien aus SAP – jede im eigenen Feld, einzeln und in beliebiger Reihenfolge. Aufträge und Vorgänge werden dabei von der App zusammengesetzt: ' +
+              'Reparaturen (3NAR) zählen je Vorgang, Vorgänge von Teams mit „P“ (geplant) sind noch nicht zu sehen, FW-IHEXT sind externe Firmen.'
+          ),
+          el(
+            'div',
+            { class: 'ugrid' },
+            card({
+              title: 'Aufträge',
+              text: 'Wartung (3NAW/FWS), Dauerauftrag (3NAW/FWD), Reparatur (3NAR), Entstörung (3NAE); andere Auftragsarten werden übergangen. Standard: Aufträge der enthaltenen Teams und Auftragsarten werden durch die Datei ersetzt.',
+              columns: 'Auftrag, Verantw.ArbPl., Auftragsart, IH-Leistungsart, Kurztext, Postleitzahl, Straße, Techn. Platz, Term. Start, Meldung',
+              onUpload: (files, keep) => uploadSource('auftraege', files, keep),
+              keepOption: true,
+              meta: uploadMeta,
+              metaText: m =>
+                `${m.count} Aufträge` +
+                (m.kinds ? ' (' + KINDS.filter(x => m.kinds[x.k]).map(x => kindCount(x.k, m.kinds[x.k])).join(', ') + ')' : ''),
+              wipe: 'orders'
+            }),
+            card({
+              title: 'Vorgänge',
+              text: 'Je Vorgang eine Zeile (Reparatur, Entstörung): Team, Termin und Uhrzeit, externe Firmen. Ersetzt die Vorgänge der enthaltenen Aufträge.',
+              columns: 'Auftrag, Vorgang, Kurztext Vrg., VrgArbeitsplatz, Eckstarttermin, Eckendtermin, Iststart Uzt, Istende Uzt, Arbeit',
+              onUpload: (files, keep) => uploadSource('vorgaenge', files, keep),
+              keepOption: true,
+              meta: vorgMeta,
+              metaText: m => `${m.count} Vorgänge (${m.orders} Aufträge)`,
+              wipe: 'vorg'
+            }),
+            card({
+              title: 'Meldungen',
+              text: 'Gemeldete Schäden: mit Auftrag stehen sie beim Auftrag, ohne Auftrag in der Liste „Meldungen“. Ersetzt die Meldungen der enthaltenen Teams.',
+              columns: 'Meldung, Beschreibung, Angelegt am, Auftrag, Straße, Postleitzahl, Techn. Platz, Verantw.ArbPl.',
+              onUpload: (files, keep) => uploadSource('meldungen', files, keep),
+              keepOption: true,
+              meta: melMeta,
+              metaText: m => kindCount('mel', m.count),
+              wipe: 'mel'
+            }),
+            card({
+              title: 'Prüfobjekte',
+              text: 'Prüflose der Wartungen. Aufträge, die in der Datei vorkommen, werden ersetzt – alle anderen bleiben erhalten.',
+              columns: 'Auftrag, Kurztext des Prüfobjektes',
+              onUpload: files => uploadChecklists(files),
+              keepOption: false,
+              meta: checklistMeta,
+              metaText: m => `${m.count} Prüfobjekte (${m.orders} Aufträge)`,
+              wipe: 'pruef'
+            })
           )
         );
-        if (ordersByTeam.size && canWrite)
-          app.append(
-            armWipeOrders
-              ? el('button', { class: 'er', onclick: wipeOrders }, 'Wirklich ALLE Aufträge und Meldungen löschen?')
-              : el(
-                  'button',
-                  {
-                    class: 'er',
-                    onclick: () => {
-                      armWipeOrders = true;
-                      render();
-                    }
-                  },
-                  'Alle Aufträge und Meldungen löschen'
-                )
-          );
       }
 
       // Dispo-Tab „Übersicht“: Filter (Team, Rückgemeldet, Status, Abgehakte), Excel-Export, „Alle abhaken“, Suche und Kartenliste
@@ -8441,6 +8428,7 @@
         const teamEntries = [...kindTeamCounts].sort((a, b) => naturalCompare(a[0], b[0])),
           range = reportedRange();
         const matchesStatus = r =>
+          !withList ||
           !statusFilter ||
           (statusFilter === 'nok' ? orderStatus(r).nx > 0 : orderStatus(r).st === statusFilter);
         const candidates = kindRows.filter(
@@ -8575,21 +8563,23 @@
         );
         if (reportedFilter === 'z' && reportedFrom && reportedTo && reportedFrom > reportedTo)
           panel.append(el('p', { class: 'mu er' }, '„Von“ liegt nach „Bis“ – es kann nichts gefunden werden.'));
-        panel.append(
-          filterChips(
-            [
-              ['', 'Alle', base.length],
-              ...(withList ? [['nok', 'Nicht OK', counts.nok]] : []),
-              ['done', 'Erledigt', counts.done],
-              ['teil', 'In Arbeit', counts.teil],
-              ['offen', 'Offen', counts.offen]
-            ],
-            statusFilter,
-            k => {
-              statusFilter = k;
-            }
-          )
-        );
+        // Status (Nicht OK, Erledigt, In Arbeit, Offen) gibt es nur bei Wartungen
+        if (withList)
+          panel.append(
+            filterChips(
+              [
+                ['', 'Alle', base.length],
+                ['nok', 'Nicht OK', counts.nok],
+                ['done', 'Erledigt', counts.done],
+                ['teil', 'In Arbeit', counts.teil],
+                ['offen', 'Offen', counts.offen]
+              ],
+              statusFilter,
+              k => {
+                statusFilter = k;
+              }
+            )
+          );
         const filterActive = !!(
           teamFilter ||
           statusFilter ||

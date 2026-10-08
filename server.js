@@ -13,6 +13,10 @@
  *             war Wartung (3NAW/FWS) · dau Dauerauftrag (3NAW/FWD) · rep Reparatur (3NAR) · ent Entstörung (3NAE). Bei Reparaturen ist
  *             jeder Vorgang ein eigener Eintrag: auftrag = „Nummer-Vorgang“ (z. B. 65046778-0010), nr = die echte Auftragsnummer;
  *             ext = Vorgänge externer Firmen (FW-IHEXT) zum Auftrag (JSON, nur zur Anzeige); geplante Teams („…P“) werden gar nicht geladen
+ *             Die Aufträge werden aus den Rohdaten der SAP-Dateien zusammengesetzt (rebuildOrders):
+ *   src_auftrag / src_vorgang   Zeilen der Aufträge-Excel bzw. der Vorgänge-Excel, wie hochgeladen. Jede Datei (Aufträge, Vorgänge,
+ *             Meldungen, Prüflose) wird einzeln und in beliebiger Reihenfolge hochgeladen; nach jedem Upload von Aufträgen oder
+ *             Vorgängen wird `orders` daraus neu berechnet
  *   meldung   Meldungen (Schäden): mit Auftrag (auftrag = echte Auftragsnummer) oder noch ohne (auftrag = '')
  *   pruef     Prüfobjekt-Liste je Auftrag (JSON)       ergebnis  Bewertung/Zeit je Auftrag (JSON, Format siehe index.html).
  *             Daueraufträge haben mehrere Tageseinträge: je Eintrag eine Zeile mit dem Schlüssel „Auftrag#Kennung“ (Format wie die Zeit
@@ -114,6 +118,11 @@ CREATE INDEX IF NOT EXISTS orders_team ON orders(team, del);
 CREATE TABLE IF NOT EXISTS meldung(nr TEXT PRIMARY KEY, dat TEXT, txt TEXT, str TEXT, plz TEXT, auftrag TEXT, code TEXT, tp TEXT, stat TEXT, team TEXT, grp TEXT,
   del INTEGER NOT NULL DEFAULT 0, ts INTEGER, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS meldung_seq ON meldung(seq);
+-- Rohdaten der Aufträge-Excel (kind = Auftragsart der App, siehe kindOfArt) und der Vorgänge-Excel (team = Team des Auftrags, vteam = Arbeitsplatz des Vorgangs)
+CREATE TABLE IF NOT EXISTS src_auftrag(nr TEXT PRIMARY KEY, team TEXT NOT NULL, tp TEXT, art TEXT, lart TEXT, plz TEXT, str TEXT, kurz TEXT, start TEXT, ende TEXT, mel TEXT, kind TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS src_auftrag_team ON src_auftrag(team, kind);
+CREATE TABLE IF NOT EXISTS src_vorgang(nr TEXT NOT NULL, vg TEXT NOT NULL, art TEXT, kurz TEXT, vtxt TEXT, team TEXT, vteam TEXT, lart TEXT, start TEXT, ende TEXT, arb TEXT, uhr TEXT, uhr2 TEXT, PRIMARY KEY(nr, vg));
+CREATE INDEX IF NOT EXISTS src_vorgang_team ON src_vorgang(team);
 CREATE TABLE IF NOT EXISTS pruef(auftrag TEXT PRIMARY KEY, items TEXT NOT NULL, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS pruef_seq ON pruef(seq);
 CREATE TABLE IF NOT EXISTS ergebnis(auftrag TEXT PRIMARY KEY, team TEXT, doc TEXT NOT NULL, seq INTEGER NOT NULL);
@@ -154,6 +163,12 @@ const addColumn = (table, column, type) => {
 for (const [column, type] of [['kind', 'TEXT'], ['nr', 'TEXT'], ['vg', 'TEXT'], ['vtxt', 'TEXT'], ['lart', 'TEXT'], ['uhr', 'TEXT'], ['uhr2', 'TEXT'], ['arb', 'TEXT'], ['mel', 'TEXT'], ['ext', 'TEXT']])
   addColumn('orders', column, type);
 db.exec("UPDATE orders SET kind='war' WHERE kind IS NULL; UPDATE orders SET nr=auftrag WHERE nr IS NULL; CREATE INDEX IF NOT EXISTS orders_nr ON orders(nr)");
+// Ältere Datenbank (Aufträge aus der Zeit vor den getrennten Uploads): die vorhandenen Aufträge sind die Rohdaten der Aufträge-Excel,
+// sonst würde der erste Upload einer anderen Datei sie als „nicht mehr vorhanden“ löschen. (Reparatur-Vorgänge gehen nicht: neu hochladen.)
+if (!db.prepare('SELECT 1 FROM src_auftrag LIMIT 1').get())
+  db.exec(`INSERT OR IGNORE INTO src_auftrag(nr,team,tp,art,lart,plz,str,kurz,start,ende,mel,kind)
+    SELECT nr, team, COALESCE(tp,''), COALESCE(art,''), COALESCE(lart,''), COALESCE(plz,''), COALESCE(str,''), COALESCE(kurz,''), COALESCE(start,''), COALESCE(ende,''), COALESCE(mel,''), kind
+    FROM orders WHERE del=0 AND COALESCE(vg,'')='' AND nr<>''`);
 addColumn('dev', 'usr', 'TEXT');
 addColumn('gas', 'usr', 'TEXT');
 addColumn('mack', 'usr', 'TEXT');
@@ -255,13 +270,25 @@ const sql = {
   upErg: db.prepare(
     'INSERT INTO ergebnis(auftrag,team,doc,seq,usr) VALUES(?,?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET team=excluded.team, doc=excluded.doc, seq=excluded.seq, usr=excluded.usr'
   ),
-  // je Team UND Auftragsart: eine Datei nur mit Reparaturen lässt die Wartungsaufträge des Teams in Ruhe
-  tombTeam: db.prepare(
-    'UPDATE orders SET del=1, ts=?, seq=? WHERE team=? AND kind=? AND del=0 AND auftrag NOT IN (SELECT value FROM json_each(?))'
+  // Rohdaten (siehe rebuildOrders): Aufträge ersetzen je Team UND Auftragsart, Vorgänge je Auftrag
+  upSrcAuftrag: db.prepare(
+    'INSERT OR REPLACE INTO src_auftrag(nr,team,tp,art,lart,plz,str,kurz,start,ende,mel,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)'
   ),
-  // gleiche Auftragsnummer, anderer Schlüssel (z. B. ein Reparaturauftrag, der bisher ohne Vorgänge geladen war): der alte Eintrag fällt weg
-  tombSameNr: db.prepare(
-    'UPDATE orders SET del=1, ts=?, seq=? WHERE del=0 AND nr IN (SELECT value FROM json_each(?)) AND auftrag NOT IN (SELECT value FROM json_each(?))'
+  delSrcAuftragGroup: db.prepare(
+    'DELETE FROM src_auftrag WHERE team=? AND kind=? AND nr NOT IN (SELECT value FROM json_each(?))'
+  ),
+  allSrcAuftrag: db.prepare('SELECT * FROM src_auftrag'),
+  upSrcVorgang: db.prepare(
+    'INSERT OR REPLACE INTO src_vorgang(nr,vg,art,kurz,vtxt,team,vteam,lart,start,ende,arb,uhr,uhr2) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)'
+  ),
+  delSrcVorgangOfOrders: db.prepare('DELETE FROM src_vorgang WHERE nr IN (SELECT value FROM json_each(?))'),
+  delSrcVorgangTeams: db.prepare(
+    'DELETE FROM src_vorgang WHERE team IN (SELECT value FROM json_each(?)) AND nr NOT IN (SELECT value FROM json_each(?))'
+  ),
+  allSrcVorgang: db.prepare('SELECT * FROM src_vorgang'),
+  // Aufträge, die aus den Rohdaten nicht mehr hervorgehen, als gelöscht markieren
+  tombMissing: db.prepare(
+    'UPDATE orders SET del=1, ts=?, seq=? WHERE del=0 AND auftrag NOT IN (SELECT value FROM json_each(?))'
   ),
   tombAll: db.prepare('UPDATE orders SET del=1, ts=?, seq=? WHERE del=0'),
   upOrder:
@@ -923,6 +950,123 @@ const cleanExt = list => {
 };
 // nur die bekannten Felder eines Auftrags an die Geräte schicken
 const MAX_ENTRIES = 500; // Tageseinträge je Dauerauftrag
+
+// ---------- Aufträge aus den SAP-Dateien zusammensetzen ----------
+// Team mit angehängtem „P“ („FW-IH01P“): geplant und vorgemerkt, aber noch nicht fix – wird nicht angezeigt
+const isPlanned = team => /\d+P$/i.test(String(team || '').trim());
+// Arbeitsplatz „FW-IHEXT“: externe Firmen (kein Team)
+const isExternal = team => /EXT$/i.test(String(team || '').trim());
+/**
+ * Auftragsart der App nach SAP-Auftragsart und Leistungsart: war Wartung (3NAW/FWS; fehlt die Spalte „IH-Leistungsart“ ganz, gilt jeder
+ * 3NAW als Wartung – ältere Dateien), dau Dauerauftrag (3NAW/FWD), rep Reparatur (3NAR), ent Entstörung (3NAE). Alles andere: '' (gehört nicht dazu).
+ */
+const kindOfArt = (art, lart, hasLart) => {
+  art = String(art || '').toUpperCase();
+  if (art === '3NAW') return !hasLart || lart === 'FWS' ? 'war' : lart === 'FWD' ? 'dau' : '';
+  return art === '3NAR' ? 'rep' : art === '3NAE' ? 'ent' : '';
+};
+/**
+ * Setzt aus den Rohdaten (src_auftrag + src_vorgang) die Aufträge der App zusammen:
+ *   · Wartung, Dauerauftrag, Entstörung: ein Auftrag je Auftragsnummer (Schlüssel = Nummer)
+ *   · Reparatur: ein Auftrag je Vorgang (Schlüssel = „Nummer-Vorgang“, Team = Arbeitsplatz des Vorgangs)
+ * Vorgänge geplanter Teams („…P“) entfallen (planned). Vorgänge der externen Firmen (FW-IHEXT) sind kein Team: sie hängen als `ext` an den
+ * Aufträgen der internen Teams; hat eine Reparatur nur externe Vorgänge (oder gar keine Vorgänge-Datei), bekommt das verantwortliche Team des
+ * Auftrags einen Auftrag ohne Vorgang. Ergebnis { rows, planned }.
+ */
+function buildUnits() {
+  const stepsOf = new Map();
+  for (const v of sql.allSrcVorgang.all()) (stepsOf.get(v.nr) || stepsOf.set(v.nr, []).get(v.nr)).push(v);
+  for (const l of stepsOf.values()) l.sort((a, b) => a.vg.localeCompare(b.vg, 'de', { numeric: true }));
+  const rows = [];
+  let planned = 0;
+  for (const o of sql.allSrcAuftrag.all()) {
+    const kind = o.kind;
+    // Auftrag eines geplanten Teams: noch nicht fix
+    if (isPlanned(o.team)) {
+      planned++;
+      continue;
+    }
+    const base = { kind, nr: o.nr, vg: '', vtxt: '', lart: o.lart, art: o.art, tp: o.tp, plz: o.plz, str: o.str, kurz: o.kurz, mel: o.mel };
+    // Vorgänge gibt es nur bei Reparatur und Entstörung
+    const all = kind === 'rep' || kind === 'ent' ? stepsOf.get(o.nr) || [] : [],
+      fix = all.filter(v => !isPlanned(v.vteam)),
+      own = fix.filter(v => !isExternal(v.vteam)),
+      ext = fix.filter(v => isExternal(v.vteam)).map(v => ({ vg: v.vg, t: v.vtxt, h: +v.arb || 0 }));
+    planned += all.length - fix.length;
+    if (kind === 'rep' && own.length)
+      for (const v of own)
+        rows.push({
+          ...base,
+          auftrag: o.nr + '-' + v.vg,
+          vg: v.vg,
+          vtxt: v.vtxt,
+          team: v.vteam || o.team,
+          start: v.start || o.start || '',
+          ende: v.ende || '',
+          uhr: v.uhr,
+          uhr2: v.uhr2,
+          arb: v.arb,
+          ext
+        });
+    else if (kind === 'rep' && all.length && !fix.length) continue; // nur geplante Vorgänge: noch nichts anzuzeigen
+    else {
+      const first = fix[0],
+        last = fix[fix.length - 1];
+      rows.push({
+        ...base,
+        auftrag: o.nr,
+        vtxt: kind === 'rep' ? '' : (first && first.vtxt) || '',
+        team: o.team,
+        start: (first && first.start) || o.start || '',
+        ende: (last && last.ende) || o.ende || '',
+        uhr: (first && first.uhr) || '',
+        uhr2: (last && last.uhr2) || '',
+        arb: first ? String(fix.reduce((a, v) => a + (+v.arb || 0), 0)) : '',
+        ext
+      });
+    }
+  }
+  return { rows, planned };
+}
+/**
+ * Berechnet `orders` aus den Rohdaten neu (innerhalb einer Transaktion, changeSeq ist schon erhöht): geänderte Aufträge bekommen die neue
+ * Nummer, was nicht mehr hervorgeht, wird als gelöscht markiert. Ergebnis { counts (je Auftragsart), planned, steps (Vorgänge vorhanden) }.
+ */
+function rebuildOrders() {
+  const { rows, planned } = buildUnits(),
+    now = Date.now(),
+    counts = { war: 0, dau: 0, rep: 0, ent: 0 };
+  for (const r of rows) {
+    counts[r.kind]++;
+    sql.upOrder.run(
+      r.auftrag,
+      clipString(r.team, 100),
+      clipString(r.tp, 60),
+      clipString(r.art, 30),
+      clipString(r.plz, 10),
+      clipString(r.str, 100),
+      clipString(r.kurz),
+      clipString(r.start, 20),
+      clipString(r.ende, 20),
+      r.kind,
+      r.nr,
+      clipString(r.vg, 8),
+      clipString(r.vtxt, 200),
+      clipString(r.lart, 10),
+      clipString(r.uhr, 5),
+      clipString(r.uhr2, 5),
+      clipString(r.arb, 10),
+      clipString(r.mel, 20),
+      cleanExt(r.ext),
+      changeSeq
+    );
+  }
+  sql.tombMissing.run(now, changeSeq, JSON.stringify(rows.map(r => r.auftrag)));
+  // Geräte, die einen Auftrag neu bekommen, brauchen auch dessen Meldungen
+  sql.touchMeldungOfOrders.run(changeSeq, changeSeq);
+  catalogVer++;
+  return { counts, planned, steps: !!db.prepare('SELECT 1 FROM src_vorgang LIMIT 1').get() };
+}
 const orderFields = r => ({
   auftrag: r.auftrag,
   team: r.team,
@@ -1327,7 +1471,7 @@ async function handleApi(req, res, url) {
       ...(me ? { me: meOf(me) } : {}),
       ...locateField(),
       teams: teamsList(),
-      meta: { upload: getMeta('upload'), pruef: getMeta('pruef') },
+      meta: { upload: getMeta('upload'), pruef: getMeta('pruef'), vorg: getMeta('vorg'), mel: getMeta('mel') },
       orders: [],
       ergebnis: []
     };
@@ -1861,7 +2005,7 @@ async function handleApi(req, res, url) {
   }
   // Upload und Löschen von Aufträgen/Prüflosen nur mit zusätzlichem Upload-PIN
   if (
-    (pathname === '/api/orders' || pathname === '/api/pruef') &&
+    /^\/api\/(orders|vorgaenge|meldungen|pruef)$/.test(pathname) &&
     (method === 'POST' || method === 'DELETE') &&
     !isUpload(req)
   )
@@ -1903,113 +2047,162 @@ async function handleApi(req, res, url) {
     );
     return sendJson(req, res, 200, { ok: true, sq, at: now });
   }
-  // Aufträge hochladen: ersetzt je enthaltenem Team UND je enthaltener Auftragsart alle Aufträge, die in der Datei fehlen (keep = nur
-  // ergänzen); fehlende werden als gelöscht markiert. Dazu optional Meldungen (ersetzen je enthaltenem Team die Meldungen, die fehlen).
+  // Die vier SAP-Dateien werden einzeln hochgeladen (Aufträge, Vorgänge, Meldungen, Prüflose) – in beliebiger Reihenfolge und zu
+  // verschiedenen Zeiten. Aufträge und Vorgänge landen als Rohdaten in src_auftrag/src_vorgang; `orders` wird daraus neu berechnet.
+  // Aufträge: ersetzt je enthaltenem Team UND je enthaltener Auftragsart alle Aufträge, die in der Datei fehlen (keep = nur ergänzen)
   if (pathname === '/api/orders' && method === 'POST') {
     const body = await readBody(req),
-      KINDS = ['war', 'dau', 'rep', 'ent'],
-      // Schlüssel: Auftragsnummer, bei Reparaturen „Nummer-Vorgang“
-      keyOf = r => String(r.auftrag || '').replace(/[^\d-]/g, '').replace(/^-+|-+$/g, ''),
-      rows = (Array.isArray(body.rows) ? body.rows : []).filter(r => r && /^\d{1,20}(-\d{1,4})?$/.test(keyOf(r)) && r.team),
-      meldungen = (Array.isArray(body.meldungen) ? body.meldungen : []).filter(
-        m => m && /^\d{1,20}$/.test(String(m.nr || '').replace(/\D/g, ''))
-      );
-    transaction(() => {
+      hasLart = !!body.hasLart,
+      rows = (Array.isArray(body.rows) ? body.rows : [])
+        .filter(r => r && /^\d{1,20}$/.test(String(r.auftrag || '').replace(/\D/g, '')) && r.team)
+        .map(r => ({ ...r, nr: String(r.auftrag).replace(/\D/g, ''), kind: kindOfArt(r.art, String(r.lart || ''), hasLart) })),
+      used = rows.filter(r => r.kind),
+      ignored = {};
+    for (const r of rows) if (!r.kind) ignored[clipString(r.art, 10) || '?'] = (ignored[clipString(r.art, 10) || '?'] || 0) + 1;
+    if (!rows.length) return sendJson(req, res, 400, { error: 'Keine Aufträge in der Datei' });
+    const result = transaction(() => {
       changeSeq++;
-      const now = Date.now(),
-        byGroup = new Map(),
-        kindOf = r => (KINDS.includes(r.kind) ? r.kind : 'war');
-      for (const r of rows) {
-        const g = clipString(r.team, 100) + '\u0000' + kindOf(r);
-        (byGroup.get(g) || byGroup.set(g, []).get(g)).push(keyOf(r));
+      const groups = new Map();
+      for (const r of used) {
+        const g = clipString(r.team, 100) + '\u0000' + r.kind;
+        (groups.get(g) || groups.set(g, []).get(g)).push(r.nr);
       }
       if (!body.keep)
-        for (const [g, ids] of byGroup) {
-          const [t, kind] = g.split('\u0000');
-          sql.tombTeam.run(now, changeSeq, t, kind, JSON.stringify(ids)); // nur Aufträge entfernen, die in der neuen Datei fehlen
+        for (const [g, ids] of groups) {
+          const [team, kind] = g.split('\u0000');
+          sql.delSrcAuftragGroup.run(team, kind, JSON.stringify(ids)); // nur Aufträge entfernen, die in der neuen Datei fehlen
         }
-      for (const r of rows)
-        sql.upOrder.run(
-          keyOf(r),
+      for (const r of used)
+        sql.upSrcAuftrag.run(
+          r.nr,
           clipString(r.team, 100),
           clipString(r.tp, 60),
           clipString(r.art, 30),
+          clipString(r.lart, 10),
           clipString(r.plz, 10),
           clipString(r.str, 100),
           clipString(r.kurz),
           clipString(r.start, 20),
           clipString(r.ende, 20),
-          kindOf(r),
-          clipString(String(r.nr || keyOf(r)).replace(/\D/g, ''), 20),
-          clipString(r.vg, 8),
-          clipString(r.vtxt, 200),
-          clipString(r.lart, 10),
-          clipString(r.uhr, 5),
-          clipString(r.uhr2, 5),
-          clipString(r.arb, 10),
           clipString(String(r.mel || '').replace(/\D/g, ''), 20),
-          cleanExt(r.ext),
-          changeSeq
+          r.kind
         );
-      // dieselbe Auftragsnummer unter anderem Schlüssel (z. B. vorher ohne Vorgänge geladen): der alte Eintrag ist überholt
-      if (rows.length)
-        sql.tombSameNr.run(
-          now,
-          changeSeq,
-          JSON.stringify([...new Set(rows.map(r => String(r.nr || keyOf(r)).replace(/\D/g, '')))]),
-          JSON.stringify(rows.map(keyOf))
-        );
-      if (meldungen.length) {
-        const teams = new Map();
-        for (const m of meldungen) {
-          const t = clipString(m.team, 100),
-            nr = String(m.nr).replace(/\D/g, '');
-          (teams.get(t) || teams.set(t, []).get(t)).push(nr);
-        }
-        if (!body.keep) for (const [t, ids] of teams) sql.tombMeldungTeam.run(now, changeSeq, t, JSON.stringify(ids));
-        for (const m of meldungen)
-          sql.upMeldung.run(
-            String(m.nr).replace(/\D/g, ''),
-            clipString(m.dat, 20),
-            clipString(m.txt, 300),
-            clipString(m.str, 100),
-            clipString(m.plz, 10),
-            clipString(String(m.auftrag || '').replace(/\D/g, ''), 20),
-            clipString(m.code, 60),
-            clipString(m.tp, 60),
-            clipString(m.stat, 40),
-            clipString(m.team, 100),
-            clipString(m.grp, 60),
-            changeSeq
-          );
-      }
-      // Geräte, die einen Auftrag neu bekommen, brauchen auch dessen Meldungen
-      sql.touchMeldungOfOrders.run(changeSeq, changeSeq);
-      const upload = getMeta('upload') || {},
-        counts = { war: 0, dau: 0, rep: 0, ent: 0 };
-      for (const r of rows) counts[kindOf(r)]++;
+      const built = rebuildOrders();
       setMeta('upload', {
-        at: now,
+        at: Date.now(),
         files: clipString(body.files),
-        count: rows.length || upload.count || 0,
-        kinds: rows.length ? counts : upload.kinds,
-        meldungen: meldungen.length || upload.meldungen || 0,
-        planned: +body.planned | 0 || undefined,
-        ignored: body.ignored && typeof body.ignored === 'object' ? Object.fromEntries(Object.entries(body.ignored).slice(0, 20).map(([k, v]) => [clipString(k, 10), +v | 0])) : undefined
+        count: used.length,
+        kinds: built.counts,
+        planned: built.planned,
+        ignored: Object.fromEntries(Object.entries(ignored).slice(0, 20))
       });
-      catalogVer++;
+      return { ...built, ignored, count: used.length };
     });
     announce(changeSeq);
     geocodeKick(); // neue Adressen im Hintergrund in Koordinaten umwandeln
-    return sendJson(req, res, 200, { ok: true });
+    return sendJson(req, res, 200, { ok: true, ...result });
   }
+  // Vorgänge: ersetzt die Vorgänge der Aufträge, die in der Datei stehen; ohne keep außerdem die der Teams in der Datei, deren Auftrag
+  // nicht mehr darin steht (abgeschlossen)
+  if (pathname === '/api/vorgaenge' && method === 'POST') {
+    const body = await readBody(req),
+      rows = (Array.isArray(body.rows) ? body.rows : [])
+        .map(r => ({ ...r, nr: String((r && r.auftrag) || '').replace(/\D/g, ''), vg: clipString(r && r.vg, 8).trim() }))
+        .filter(r => r.nr && r.nr.length <= 20 && r.vg);
+    if (!rows.length) return sendJson(req, res, 400, { error: 'Keine Vorgänge in der Datei' });
+    const result = transaction(() => {
+      changeSeq++;
+      const nrs = [...new Set(rows.map(r => r.nr))];
+      sql.delSrcVorgangOfOrders.run(JSON.stringify(nrs));
+      if (!body.keep)
+        sql.delSrcVorgangTeams.run(JSON.stringify([...new Set(rows.map(r => clipString(r.team, 100)).filter(Boolean))]), JSON.stringify(nrs));
+      for (const r of rows)
+        sql.upSrcVorgang.run(
+          r.nr,
+          r.vg,
+          clipString(r.art, 30),
+          clipString(r.kurz),
+          clipString(r.vtxt, 200),
+          clipString(r.team, 100),
+          clipString(r.vteam, 100),
+          clipString(r.lart, 10),
+          clipString(r.start, 20),
+          clipString(r.ende, 20),
+          clipString(r.arb, 10),
+          clipString(r.uhr, 5),
+          clipString(r.uhr2, 5)
+        );
+      const built = rebuildOrders();
+      setMeta('vorg', { at: Date.now(), files: clipString(body.files), count: rows.length, orders: nrs.length });
+      return { ...built, count: rows.length, orders: nrs.length };
+    });
+    announce(changeSeq);
+    geocodeKick();
+    return sendJson(req, res, 200, { ok: true, ...result });
+  }
+  // Meldungen: ersetzt je enthaltenem Team die Meldungen, die in der Datei fehlen (keep = nur ergänzen)
+  if (pathname === '/api/meldungen' && method === 'POST') {
+    const body = await readBody(req),
+      meldungen = (Array.isArray(body.rows) ? body.rows : []).filter(m => m && /^\d{1,20}$/.test(String(m.nr || '').replace(/\D/g, '')));
+    if (!meldungen.length) return sendJson(req, res, 400, { error: 'Keine Meldungen in der Datei' });
+    transaction(() => {
+      changeSeq++;
+      const now = Date.now(),
+        teams = new Map();
+      for (const m of meldungen) {
+        const t = clipString(m.team, 100),
+          nr = String(m.nr).replace(/\D/g, '');
+        (teams.get(t) || teams.set(t, []).get(t)).push(nr);
+      }
+      if (!body.keep) for (const [t, ids] of teams) sql.tombMeldungTeam.run(now, changeSeq, t, JSON.stringify(ids));
+      for (const m of meldungen)
+        sql.upMeldung.run(
+          String(m.nr).replace(/\D/g, ''),
+          clipString(m.dat, 20),
+          clipString(m.txt, 300),
+          clipString(m.str, 100),
+          clipString(m.plz, 10),
+          clipString(String(m.auftrag || '').replace(/\D/g, ''), 20),
+          clipString(m.code, 60),
+          clipString(m.tp, 60),
+          clipString(m.stat, 40),
+          clipString(m.team, 100),
+          clipString(m.grp, 60),
+          changeSeq
+        );
+      // Geräte, die einen Auftrag neu bekommen, brauchen auch dessen Meldungen (und umgekehrt)
+      sql.touchMeldungOfOrders.run(changeSeq, changeSeq);
+      setMeta('mel', { at: now, files: clipString(body.files), count: meldungen.length });
+    });
+    announce(changeSeq);
+    return sendJson(req, res, 200, { ok: true, count: meldungen.length });
+  }
+  // Alle Aufträge löschen (die Vorgänge bleiben, gehören dann aber zu keinem Auftrag), alle Vorgänge löschen, alle Meldungen löschen
   if (pathname === '/api/orders' && method === 'DELETE') {
     transaction(() => {
       changeSeq++;
-      sql.tombAll.run(Date.now(), changeSeq);
-      sql.tombMeldungAll.run(Date.now(), changeSeq);
+      db.exec('DELETE FROM src_auftrag');
+      rebuildOrders();
       setMeta('upload', null);
-      catalogVer++;
+    });
+    announce(changeSeq);
+    return sendJson(req, res, 200, { ok: true });
+  }
+  if (pathname === '/api/vorgaenge' && method === 'DELETE') {
+    transaction(() => {
+      changeSeq++;
+      db.exec('DELETE FROM src_vorgang');
+      rebuildOrders(); // Reparaturen sind wieder ein Auftrag je Auftragsnummer
+      setMeta('vorg', null);
+    });
+    announce(changeSeq);
+    return sendJson(req, res, 200, { ok: true });
+  }
+  if (pathname === '/api/meldungen' && method === 'DELETE') {
+    transaction(() => {
+      changeSeq++;
+      sql.tombMeldungAll.run(Date.now(), changeSeq);
+      setMeta('mel', null);
     });
     announce(changeSeq);
     return sendJson(req, res, 200, { ok: true });
