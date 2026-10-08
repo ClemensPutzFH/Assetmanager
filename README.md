@@ -44,6 +44,7 @@ Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zus
 - `server.js` – Server: API unter `/api/`, SQLite, Push, statische Dateien. Der Kopfkommentar listet Tabellen, Zugriffsstufen und Umgebungsvariablen.
 - `public/index.html` – die gesamte Oberfläche (Stile + Skript in einer Datei, ohne Framework/Build). Das Skript ist in Abschnitte gegliedert (Zustand, Upload, Ergebnisse/Status, Zeitrückmeldung, Outbox, Abgleich, Vergleich, Fortschritt, Nachrichten, Zeichnen …). `render()` zeichnet alles aus dem Zustand neu; `draw()` wählt dafür eine der Ansichten `drawOrderDetail`, `drawMonteurList`, `drawDispo` usw.
 - `public/worker.js` – Excel lesen/schreiben im Hintergrund (Aufträge, Prüflose, Vergleich, Export).
+- `public/fonts/` – die Schrift **Inter** (vier Schnitte als `.woff2`, nur die gebrauchten Zeichen; Lizenz OFL, siehe `LICENSE-Inter.txt`). Sie kommt vom eigenen Server, wird für den Offline-Start mitgespeichert und die App zeichnet erst, wenn sie geladen ist (sonst würde der Text beim Nachladen springen). Farben, Rundungen und Schatten stehen als Variablen am Anfang der Stile in `index.html` (`:root`, hell/dunkel).
 - `public/sw.js` – Service Worker: Offline-Start und Push-Benachrichtigungen.
 
 ## Wie die Geräte abgleichen

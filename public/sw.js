@@ -6,7 +6,7 @@
  *      Wegwischen wiederkommt, bis „Bestätigen“ getippt wird.
  * ================================================================================================= */
 // Name des Caches; ändert sich die Dateiliste, hochzählen – alte Caches werden beim Aktivieren gelöscht
-const CACHE_NAME = 'auftraege-v3';
+const CACHE_NAME = 'auftraege-v4';
 // Dateien, die beim Installieren vorab gespeichert werden (App-Hülle)
 const APP_SHELL = [
   '/',
@@ -14,6 +14,10 @@ const APP_SHELL = [
   '/worker.js',
   '/vendor/xlsx.full.min.js',
   '/manifest.webmanifest',
+  '/fonts/inter-regular.woff2',
+  '/fonts/inter-medium.woff2',
+  '/fonts/inter-semibold.woff2',
+  '/fonts/inter-bold.woff2',
   '/icon-192.png',
   '/icon-512.png'
 ];

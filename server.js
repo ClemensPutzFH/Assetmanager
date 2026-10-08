@@ -1919,6 +1919,8 @@ const MIME = {
   '.json': 'application/json',
   '.webmanifest': 'application/manifest+json',
   '.png': 'image/png',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
   '.svg': 'image/svg+xml'
 };
 // Dateien im Speicher: { Zeitstempel, Inhalt, gzip, ETag }
@@ -1955,7 +1957,7 @@ function serveStatic(req, res, url) {
       buf,
       type: MIME[ext] || 'application/octet-stream',
       etag: '"' + crypto.createHash('sha1').update(buf).digest('hex').slice(0, 16) + '"',
-      gz: ext === '.png' ? null : zlib.gzipSync(buf)
+      gz: ext === '.png' || ext === '.woff2' ? null : zlib.gzipSync(buf) // schon komprimiert
     };
     staticCache.set(file, entry);
   }

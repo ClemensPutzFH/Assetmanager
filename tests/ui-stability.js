@@ -18,6 +18,8 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
   fs = require('fs'),
@@ -332,6 +334,11 @@ async function newPage(browser, base, viewport, errorsOut, { geolocation = true,
 }
 async function loginMonteur(page) {
   await page.getByText('Ich bin Monteur').click();
+  // Direkt nach dem Öffnen des Formulars zeichnet die App noch ein-, zweimal neu (Rolle gemeldet, Abgleich). Kein Mensch tippt in den
+  // ersten 150 ms – wartet der Test nicht, fällt das Neuzeichnen zwischen „Feld markieren“ und „Text einfügen“, und das vorbelegte
+  // Feld bekommt den User doppelt („33NX33NX“, 403 Anmeldung falsch).
+  await page.waitForSelector('#lgu');
+  await pause(page, 400);
   await page.fill('#lgu', MONTEUR.user);
   await page.fill('#lgp', MONTEUR.password);
   await page.getByRole('button', { name: 'Anmelden' }).last().click();
@@ -613,6 +620,14 @@ async function deviceChecks(browser, base, errors) {
   const monteur = await newPage(browser, base, vp, errors),
     denied = await newPage(browser, base, vp, errors, { geolocation: false, denyLocation: true }),
     dispo = await newPage(browser, base, vp, errors, { geolocation: false });
+  // TEST_DEBUG=1: Anfragen des Monteur-Geräts mit Zeit mitschreiben (zum Eingrenzen sporadischer Fehler)
+  const trace = [],
+    t0 = Date.now();
+  if (process.env.TEST_DEBUG)
+    monteur.on('response', async r => {
+      const u = r.url().replace(base, '');
+      if (/^\/api\/(sync|user\/login|push\/sub)/.test(u)) trace.push(`${Date.now() - t0} ms ${r.request().method()} ${u.slice(0, 40)} ${/login/.test(u) ? (r.request().postData() || '').replace(/"password":"([^"]*)"/, (m, pw) => `"password":<${pw.length} Zeichen>`) : ''} -> ${r.status()} ${(await r.text().catch(() => '')).replace(/"(orders|ergebnis|teams)":\[[^\]]*\]/g, '').slice(0, 90)}`);
+    });
   await loginMonteur(monteur);
   await loginMonteur(denied);
   const [didMonteur, didDenied] = [await didOf(monteur), await didOf(denied)];
@@ -642,8 +657,39 @@ async function deviceChecks(browser, base, errors) {
   await loginMonteur(monteur);
   await monteur.waitForTimeout(3000);
   const afterLogin = await monteur.evaluate(() => ({ list: !![...document.querySelectorAll('#app button')].find(b => /^Entfernung$/.test(b.textContent.trim())), msg: ((document.querySelector('#app .msg') || {}).textContent || '') }));
-  report(afterLogin.list && !/abgemeldet/.test(afterLogin.msg), 'Geräte: erneute Anmeldung nach dem Ausloggen bleibt bestehen', afterLogin.msg.slice(0, 60));
+  report(afterLogin.list && !/abgemeldet/.test(afterLogin.msg), 'Geräte: erneute Anmeldung nach dem Ausloggen bleibt bestehen', `Liste sichtbar: ${afterLogin.list} · ${afterLogin.msg.slice(0, 60)}`);
+  if (process.env.TEST_DEBUG && !(afterLogin.list && !/abgemeldet/.test(afterLogin.msg))) console.log(trace.slice(-25).join('\n'));
   for (const page of [monteur, denied, dispo]) await page.context().close();
+}
+// Schrift (Inter aus /fonts): wird geliefert, alle vier Schnitte sind aktiv, und beim Laden der Seite verschiebt sich nichts
+// (die App zeichnet erst, wenn die Schrift da ist; gemessen mit dem Browser-Maß „Layout Shift“)
+async function fontChecks(browser, base, errors) {
+  console.log('\n=== Schrift ===');
+  for (const f of ['regular', 'medium', 'semibold', 'bold']) {
+    const r = await fetch(`${base}/fonts/inter-${f}.woff2`);
+    report(r.ok && /font\/woff2/.test(r.headers.get('content-type') || '') && (await r.arrayBuffer()).byteLength > 5000, `Schrift: inter-${f}.woff2 wird ausgeliefert`, `${r.status} ${r.headers.get('content-type')}`);
+  }
+  for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+    const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 2 }),
+      page = await ctx.newPage();
+    page.on('pageerror', e => errors.push(e.message));
+    await page.addInitScript(() => {
+      window.__cls = 0;
+      try {
+        new PerformanceObserver(list => { for (const e of list.getEntries()) if (!e.hadRecentInput) window.__cls += e.value; }).observe({ type: 'layout-shift', buffered: true });
+      } catch (e) {}
+    });
+    await page.goto(base);
+    await page.waitForTimeout(1500);
+    const info = await page.evaluate(() => ({
+      weights: ['400', '500', '600', '700'].map(w => document.fonts.check(`${w} 16px Inter`)),
+      family: getComputedStyle(document.body).fontFamily,
+      cls: window.__cls
+    }));
+    report(info.weights.every(Boolean) && /^"?Inter/.test(info.family), `Schrift ${vp.width}px: Inter (400/500/600/700) ist aktiv`, `${info.weights.join('/')} · ${info.family.slice(0, 30)}`);
+    report(info.cls < 0.02, `Schrift ${vp.width}px: kein Layout-Sprung beim Laden der Seite`, `Layout Shift ${info.cls.toFixed(4)}`);
+    await ctx.close();
+  }
 }
 // Ungenauer Standort (z. B. PC ohne GPS: Ortung nur auf Kilometer genau): Hinweis über der Liste und Kurzmeldung
 async function poorAccuracyChecks(browser, base, errors) {
@@ -889,11 +935,16 @@ async function overflowChecks(browser, base, errors) {
   const browser = await pw.chromium.launch({ executablePath: findChrome() });
   const t0 = Date.now();
   try {
+    if (process.env.TEST_ONLY === 'geraete') {
+      await deviceChecks(browser, base, errors);
+      return;
+    }
     const found = await waitForCoordinates(base);
     console.log(`Adressen mit Koordinaten: ${found} (Mini-Geocoder: ${geocoder.requests()} Anfragen)`);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);
     await poorAccuracyChecks(browser, base, errors);
+    await fontChecks(browser, base, errors);
     await deviceChecks(browser, base, errors);
     await geoScenarioChecks(browser, errors);
     await dispoChecks(browser, base, { width: 390, height: 844 }, errors);
