@@ -18,7 +18,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -1360,7 +1360,8 @@ async function dispositionChecks(browser, base, viewport, errors) {
   await page.fill('#app input[data-keep="gs"]', '65900009');
   await settle(500);
   v = await view();
-  report(v.pool.join() === '65900009' && /\(1\)/.test(v.head), `${label} Suche in der Offen-Liste findet 65900009`, v.pool.join());
+  // (der Kopf nennt die Treffer und alle offenen: „1 von 3“ – die Zahl am Tab zählt dieselben offenen)
+  report(v.pool.join() === '65900009' && v.head === `Noch nicht disponiert (1 von ${(/\((\d+)\)/.exec(v.tab) || [])[1]})`, `${label} Suche in der Offen-Liste findet 65900009 (Kopf: „1 von n“ mit der Zahl am Tab)`, `${v.pool.join()} · ${v.head} · ${v.tab}`);
   await page.fill('#app input[data-keep="gs"]', '');
   await settle(400);
 
@@ -1680,7 +1681,7 @@ async function poolWindowChecks(browser, base, errors) {
         cut: [...document.querySelectorAll('.gt-pool > [data-k]')].some(c => c.scrollWidth > c.clientWidth + 1 || c.scrollHeight > c.clientHeight + 1)
       };
     });
-  for (const [w, h, cols, headRows] of [[520, 860, 1, 3], [900, 800, 2, 2], [1400, 900, 3, 1], [360, 700, 1, 0]]) {
+  for (const [w, h, cols, headRows] of [[520, 860, 1, 4], [900, 800, 2, 3], [1400, 900, 3, 2], [360, 700, 1, 0]]) {
     await popup.setViewportSize({ width: w, height: h });
     await settle(400);
     const l = await layout();
@@ -1735,11 +1736,11 @@ async function poolWindowChecks(browser, base, errors) {
 
   // Ausgleiten: die alte Karte schwebt mit demselben Aufbau (Raster) in derselben Größe aus, sie wird nicht zusammengestaucht
   const ghost = await popup.evaluate(() => new Promise(resolve => {
-    const card = document.querySelector('.gt-pool > [data-k="dp-65900009"]'),
+    const card = document.querySelector('.gt-pool > [data-k="dp-65900008-0010"]'),
       r0 = card.getBoundingClientRect();
     card.querySelector('.gt-go').click();
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      const g = document.querySelector('body > [data-k="dp-65900009"]'),
+      const g = document.querySelector('body > [data-k="dp-65900008-0010"]'),
         r = g && g.getBoundingClientRect();
       resolve({ h0: r0.height, w0: r0.width, g: g && { h: r.height, w: r.width, grid: getComputedStyle(g.querySelector('.gt-pcb')).display, cut: g.scrollHeight - g.clientHeight } });
     }));
@@ -1823,6 +1824,334 @@ async function poolWindowChecks(browser, base, errors) {
   await settle(900);
   report(popup3.isClosed(), `${label} Abmelden („← Start“) schließt das Extra-Fenster mit`);
   await page.context().close();
+}
+
+// ---------- Disposition: Offen-Liste – Team, Termin (Sortierung), Zeitraum, Liste bis zum Rand, automatisches Nachladen ----------
+// Die Liste der noch nicht disponierten Aufträge reicht (breit) bis zum unteren Bildschirmrand und rollt in sich; sie lädt von selbst
+// nach (kein Knopf „Weitere anzeigen“), in der Seite wie im Extra-Fenster. Geprüft: Filter nach Team und Zeitraum, Sortierung nach SAP-Beginn,
+// dass dabei nichts springt (Scroll-Stelle der Liste bleibt beim Nachladen und Neuzeichnen), Datumsfelder (kein Filtern bei jeder Ziffer des Jahres),
+// das Extra-Fenster (Filter dort, Nachladen am Fensterrand und bei einem größeren Fenster) und das schmale Handy.
+async function poolListChecks(browser, base, errors) {
+  const viewport = { width: 1280, height: 900 },
+    label = '1280px Offen-Liste:',
+    dayIso = n => new Date(Date.now() + n * 864e5).toLocaleDateString('sv-SE');
+  console.log('\n=== Disposition: Offen-Liste – Team, Termin, Zeitraum, Nachladen (1280px) ===');
+  await undispatchAll(base);
+  const page = await newPage(browser, base, viewport, errors);
+  await loginDispo(page);
+  const settle = ms => pause(page, ms);
+  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => /^Disposition/.test(b.textContent.trim())).click());
+  await page.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
+  await settle(900);
+  const cards = () => page.evaluate(() => [...document.querySelectorAll('#app .gt-pool > [data-k]')].map(c => c.dataset.k.slice(3)));
+  const head = () => page.evaluate(() => document.querySelector('#app .gt-ph b').textContent.trim());
+  const choose = (cls, v) => `el => { el.value = '${v}'; el.dispatchEvent(new Event('change', { bubbles: true })); }`;
+  const field = cls => `() => document.querySelector('#app .gt-pf ${cls}')`;
+  const asc = ['65900008-0010', '65900004', '65900003', '65900002-0010', '65900001-0010', '65900001-0020', '65900009'];
+
+  // ---- Aufbau: Felder, Größe, Lage ----
+  const f0 = await page.evaluate(() => {
+    const r = document.querySelector('#app .gt-pf'), pp = document.querySelector('#app .gt-pps').getBoundingClientRect();
+    return {
+      team: [...r.querySelectorAll('.pf-team option')].map(o => o.textContent),
+      sort: [...r.querySelectorAll('.pf-sort option')].map(o => o.textContent).join(),
+      sortVal: r.querySelector('.pf-sort').value,
+      dates: [...r.querySelectorAll('input')].map(i => i.type + ':' + i.value).join(),
+      x: r.querySelector('.pf-x').disabled,
+      inside: [...r.querySelectorAll('.pf')].every(n => { const b = n.getBoundingClientRect(); return b.left >= pp.left - 0.5 && b.right <= pp.right + 0.5; }),
+      heights: [...r.querySelectorAll('.pf')].map(n => Math.round(n.getBoundingClientRect().height)),
+      over: r.scrollWidth > r.clientWidth + 1,
+      more: !![...document.querySelectorAll('#app button')].find(b => /Weitere/.test(b.textContent)),
+      rows: new Set([...r.querySelectorAll('.gt-pfg > .pf')].map(n => Math.round(n.getBoundingClientRect().top))).size,
+      dateRows: new Set([...r.querySelectorAll('.pf-d')].map(n => Math.round(n.getBoundingClientRect().top))).size
+    };
+  });
+  report(f0.team.join() === 'Alle Teams (7),FW-IH01 (6),FW-IH02 (1)' && f0.sort === 'Älteste zuerst,Neueste zuerst' && f0.sortVal === 'auf' && f0.dates === 'date:,date:' && f0.x, `${label} Felder Team (mit Zahlen), Termin und Zeitraum; Zeitraum leer, ✕ gesperrt`, JSON.stringify(f0));
+  report(f0.inside && !f0.over && f0.heights.every(h => h >= 28 && h <= 48) && !f0.more, `${label} Felder liegen in der Liste (nichts ragt heraus), kein Knopf „Weitere anzeigen“`, JSON.stringify(f0.heights));
+  report(f0.rows === 2 && f0.dateRows === 1, `${label} In der Seitenleiste: Team und Termin nebeneinander, darunter der Zeitraum mit „Von“ und „Bis“ nebeneinander`, `${f0.rows} Zeilen, Datumsfelder in ${f0.dateRows} Zeile(n)`);
+  const reach = async y => {
+    await page.evaluate(y => scrollTo(0, y), y);
+    await settle(300);
+    return page.evaluate(() => { const pp = document.querySelector('#app .gt-pps').getBoundingClientRect(), l = document.querySelector('#app .gt-pool').getBoundingClientRect(), tb = document.getElementById('top').getBoundingClientRect().bottom; return { ppBottom: Math.round(pp.bottom), ppTop: Math.round(pp.top), poolBottom: Math.round(l.bottom), ih: innerHeight, tb: Math.round(tb), sy: Math.round(scrollY) }; });
+  };
+  let g = await reach(0);
+  report(g.ppBottom >= g.ih, `${label} Liste reicht bis zum unteren Bildschirmrand (oben auf der Seite sogar darüber hinaus)`, JSON.stringify(g));
+  g = await reach(350);
+  report(g.sy > 100 && Math.abs(g.ppBottom - (g.ih - 8)) <= 2 && Math.abs(g.ppTop - (g.tb + 8)) <= 2 && g.poolBottom <= g.ppBottom + 3 && g.poolBottom >= g.ppBottom - 3, `${label} Weiter unten klebt die Liste unter der Kopfzeile und endet 8 px über dem unteren Rand`, JSON.stringify(g));
+  await reach(0);
+
+  // ---- Team ----
+  await probe(page, `${label} Team „FW-IH02“ wählen`, field('.pf-team'), { act: choose('.pf-team', 'FW-IH02'), ms: 900 });
+  let got = await cards();
+  const tabTitle = () => page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => /^Disposition/.test(b.textContent)).textContent.trim());
+  report(got.join() === '65900001-0020' && (await head()) === 'Noch nicht disponiert (1 von 7)' && (await tabTitle()) === 'Disposition (7)', `${label} Team FW-IH02: nur dessen Vorgang, Kopf „1 von 7“, Zahl am Tab bleibt 7`, `${got.join()} · ${await head()}`);
+  await probe(page, `${label} Team „Alle Teams“ wählen`, field('.pf-team'), { act: choose('.pf-team', ''), ms: 900 });
+  report((await cards()).join() === asc.join() && (await head()) === 'Noch nicht disponiert (7)', `${label} Alle Teams: wieder 7 Karten`, (await cards()).join());
+
+  // ---- Termin: Sortierung ----
+  await probe(page, `${label} Termin „Neueste zuerst“ wählen (Karten gleiten an ihren Platz)`, field('.pf-sort'), { act: choose('.pf-sort', 'ab'), ms: 900 });
+  got = await cards();
+  report(got.join() === [...asc].reverse().join(), `${label} Neueste zuerst: genau die umgekehrte Reihenfolge (65900009 oben, 65900008-0010 unten)`, got.join());
+  await probe(page, `${label} Termin „Älteste zuerst“ wählen`, field('.pf-sort'), { act: choose('.pf-sort', 'auf'), ms: 900 });
+  report((await cards()).join() === asc.join(), `${label} Älteste zuerst: wie am Anfang`);
+
+  // ---- Zeitraum ----
+  const setDate = (cls, v) => choose(cls, v);
+  await probe(page, `${label} Zeitraum: „Von“ heute`, field('.pf-von'), { act: setDate('.pf-von', dayIso(0)), ms: 900 });
+  await probe(page, `${label} Zeitraum: „Bis“ morgen`, field('.pf-bis'), { act: setDate('.pf-bis', dayIso(1)), ms: 900 });
+  got = await cards();
+  report(got.join() === '65900003,65900002-0010' && (await head()) === 'Noch nicht disponiert (2 von 7)' && (await page.evaluate(() => !document.querySelector('#app .pf-x').disabled)), `${label} Zeitraum heute bis morgen: 2 Karten (SAP-Beginn im Zeitraum), ✕ frei`, `${got.join()} · ${await head()}`);
+  report(await page.evaluate(({ a, b }) => document.querySelector('#app .pf-von').value === a && document.querySelector('#app .pf-bis').value === b, { a: dayIso(0), b: dayIso(1) }), `${label} Zeitraum: die Datumsfelder zeigen die Wahl`);
+  // Zeitraum und Team zusammen; Team-Zahlen richten sich nach dem Zeitraum
+  const teamOpts = () => page.evaluate(() => [...document.querySelectorAll('#app .pf-team option')].map(o => o.textContent).join());
+  report((await teamOpts()) === 'Alle Teams (2),FW-IH01 (2)', `${label} Team-Auswahl zählt nur, was im Zeitraum liegt`, await teamOpts());
+  await probe(page, `${label} Zeitraum aufheben (✕)`, field('.pf-x'), { ms: 900 });
+  report((await cards()).join() === asc.join() && (await page.evaluate(() => document.querySelector('#app .pf-x').disabled && !document.querySelector('#app .pf-von').value && !document.querySelector('#app .pf-bis').value)), `${label} ✕: Zeitraum leer, alle 7 Karten, ✕ wieder gesperrt`);
+  // nur „Von“ bzw. nur „Bis“
+  await probe(page, `${label} Zeitraum: nur „Von“ übermorgen`, field('.pf-von'), { act: setDate('.pf-von', dayIso(2)), ms: 700 });
+  report((await cards()).join() === '65900001-0010,65900001-0020,65900009', `${label} Nur „Von“: ab übermorgen`, (await cards()).join());
+  await page.evaluate(() => document.querySelector('#app .pf-x').click());
+  await settle(500);
+  await probe(page, `${label} Zeitraum: nur „Bis“ gestern`, field('.pf-bis'), { act: setDate('.pf-bis', dayIso(-1)), ms: 700 });
+  report((await cards()).join() === '65900008-0010,65900004', `${label} Nur „Bis“: bis gestern`, (await cards()).join());
+  // „Von“ nach „Bis“: nichts zu finden, der Text sagt warum
+  await page.evaluate(() => document.querySelector('#app .pf-x').click());
+  await settle(500);
+  await page.evaluate(({ a, b }) => { for (const [c, v] of [['.pf-von', a], ['.pf-bis', b]]) { const n = document.querySelector('#app ' + c); n.value = v; n.dispatchEvent(new Event('change', { bubbles: true })); } }, { a: dayIso(2), b: dayIso(0) });
+  await settle(600);
+  report((await cards()).length === 0 && (await page.evaluate(() => /„Von“ liegt nach „Bis“/.test(document.querySelector('#app .gt-empty').textContent))), `${label} „Von“ nach „Bis“: keine Karten, der Text nennt den Grund`);
+  await page.evaluate(() => document.querySelector('#app .pf-x').click());
+  await settle(600);
+  report((await cards()).length === 7, `${label} ✕ nach dem umgekehrten Zeitraum: wieder 7 Karten`);
+
+  // ---- Datumsfeld: erst ein volles Jahr zählt ----
+  const kept = await page.evaluate(() => {
+    const n = document.querySelector('#app .pf-von');
+    n.__mark = 1;
+    window.__renders = 0;
+    const orig = window.render;
+    window.render = (...a) => (window.__renders++, orig(...a));
+    n.value = '0002-10-13';
+    n.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  });
+  await settle(300);
+  report(await page.evaluate(() => document.querySelector('#app .pf-von').__mark === 1 && window.__renders === 0 && document.querySelectorAll('#app .gt-pc').length === 7), `${label} Datum „0002-10-13“ (erste Ziffer des Jahres) wird nicht angewendet: kein Neuzeichnen, Feld bleibt`);
+  // echtes Tippen: Monat, Tag, dann das Jahr Ziffer für Ziffer – nur die letzte Ziffer filtert
+  await page.evaluate(() => { document.querySelector('#app .pf-von').value = ''; });
+  await page.evaluate(() => { window.__renders = 0; });
+  const typedDay = dayIso(2).split('-'); // JJJJ-MM-TT
+  await page.locator('#app .pf-von').focus();
+  await page.keyboard.type(typedDay[1] + typedDay[2] + typedDay[0], { delay: 70 });
+  await settle(600);
+  const typed = await page.evaluate(() => ({ v: document.querySelector('#app .pf-von').value, renders: window.__renders, focus: document.activeElement && document.activeElement.dataset.keep, cards: [...document.querySelectorAll('#app .gt-pool > [data-k]')].map(c => c.dataset.k.slice(3)) }));
+  report(typed.v === dayIso(2) && typed.renders === 1 && typed.focus === 'gpf' && typed.cards.join() === '65900001-0010,65900001-0020,65900009', `${label} Datum tippen (Monat, Tag, Jahr): nur die vierte Ziffer filtert (1 Neuzeichnen), das Feld behält den Fokus`, JSON.stringify(typed));
+  await page.evaluate(() => document.querySelector('#app .pf-x').click());
+  await settle(600);
+
+  // ---- Viele Aufträge: Liste lädt von selbst nach ----
+  // (95 weitere Reparaturen mit Terminen von −8 bis +14 Tagen, vier Teams, einer ohne Datum – nur im Speicher des Browsers)
+  await page.evaluate(() => {
+    const day = n => new Date(Date.now() + n * 864e5).toLocaleDateString('sv-SE'),
+      teams = ['FW-IH01', 'FW-IH02', 'FW-IH03', 'FW-IH04'];
+    for (let i = 0; i < 95; i++) {
+      const a = '6600' + String(1000 + i) + '-0010';
+      ordersMap.set(a, { auftrag: a, nr: a.slice(0, 8), vg: '0010', vtxt: 'Testvorgang ' + i, kurz: 'Test ' + i, team: teams[i % 4], start: i === 94 ? '' : day((i % 23) - 8), ende: i === 94 ? '' : day((i % 23) - 8), uhr: ['07:00', '08:30', '13:00', '15:45'][i % 4], uhr2: '', kind: 'rep', plz: '1210', str: 'Testgasse ' + i, arb: 2 });
+    }
+    rebuildOrdersByTeam();
+    render();
+  });
+  await settle(900);
+  const info = () => page.evaluate(() => { const l = document.querySelector('#app .gt-pool'); return { n: document.querySelectorAll('#app .gt-pc').length, top: Math.round(l.scrollTop), sh: l.scrollHeight, ch: l.clientHeight, more: !!document.querySelector('#app .gt-more'), btn: !![...document.querySelectorAll('#app button')].find(b => /Weitere/.test(b.textContent)) }; });
+  let i0 = await info();
+  report(i0.n === 30 && i0.more && !i0.btn && i0.sh > i0.ch * 3 && (await head()) === 'Noch nicht disponiert (102)', `${label} 102 offene: die ersten 30 Karten stehen da, kein Knopf, die Liste rollt in sich`, JSON.stringify(i0));
+  // Inhaltshöhe der ersten Karten (Abstand vom Listenanfang): ändert sich beim Nachladen nicht
+  const contentY = () => page.evaluate(() => { const l = document.querySelector('#app .gt-pool'), t = l.getBoundingClientRect().top; return [...l.children].filter(c => c.dataset.k).slice(0, 30).map(c => Math.round(c.getBoundingClientRect().top - t + l.scrollTop)); });
+  const y0 = await contentY();
+  // wie ein Nutzer: mit dem Rad rollen; die Liste wächst von selbst (30 → 60 → 90 → 102)
+  await page.mouse.move(200, 600);
+  const seen = [];
+  for (let k = 0; k < 14 && !(seen.length && seen[seen.length - 1] === 102); k++) {
+    await page.mouse.wheel(0, 1400);
+    await settle(450);
+    seen.push((await info()).n);
+  }
+  const iEnd = await info();
+  report(iEnd.n === 102 && !iEnd.more && seen.some(n => n === 60 || n === 90) && seen.every((n, i) => !i || n >= seen[i - 1]), `${label} Mit dem Rad nach unten: die Liste wächst von selbst bis alle 102 da sind (Marke weg)`, seen.join('→'));
+  const y1 = (await contentY());
+  report(y1.length === 30 && y1.every((v, i) => Math.abs(v - y0[i]) <= 1), `${label} Nachladen: die Karten oben bleiben an ihrer Stelle in der Liste (kein Springen)`, `${y0.slice(0, 3)} → ${y1.slice(0, 3)}`);
+  // Scroll-Stelle der Liste überlebt jedes Neuzeichnen
+  await page.evaluate(() => { document.querySelector('#app .gt-pool').scrollTop = 1500; });
+  await settle(300);
+  const topKey = () => page.evaluate(() => { const l = document.querySelector('#app .gt-pool'), t = l.getBoundingClientRect().top, c = [...l.children].find(c => c.dataset.k && c.getBoundingClientRect().bottom > t + 1); return { k: c.dataset.k, off: Math.round((c.getBoundingClientRect().top - t) * 10) / 10, sy: Math.round(l.scrollTop) }; });
+  const s0 = await topKey();
+  await page.evaluate(() => render());
+  await settle(300);
+  const s1 = await topKey();
+  report(s1.k === s0.k && Math.abs(s1.off - s0.off) <= 1 && Math.abs(s1.sy - s0.sy) <= 1, `${label} Neuzeichnen (z. B. Live-Update) mitten in der Liste: dieselbe Karte bleibt oben an derselben Stelle`, `${JSON.stringify(s0)} → ${JSON.stringify(s1)}`);
+  // Karte antippen mitten in der Liste: Fenster geht auf, die Liste bleibt stehen
+  const before = await topKey();
+  await page.evaluate(() => { const l = document.querySelector('#app .gt-pool'), t = l.getBoundingClientRect().top; [...l.children].find(c => c.dataset.k && c.getBoundingClientRect().top > t + 100).click(); });
+  await settle(900);
+  const after = await topKey();
+  report(after.k === before.k && Math.abs(after.off - before.off) <= 1 && (await page.evaluate(() => !!document.querySelector('#app .gt-sheet'))), `${label} Karte mitten in der Liste antippen: Bearbeiten-Fenster geht auf, die Liste bleibt stehen`, `${JSON.stringify(before)} → ${JSON.stringify(after)}`);
+  // das Fenster liegt über dem unteren Rand: die letzte Karte lässt sich darüber heben
+  await page.evaluate(() => { scrollTo(0, 600); });
+  await settle(300);
+  await page.evaluate(() => { const l = document.querySelector('#app .gt-pool'); l.scrollTop = l.scrollHeight; });
+  await settle(400);
+  const lastCard = await page.evaluate(() => { const l = document.querySelector('#app .gt-pool'), cs = [...l.children].filter(c => c.dataset.k), s = document.querySelector('#app .gt-sheet').getBoundingClientRect(); return { bottom: Math.round(cs[cs.length - 1].getBoundingClientRect().bottom), sheet: Math.round(s.top) }; });
+  report(lastCard.bottom <= lastCard.sheet, `${label} Die letzte Karte lässt sich über das Bearbeiten-Fenster heben`, JSON.stringify(lastCard));
+  await page.evaluate(() => document.querySelector('#app .gt-sheet .gt-x').click());
+  await settle(500);
+  // ohne Datum steht immer am Ende – in beiden Richtungen
+  const lastOf = () => page.evaluate(() => poolOrders().slice(-1)[0].auftrag);
+  const undatedLast = await lastOf();
+  await page.evaluate(() => { gSort = 'ab'; render(); });
+  const undatedLast2 = await lastOf();
+  await page.evaluate(() => { gSort = 'auf'; render(); });
+  report(undatedLast === '66001094-0010' && undatedLast2 === '66001094-0010', `${label} Ein Auftrag ohne Termin steht in beiden Richtungen am Ende`, `${undatedLast} / ${undatedLast2}`);
+  await page.evaluate(() => { const o = ordersMap.get('66001000-0010'); window.__keep = o; });
+  // Zeitraum blendet Aufträge ohne Termin aus
+  await page.evaluate(() => { gPoolFrom = '2000-01-01'; render(); });
+  report(await page.evaluate(() => !poolOrders().some(o => o.auftrag === '66001094-0010') && poolOrders().length > 90), `${label} Mit Zeitraum erscheint ein Auftrag ohne Termin nicht`);
+  await page.evaluate(() => { gPoolFrom = ''; render(); });
+  await settle(400);
+  // Filter ändern: die Liste beginnt wieder oben und mit der ersten Portion
+  await page.evaluate(() => { document.querySelector('#app .gt-pool').scrollTop = 2000; });
+  await settle(300);
+  await probe(page, `${label} Team wählen mitten in der Liste (Liste springt nach oben, die neuen Karten gleiten ein)`, field('.pf-team'), { act: choose('.pf-team', 'FW-IH03'), ms: 1000, reflow: true });
+  const afterTeam = await info();
+  const teamOnly = await page.evaluate(() => [...document.querySelectorAll('#app .gt-pc .row .tag:last-child')].every(t => t.textContent.trim() === 'FW-IH03'));
+  report(afterTeam.top === 0 && afterTeam.n === 24 && teamOnly && (await head()) === 'Noch nicht disponiert (24 von 102)', `${label} Team FW-IH03 mitten in der langen Liste: sie beginnt oben, 24 Karten, alle von FW-IH03`, JSON.stringify(afterTeam));
+  await page.evaluate(() => { const n = document.querySelector('#app .pf-team'); n.value = ''; n.dispatchEvent(new Event('change', { bubbles: true })); });
+  await settle(600);
+  report((await info()).n === 30, `${label} Alle Teams: wieder die erste Portion (30)`);
+
+  // ---- Extra-Fenster: Filter, Sortierung, Zeitraum und Nachladen am Fensterrand ----
+  await page.evaluate(() => { poolReset(); render(); });
+  await settle(500);
+  const [popup] = await Promise.all([page.context().waitForEvent('page', { timeout: 10000 }), page.evaluate(() => document.querySelector('#app .gtt-pop').click())]);
+  popup.on('pageerror', e => errors.push('Extra-Fenster: ' + e.message));
+  await popup.waitForSelector('.gt-pool > [data-k]', { timeout: 10000 });
+  await settle(900);
+  const plabel = `${label} Extra-Fenster:`;
+  const pInfo = () => popup.evaluate(() => ({ n: document.querySelectorAll('.gt-pc').length, sy: Math.round(scrollY), sh: document.documentElement.scrollHeight, ih: innerHeight, more: !!document.querySelector('.gt-more'), btn: !![...document.querySelectorAll('button')].find(b => /Weitere/.test(b.textContent)), listBottom: Math.round(document.querySelector('.gt-pool').getBoundingClientRect().bottom) }));
+  const pCards = () => popup.evaluate(() => [...document.querySelectorAll('.gt-pool > [data-k]')].map(c => c.dataset.k.slice(3)));
+  const pHead = () => popup.evaluate(() => document.querySelector('.gt-ph b').textContent.trim());
+  const pf = await popup.evaluate(() => {
+    const r = document.querySelector('.gtw-top .gt-pf'), top = document.querySelector('.gtw-top').getBoundingClientRect();
+    return { team: [...r.querySelectorAll('.pf-team option')].map(o => o.textContent).slice(0, 2).join(), n: r.querySelectorAll('.pf').length, inside: [...r.querySelectorAll('.pf')].every(n => { const b = n.getBoundingClientRect(); return b.left >= 0 && b.right <= innerWidth && b.top >= top.top && b.bottom <= top.bottom + 1; }), sticky: getComputedStyle(document.querySelector('.gtw-top')).position, over: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 };
+  });
+  let pi = await pInfo();
+  report(pf.team === 'Alle Teams (102),FW-IH01 (30)' && pf.n === 3 && pf.inside && !pf.over && pf.sticky === 'sticky', `${plabel} Team, Termin und Zeitraum stehen im Kopf (der klebt oben)`, JSON.stringify(pf));
+  report(pi.n === 30 && pi.more && !pi.btn && pi.sh > pi.ih * 2, `${plabel} die ersten 30 Karten, kein Knopf „Weitere anzeigen“`, JSON.stringify(pi));
+  const docY = () => popup.evaluate(() => [...document.querySelectorAll('.gt-pool > [data-k]')].slice(0, 30).map(c => Math.round(c.getBoundingClientRect().top + scrollY)));
+  const d0 = await docY();
+  await popup.mouse.move(250, 500);
+  const pSeen = [];
+  for (let k = 0; k < 14 && !(pSeen.length && pSeen[pSeen.length - 1] === 102); k++) {
+    await popup.mouse.wheel(0, 1600);
+    await settle(450);
+    pSeen.push((await pInfo()).n);
+  }
+  pi = await pInfo();
+  report(pi.n === 102 && !pi.more && pSeen.every((n, i) => !i || n >= pSeen[i - 1]) && pSeen.some(n => n > 30 && n < 102), `${plabel} Mit dem Rad nach unten: die Liste wächst von selbst bis alle 102 da sind`, pSeen.join('→'));
+  const d1 = await docY();
+  report(d1.length === 30 && d1.every((v, i) => Math.abs(v - d0[i]) <= 1), `${plabel} Nachladen: die Karten oben bleiben an ihrer Stelle (kein Springen)`, `${d0.slice(0, 3)} → ${d1.slice(0, 3)}`);
+  // Team im Fenster wählen: beide Fenster zeigen dieselbe Wahl, die Liste beginnt oben
+  await popup.selectOption('.pf-team', 'FW-IH02');
+  await settle(800);
+  pi = await pInfo();
+  report(pi.sy === 0 && pi.n === 25 && (await pHead()) === 'Noch nicht disponiert (25 von 102)' && (await page.evaluate(() => gTeam)) === 'FW-IH02', `${plabel} Team FW-IH02: 25 Karten, die Liste beginnt oben, „25 von 102“, das Hauptfenster hat dieselbe Wahl`, JSON.stringify(pi));
+  await popup.selectOption('.pf-sort', 'ab');
+  await settle(800);
+  const expectDesc = await page.evaluate(() => poolOrders().slice(0, 30).map(o => o.auftrag));
+  report((await pCards()).join() === expectDesc.join() && expectDesc.length === 25, `${plabel} Neueste zuerst: die Karten stehen in der Reihenfolge der Liste (neuester Termin oben)`, (await pCards()).slice(0, 3).join());
+  const dateKept = await popup.evaluate(() => { const n = document.querySelector('.pf-von'); n.__mark = 1; return true; });
+  await popup.locator('.pf-von').fill(dayIso(5));
+  await settle(800);
+  const pd = await popup.evaluate(() => ({ same: document.querySelector('.pf-von').__mark === 1, v: document.querySelector('.pf-von').value, x: document.querySelector('.pf-x').disabled }));
+  const inRange = await page.evaluate(from => poolOrders().every(o => isoOfDate(sapOf(o).start) >= from), dayIso(5));
+  report(pd.same && pd.v === dayIso(5) && !pd.x && inRange && (await pCards()).length > 0 && (await pCards()).length < 25, `${plabel} Zeitraum ab ${dayIso(5)}: die Karten liegen im Zeitraum, das Datumsfeld bleibt dasselbe Element`, JSON.stringify(pd));
+  await popup.locator('.pf-x').click();
+  await settle(700);
+  await popup.selectOption('.pf-team', '');
+  await popup.selectOption('.pf-sort', 'auf');
+  await settle(800);
+  pi = await pInfo();
+  report(pi.n === 30 && (await popup.evaluate(() => document.querySelector('.pf-x').disabled && !document.querySelector('.pf-von').value)) && (await pHead()) === 'Noch nicht disponiert (102)', `${plabel} alles zurückgesetzt: 102 offene, die erste Portion (30)`, JSON.stringify(pi));
+  // ein größeres Fenster füllt sich von selbst (die Marke bleibt im Bild, bis es voll ist)
+  await popup.setViewportSize({ width: 1400, height: 2300 });
+  await settle(1500);
+  pi = await pInfo();
+  report(pi.n > 30 && (pi.listBottom >= pi.ih - 10 || pi.n === 102), `${plabel} Fenster größer gezogen (1400 × 2300): die Liste lädt nach, bis das Fenster voll ist`, JSON.stringify(pi));
+  for (const [w, rows, dateRows] of [[520, 2, 1], [900, 1, 1], [360, 2, 2]]) {
+    await popup.setViewportSize({ width: w, height: 820 });
+    await settle(500);
+    const lay = await popup.evaluate(() => {
+      const f = document.querySelector('.gtw-top .gt-pf'), top = f.getBoundingClientRect();
+      return {
+        rows: new Set([...f.querySelectorAll('.gt-pfg > .pf')].map(n => Math.round(n.getBoundingClientRect().top))).size,
+        dateRows: new Set([...f.querySelectorAll('.pf-d')].map(n => Math.round(n.getBoundingClientRect().top))).size,
+        inside: [...f.querySelectorAll('.pf, .pf *:not(option)')].every(n => n.getBoundingClientRect().right <= top.right + 0.5 && n.getBoundingClientRect().left >= top.left - 0.5),
+        over: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
+      };
+    });
+    report(lay.rows === rows && lay.dateRows === dateRows && lay.inside && !lay.over, `${plabel} Fenster ${w} px breit: Felder in ${rows} ${rows === 1 ? 'Zeile' : 'Zeilen'}, „Von“ und „Bis“ in ${dateRows} ${dateRows === 1 ? 'Zeile' : 'Zeilen'}, nichts ragt über den Rand`, JSON.stringify(lay));
+  }
+  await popup.setViewportSize({ width: 520, height: 820 });
+  await settle(500);
+  await probe(page, `${label} „Liste wieder hier“ (Fenster schließt, Filter und Liste stehen wieder in der Seite)`, btn('/^Liste wieder hier$/', '#app .gtt'), { ms: 1000, anim: true });
+  await settle(500);
+  report(popup.isClosed() && (await page.evaluate(() => !!document.querySelector('#app .gt-pp .gt-pf') && document.querySelector('#app .pf-team').value === '' && document.querySelectorAll('#app .gt-pc').length >= 30)), `${label} Liste wieder in der Seite: Filter und Karten da`);
+  await page.context().close();
+
+  // ---- schmales Handy: die Liste rollt in einem Bereich, lädt dort nach, nichts ragt über den Rand ----
+  for (const [w, h, fz] of [[390, 844, ''], [320, 640, '24px']]) {
+    const nl = `${w}px${fz ? ' (150 % Schrift)' : ''} Offen-Liste:`;
+    await undispatchAll(base);
+    const mp = await newPage(browser, base, { width: w, height: h }, errors);
+    await loginDispo(mp);
+    await mp.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => /^Disposition/.test(b.textContent.trim())).click());
+    await mp.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
+    if (fz) await mp.addStyleTag({ content: `html { font-size: ${fz} !important }` });
+    await mp.evaluate(() => {
+      const teams = ['FW-IH01', 'FW-IH02', 'FW-IH03', 'FW-IH04'], day = n => new Date(Date.now() + n * 864e5).toLocaleDateString('sv-SE');
+      for (let i = 0; i < 95; i++) {
+        const a = '6600' + String(1000 + i) + '-0010';
+        ordersMap.set(a, { auftrag: a, nr: a.slice(0, 8), vg: '0010', vtxt: 'Testvorgang ' + i, kurz: 'Test ' + i, team: teams[i % 4], start: day((i % 23) - 8), ende: day((i % 23) - 8), uhr: ['07:00', '08:30', '13:00', '15:45'][i % 4], uhr2: '', kind: 'rep', plz: '1210', str: 'Testgasse ' + i, arb: 2 });
+      }
+      rebuildOrdersByTeam();
+      render();
+    });
+    await pause(mp, 900);
+    const m0 = await mp.evaluate(() => {
+      const pp = document.querySelector('#app .gt-pps').getBoundingClientRect(), l = document.querySelector('#app .gt-pool'), f = document.querySelector('#app .gt-pf');
+      return {
+        n: document.querySelectorAll('#app .gt-pc').length, sticky: getComputedStyle(document.querySelector('#app .gt-pps')).position, ch: Math.round(l.clientHeight), sh: l.scrollHeight, ih: innerHeight, fs: parseFloat(getComputedStyle(document.documentElement).fontSize),
+        pfInside: [...f.querySelectorAll('.pf, .pf *:not(option)')].every(n => n.getBoundingClientRect().right <= pp.right + 0.5 && n.getBoundingClientRect().left >= pp.left - 0.5),
+        overPf: f.scrollWidth > f.clientWidth + 1, page: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        rows: new Set([...f.querySelectorAll('.gt-pfg > .pf')].map(n => Math.round(n.getBoundingClientRect().top))).size,
+        dateRows: new Set([...f.querySelectorAll('.pf-d')].map(n => Math.round(n.getBoundingClientRect().top))).size,
+        size: [...f.querySelectorAll('.pf select, .pf input')].map(n => parseFloat(getComputedStyle(n).fontSize)).every(x => x >= parseFloat(getComputedStyle(document.documentElement).fontSize))
+      };
+    });
+    report(m0.rows === 3 && m0.dateRows === 2 && m0.size, `${nl} Handy: Team, Termin und Zeitraum untereinander („Von“ über „Bis“), die Felder haben mindestens so viel Schrift wie der Text (16 px: iOS zoomt sonst beim Antippen hinein)`, JSON.stringify({ rows: m0.rows, dateRows: m0.dateRows, size: m0.size }));
+    report((!fz || m0.fs === 24) && m0.n === 30 && m0.sticky !== 'sticky' && m0.ch < m0.ih * 0.75 && m0.sh > m0.ch * 3 && m0.pfInside && !m0.overPf && m0.page, `${nl} die Liste rollt in einem Bereich (höchstens 70 % des Bildschirms), die Filter liegen im Bild, die Seite ist nicht breiter`, JSON.stringify(m0));
+    // nach unten rollen: lädt nach
+    const mSeen = [];
+    for (let k = 0; k < 12 && !(mSeen.length && mSeen[mSeen.length - 1] === 102); k++) {
+      await mp.evaluate(() => { const l = document.querySelector('#app .gt-pool'); l.scrollTop = l.scrollHeight; });
+      await pause(mp, 450);
+      mSeen.push(await mp.evaluate(() => document.querySelectorAll('#app .gt-pc').length));
+    }
+    report(mSeen[mSeen.length - 1] === 102 && mSeen.every((n, i) => !i || n >= mSeen[i - 1]), `${nl} nach unten rollen: die Liste wächst von selbst bis alle 102 da sind`, mSeen.join('→'));
+    await mp.evaluate(() => { const n = document.querySelector('#app .pf-team'); n.value = 'FW-IH02'; n.dispatchEvent(new Event('change', { bubbles: true })); });
+    await pause(mp, 700);
+    report(await mp.evaluate(() => document.querySelectorAll('#app .gt-pc').length === 25 && document.querySelector('#app .gt-pool').scrollTop === 0 && document.documentElement.scrollWidth <= document.documentElement.clientWidth), `${nl} Team FW-IH02: 25 Karten, Liste oben, Seite nicht breiter`);
+    await mp.context().close();
+  }
 }
 
 // Disposition auf dem schmalsten Handy (320 px): nichts ragt über den Rand, das Bearbeiten-Fenster liegt im Bild, Dunkelmodus lesbar.
@@ -2332,6 +2661,7 @@ function summary(t0) {
       await kindUploadChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
       await poolWindowChecks(browser, base, errors);
+      await poolListChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
       await workStateChecks(browser, base, errors);
@@ -2345,10 +2675,18 @@ function summary(t0) {
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
+    if (process.env.TEST_ONLY === 'poolliste') {
+      // schnell: Upload, dann nur die Offen-Liste der Disposition (Team, Termin, Zeitraum, Nachladen)
+      await kindUploadChecks(browser, base, errors);
+      await poolListChecks(browser, base, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
     if (process.env.TEST_ONLY === 'auftragsarten') {
       await kindUploadChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
       await poolWindowChecks(browser, base, errors);
+      await poolListChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
       await workStateChecks(browser, base, errors);
@@ -2362,6 +2700,7 @@ function summary(t0) {
     await kindUploadChecks(browser, base, errors);
     await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
     await poolWindowChecks(browser, base, errors);
+    await poolListChecks(browser, base, errors);
     await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
     await dispositionNarrowChecks(browser, base, errors);
     await workStateChecks(browser, base, errors);
