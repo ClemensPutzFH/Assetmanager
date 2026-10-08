@@ -18,7 +18,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload und Ansichten der Auftragsarten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -332,7 +332,18 @@ async function newPage(browser, base, viewport, errorsOut, { geolocation = true,
   await pause(page, 600);
   return page;
 }
-async function loginMonteur(page) {
+// Auftragsart wählen: auf der Startseite der große Knopf, in einer Liste der Umschalter darüber (Name: „Wartung“, „Reparatur“ …)
+async function chooseKind(page, name) {
+  await page.evaluate(name => {
+    const b = [...document.querySelectorAll('#app button.kind, #app .ksw button')].find(b => b.textContent.includes(name));
+    if (!b) throw new Error('Auftragsart fehlt: ' + name);
+    b.click();
+  }, name);
+  await pause(page, 600);
+}
+// kind: Auftragsart, die nach der Anmeldung geöffnet wird (Standard: Wartungen – die meisten Prüfungen laufen auf dieser Liste);
+// null = auf der Startseite bleiben
+async function loginMonteur(page, kind = 'Wartungen') {
   await page.getByText('Ich bin Monteur').click();
   // Direkt nach dem Öffnen des Formulars zeichnet die App noch ein-, zweimal neu (Rolle gemeldet, Abgleich). Kein Mensch tippt in den
   // ersten 150 ms – wartet der Test nicht, fällt das Neuzeichnen zwischen „Feld markieren“ und „Text einfügen“, und das vorbelegte
@@ -348,6 +359,7 @@ async function loginMonteur(page) {
     await gas.click();
     await pause(page, 500);
   }
+  if (kind) await chooseKind(page, kind);
 }
 async function loginDispo(page) {
   await page.getByText('Ich bin Disponent').click();
@@ -733,6 +745,7 @@ async function monteurChecks(browser, base, viewport, errors) {
     await probe(page, `${label} Liste: Glocke wieder öffnen (ganz oben, Inhalt rückt weich nach)`, btn('/Benachrichtigungen/'), { scroll: 0, ms: 800, tapTol: 400, smooth: '#app .gasl' });
     await page.reload();
     await pause(page, 1200);
+    await chooseKind(page, 'Wartungen'); // nach dem Neuladen beginnt der Monteur wieder auf der Startseite
   }
   // Filter, Sortierung (unterwegs auf der Liste)
   for (const f of ['Alle', 'Erledigt', 'Nicht OK', 'Offen'])
@@ -857,6 +870,208 @@ async function monteurChecks(browser, base, viewport, errors) {
   await page.context().close();
 }
 
+
+// ---------- Auftragsarten: Reparatur, Entstörung, Dauerauftrag, Meldungen ----------
+// Erzeugt kleine Excel-Dateien wie die aus SAP (Aufträge, Vorgänge, Meldungen) für das Team des Test-Monteurs (FW-IH01) und lädt sie
+// über die Upload-Seite hoch – das prüft zugleich das Lesen der drei Dateiarten. Wartungsaufträge sind absichtlich NICHT in der Datei:
+// sie müssen den Upload unversehrt überstehen.
+const excelDay = offset => {
+  const d = new Date();
+  return Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() + offset) / 864e5) + 25569;
+};
+function kindFiles() {
+  const X = require(path.join(ROOT, 'public', 'vendor', 'xlsx.full.min.js')),
+    book = rows => {
+      const wb = X.utils.book_new();
+      X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(rows), 'Tabelle1');
+      return Buffer.from(X.write(wb, { type: 'array', bookType: 'xlsx' }));
+    },
+    T = 'FW-IH01',
+    T2 = 'FW-IH02',
+    xlsx = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const orders = [
+    ['Auftrag', 'Kurztext', 'Postleitzahl', 'Straße', 'Verantw.ArbPl.', 'Auftragsart', 'Term. Start', 'Erfasser', 'Techn. Platz', 'IH-Leistungsart', 'Systemstatus', 'Meldung'],
+    ['65900001', 'Gebrechen Testgasse', '1210', 'Testgasse 1', T, '3NAR', excelDay(2), 'X', 'TP-1', 'I42', 'FREI', ''],
+    ['65900002', 'Schieber Teststraße', '1210', 'Teststraße 2', T, '3NAR', excelDay(1), 'X', 'TP-2', 'I42', 'FREI', ''],
+    ['65900008', 'Alter Auftrag', '1210', 'Teststraße 8', T, '3NAR', excelDay(-3), 'X', 'TP-8', 'I42', 'FREI', ''],
+    ['65900003', 'Dampf im Schacht', '1210', 'Schachtgasse 3', T, '3NAE', excelDay(0), 'X', 'TP-3', '', 'FREI', '1290000001'],
+    ['65900004', 'Nächtliche Störung', '1210', 'Nachtweg 4', T, '3NAE', excelDay(-1), 'X', 'TP-4', '', 'FREI', ''],
+    ['65900005', 'Allg. Tätigkeiten ohne eigenen Auftrag', '', '', T, '3NAW', excelDay(-200), 'X', 'F-N-K', 'FWD', 'FREI', ''],
+    ['65900006', 'Anderer Auftrag (3NAV)', '1210', 'Nirgendwo 6', T, '3NAV', excelDay(0), 'X', 'TP-6', 'F07', 'FREI', '']
+  ];
+  const stepHead = ['Auftrag', 'Auftragsart', 'Eckstarttermin', 'Eckendtermin', 'Kurztext', 'Vorgang', 'Kurztext Vrg.', 'Verantw.ArbPl.', 'IH-Leistungsart', 'Anwenderstat.', 'Sortierfeld', 'VrgArbeitsplatz', 'Arbeit', 'Iststart Uzt', 'Istende Uzt', 'Istarbeit'];
+  const steps = [
+    stepHead,
+    ['65900001', '3NAR', excelDay(2), null, 'Gebrechen Testgasse', '0010', 'Rohr tauschen', T, 'I42', '', '', T, 8, '06:00:00', '00:00:00', 0],
+    ['65900001', '3NAR', excelDay(2), null, 'Gebrechen Testgasse', '0020', 'Kabel prüfen', T, 'I42', '', '', T2, 4, '06:00:00', '00:00:00', 0],
+    ['65900002', '3NAR', excelDay(1), null, 'Schieber Teststraße', '0010', 'Schieber tauschen', T, 'I42', '', '', T, 4, '13:30:00', '00:00:00', 0],
+    ['65900008', '3NAR', excelDay(-3), null, 'Alter Auftrag', '0010', 'Alter Vorgang', T, 'I42', '', '', T, 2, '09:00:00', '00:00:00', 0],
+    ['65900003', '3NAE', excelDay(0), excelDay(0), 'Dampf im Schacht', '0010', 'Störungsanalyse & Erstmaßnahmen', T, '', '', '', T, 2, '08:30:00', '10:15:00', 0],
+    ['65900004', '3NAE', excelDay(-1), excelDay(0), 'Nächtliche Störung', '0010', 'Störungsanalyse & Erstmaßnahmen', T, '', '', '', T, 2, '22:00:00', '05:30:00', 0]
+  ];
+  const meldungen = [
+    ['Angelegt am', 'Meldung', 'Beschreibung', 'Straße', 'Postleitzahl', 'Auftrag', 'Codier.Code.Txt', 'Techn. Platz', 'Anwenderstat.', 'Verantw.ArbPl.', 'Codier.Grp.Text'],
+    [excelDay(0), '1290000001', 'Dampf aus dem Schacht', 'Schachtgasse    3', '1210', '65900003', 'Gebrechen stark', 'TP-3', 'prag', T, 'WN: FW Störmeldung'],
+    [excelDay(-1), '1290000002', 'Rohrbruch Testgasse', 'Testgasse    1', '1210', '65900001', 'Schaden', 'TP-1', 'prag', T, 'Mängelkategorien'],
+    [excelDay(-2), '1290000003', 'Deckel locker Teststraße 5', 'Teststraße    5', '1210', '', 'Schaden', 'TP-5', 'prag', T, 'Mängelkategorien'],
+    [excelDay(-2), '1290000004', 'Fremdes Team Schaden', 'Andere Gasse 1', '1020', '', 'Schaden', 'TP-9', 'prag', T2, 'Mängelkategorien'],
+    [excelDay(-9), '1290000005', 'Graffiti am Schachtdeckel', 'Teststraße    7', '1210', '', 'Schaden', 'TP-7', 'prag', T, 'Mängelkategorien']
+  ];
+  return [
+    { name: 'Aufträge_neu.xlsx', mimeType: xlsx, buffer: book(orders) },
+    { name: 'Vorgänge_neu.xlsx', mimeType: xlsx, buffer: book(steps) },
+    { name: 'Meldungen_neu.xlsx', mimeType: xlsx, buffer: book(meldungen) }
+  ];
+}
+// Disponent lädt die drei Dateien auf der Upload-Seite hoch; Wartungsaufträge bleiben unberührt
+async function kindUploadChecks(browser, base, errors) {
+  console.log('\n=== Auftragsarten: Upload (Aufträge, Vorgänge, Meldungen) ===');
+  const page = await newPage(browser, base, { width: 1100, height: 900 }, errors);
+  await loginDispo(page);
+  const kindBar = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#app .ksw button')].map(b => [b.textContent.replace(/[^A-Za-zäöüÄÖÜß]/g, ' ').trim().split(/\s+/)[0], +(/\((\d+)\)/.exec(b.textContent) || [])[1]])));
+  const before = await kindBar();
+  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === 'Upload').click());
+  await pause(page, 600);
+  await page.click('input[data-keep="u"]');
+  await page.keyboard.type('1025');
+  await pause(page, 1500);
+  await page.setInputFiles('#app input[type=file]', kindFiles());
+  // Die Meldungen „Lese Datei …“ → „Speichere …“ → Ergebnis erscheinen oben und schieben den Inhalt nach unten. Das muss weich geschehen:
+  // der Knopf wandert über mehrere Bilder, nie mehr als 12 px in einem Bild. (probe() verfolgt den Knopf über die Beschriftung und
+  // würde den Wechsel „Hochladen“ → „Speichere …“ als Sprung sehen – darum hier die Messung von Hand.)
+  await page.evaluate(() => scrollTo(0, 0));
+  const frames = await page.evaluate(
+    () =>
+      new Promise(resolve => {
+        const find = () => [...document.querySelectorAll('#app button.pri')].find(b => /Hochladen|Speichere/.test(b.textContent)),
+          tops = [],
+          t0 = performance.now();
+        find().click();
+        const loop = () => {
+          const b = find();
+          if (b) tops.push(Math.round(b.getBoundingClientRect().top * 10) / 10);
+          if (performance.now() - t0 < 2500) requestAnimationFrame(loop);
+          else resolve(tops);
+        };
+        requestAnimationFrame(loop);
+      })
+  );
+  const steps = frames.slice(1).map((v, i) => Math.abs(v - frames[i]));
+  report(Math.max(...steps) <= 12 && Math.abs(frames[frames.length - 1] - frames[0]) > 20, 'Upload Auftragsarten: Hinweise schieben den Inhalt weich nach unten', `${frames[0]} → ${frames[frames.length - 1]} px, größter Schritt ${Math.max(...steps).toFixed(0)} px`);
+  await pause(page, 500);
+  const info = await page.evaluate(() => [...document.querySelectorAll('#app .msg')].map(n => n.textContent).join(' | '));
+  report(/4 Reparaturen/.test(info) && /2 Entstörungen/.test(info) && /1 Dauerauftrag/.test(info) && /5 Meldungen/.test(info), 'Upload Auftragsarten: Meldung nennt die Anzahl je Auftragsart', info.slice(0, 220));
+  report(/1 Auftrag anderer Auftragsarten übergangen \(1× 3NAV\)/.test(info), 'Upload Auftragsarten: fremde Auftragsart (3NAV) wird übergangen und gemeldet');
+  await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 15000 }); // der Hinweis verschwindet nach 8 s von selbst
+  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === 'Übersicht').click());
+  await pause(page, 1200);
+  const after = await kindBar();
+  report(before.Wartungen > 0 && after.Wartungen === before.Wartungen, 'Upload Auftragsarten: Wartungsaufträge bleiben unversehrt', `${before.Wartungen} → ${after.Wartungen}`);
+  report(after.Reparaturen === 4 && after.Entstörungen === 2 && after.Daueraufträge === 1, 'Upload Auftragsarten: Dispo-Übersicht zählt je Auftragsart', JSON.stringify(after));
+  report(after.Meldungen === 3, 'Upload Auftragsarten: Meldungen ohne Auftrag gezählt (alle Teams)', String(after.Meldungen));
+  // Dispo: Umschalter der Auftragsart – Leiste bleibt stehen
+  await probe(page, 'Dispo Übersicht: Auftragsart Reparaturen', btn('/Reparaturen/'), { ms: 900, reflow: true });
+  const reps = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.textContent.replace(/\s+/g, ' ').slice(0, 90)));
+  report(reps.some(t => /65900001.*Vorgang 0010.*FW-IH01/.test(t)) && reps.some(t => /65900001.*Vorgang 0020.*FW-IH02/.test(t)), 'Dispo Übersicht: jeder Vorgang einer Reparatur ist ein eigener Auftrag (mit seinem Team)');
+  await probe(page, 'Dispo Übersicht: Auftragsart Meldungen', btn('/Meldungen/'), { ms: 900, reflow: true });
+  const mels = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].length);
+  report(mels === 3, 'Dispo Übersicht: Liste Meldungen zeigt die Meldungen ohne Auftrag', String(mels));
+  await probe(page, 'Dispo Übersicht: Meldungen „Mit Auftrag“', btn('/^Mit Auftrag/'), { at: 330 });
+  await probe(page, 'Dispo Übersicht: Auftragsart Wartungen', btn('/Wartungen/'), { ms: 900, reflow: true });
+  await page.context().close();
+}
+// Monteur: Startseite mit der Auswahl der Auftragsart, die Listen (Termin & Uhrzeit), Detail ohne Prüfobjekte, Meldungen
+async function kindChecks(browser, base, viewport, errors) {
+  const label = `${viewport.width}px`,
+    page = await newPage(browser, base, viewport, errors);
+  console.log(`\n=== Auftragsarten: Monteur (${label}) ===`);
+  await loginMonteur(page, null);
+  const tiles = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#app button.kind')].map(b => [b.querySelector('.kn').textContent, b.textContent.replace(b.querySelector('.kn').textContent, '').replace(/\s+/g, ' ').trim()])));
+  const t0 = await tiles();
+  report(Object.keys(t0).join() === 'Wartungen,Reparaturen,Entstörungen,Daueraufträge,Meldungen', `${label} Startseite: Auswahl der Auftragsart`, Object.keys(t0).join(', '));
+  report(/3 offen · 3 gesamt/.test(t0.Reparaturen) && /2 offen · 2 gesamt/.test(t0.Entstörungen) && /📅 1 heute/.test(t0.Entstörungen) && /1 offen · 1 gesamt/.test(t0.Daueraufträge) && /2 ohne Auftrag/.test(t0.Meldungen) && /offen · \d+ gesamt/.test(t0.Wartungen), `${label} Startseite: Zahlen je Auftragsart (nur das eigene Team)`, JSON.stringify(t0).slice(0, 300));
+  // Startseite: Hinweis schließen/öffnen lässt nichts springen
+  const hasBanner = await page.evaluate(() => [...document.querySelectorAll('#app button')].some(b => b.textContent.trim() === '✕'));
+  if (hasBanner) await probe(page, `${label} Startseite: Hinweis mit ✕ schließen`, btn('/^✕$/'), { scroll: 0, ms: 800, tapTol: 400, smooth: '#app .gasl' });
+  // Reparaturen: nach Termin und Uhrzeit (ab heute aufsteigend, dann das Vergangene)
+  await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900 });
+  const order = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k));
+  const o1 = await order();
+  report(o1.join() === 'o65900002-0010,o65900001-0010,o65900008-0010', `${label} Reparaturen: Termin & Uhrzeit (zuerst die nächsten, dann Vergangenes)`, o1.join(', '));
+  const trm = await page.evaluate(() => (document.querySelector('#app [data-k="o65900002-0010"] .trm') || {}).textContent);
+  report(/13:30 Uhr/.test(trm || ''), `${label} Reparaturen: Karte zeigt Datum und Uhrzeit`, trm);
+  const sortBtns = await page.evaluate(() => [...document.querySelectorAll('#app .chips.ab button')].map(b => b.textContent.trim()).join(','));
+  report(sortBtns === 'Termin & Uhrzeit,Auftragsnummer,Entfernung', `${label} Reparaturen: Sortierung`, sortBtns);
+  await probe(page, `${label} Reparaturen: Sortierung Auftragsnummer`, btn('/^Auftragsnummer$/'), { at: 300 });
+  const o2 = await order();
+  report(o2[0] === 'o65900001-0010', `${label} Reparaturen: nach Auftragsnummer`, o2.join(', '));
+  await probe(page, `${label} Reparaturen: Sortierung Termin & Uhrzeit`, btn('/^Termin & Uhrzeit$/'), { at: 300 });
+  // Umschalter: Entstörungen
+  await probe(page, `${label} Umschalter: Entstörungen`, btn('/Entstörungen/'), { reflow: true, ms: 900 });
+  const o3 = await order();
+  report(o3.join() === 'o65900003,o65900004', `${label} Entstörungen: heute zuerst, dann gestern`, o3.join(', '));
+  const ent = await page.evaluate(() => ({ a: document.querySelector('#app [data-k="o65900003"]').textContent.replace(/\s+/g, ' '), b: document.querySelector('#app [data-k="o65900004"] .trm').textContent }));
+  report(/Heute/.test(ent.a) && /08:30–10:15 Uhr/.test(ent.a) && /📋/.test(ent.a) && /bis .* 05:30 Uhr/.test(ent.b), `${label} Entstörungen: Heute-Etikett, Uhrzeit von–bis, Meldung; Nachtschicht über Mitternacht`, ent.a.slice(0, 120) + ' | ' + ent.b);
+  // Entstörung öffnen: keine Prüfobjekte, dafür die Meldung; Zeit ist mit dem Termin vorbelegt
+  await probe(page, `${label} Entstörung öffnen`, `() => document.querySelector('#app [data-k="o65900003"]')`, { reflow: true, ms: 900 });
+  const det = await page.evaluate(() => ({ items: document.querySelectorAll('#app .it').length, text: document.querySelector('#app').textContent.replace(/\s+/g, ' ') }));
+  report(/Dampf aus dem Schacht/.test(det.text) && /1290000001/.test(det.text) && !/Prüfobjekte/.test(det.text.replace(/Prüfobjekte bewerten/, '')), `${label} Entstörung: Detail zeigt die Meldung, keine Prüfobjekte`, det.text.slice(0, 160));
+  const A = 330;
+  await probe(page, `${label} Entstörung: Zeit von Hand eintragen öffnen`, btn('/Zeit von Hand/'), { at: A, ms: 800 });
+  const form = await page.evaluate(() => [...document.querySelectorAll('#app .d-time input')].map(i => i.type + '=' + i.value));
+  const todayIso = new Date().toLocaleDateString('sv-SE');
+  report(form.includes('date=' + todayIso) && form.some(f => /=08:30$/.test(f)), `${label} Entstörung: Datum und Beginn mit dem Termin vorbelegt`, form.join(' '));
+  await probe(page, `${label} Entstörung: Schnellwahl 1 Std`, btn('/^1 Std$/'), { at: A });
+  await probe(page, `${label} Entstörung: Zeit speichern`, btn('/Zeit speichern/'), { at: A, ms: 1200 });
+  await pause(page, 800);
+  const done = await page.evaluate(() => /Erledigt/.test(document.querySelector('#app [data-k="oc"]').textContent));
+  report(done, `${label} Entstörung: mit Zeit ist sie erledigt (ohne Prüfobjekte)`);
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
+  await pause(page, 700);
+  const openLeft = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
+  report(openLeft === 'o65900004', `${label} Entstörungen: erledigte verschwindet aus „Offen“`, openLeft || JSON.stringify(await page.evaluate(() => ({ kind: viewKind, state: history.state, open: !!openOrder, text: document.querySelector('#app').textContent.slice(0, 200) }))));
+  // Dauerauftrag, Meldungen
+  await probe(page, `${label} Umschalter: Daueraufträge`, btn('/Daueraufträge/'), { reflow: true, ms: 900 });
+  const dau = await order();
+  report(dau.join() === 'o65900005', `${label} Daueraufträge: Liste`, dau.join(', '));
+  await probe(page, `${label} Umschalter: Meldungen`, btn('/Meldungen/'), { reflow: true, ms: 900 });
+  const mel = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
+  report(mel === 'm1290000003,m1290000005', `${label} Meldungen: nur die des Teams ohne Auftrag, neueste zuerst`, mel);
+  await page.click('#app input[type=search]');
+  await page.keyboard.type('Graffiti');
+  await pause(page, 600);
+  const found = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
+  report(found === 'm1290000005', `${label} Meldungen: Suche`, found);
+  await page.fill('#app input[type=search]', '');
+  await pause(page, 500);
+  // zurück zur Startseite (Knopf), erneut öffnen, Zurück-Taste des Geräts
+  await probe(page, `${label} Meldungen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900 });
+  const t1 = await tiles();
+  report(/1 offen · 2 gesamt/.test(t1.Entstörungen) && !/heute/.test(t1.Entstörungen), `${label} Startseite: erledigte Entstörung zählt nicht mehr als offen`, t1.Entstörungen);
+  await probe(page, `${label} Startseite: Entstörungen öffnen`, `() => document.querySelector('#app [data-k="kd-ent"]')`, { reflow: true, ms: 900 });
+  await page.goBack();
+  await pause(page, 700);
+  const back = await page.evaluate(() => document.querySelectorAll('#app button.kind').length);
+  report(back === 5, `${label} Zurück-Taste des Geräts: von der Liste zur Startseite`, String(back));
+  await page.context().close();
+}
+
+// breiter Bildschirm: Startseite, Liste und Auftrag einer Reparatur (zweispaltig) ohne Sprünge und ohne Überlauf
+async function kindChecksWide(browser, base, viewport, errors) {
+  const label = `${viewport.width}px`,
+    page = await newPage(browser, base, viewport, errors);
+  console.log(`\n=== Auftragsarten: Monteur (${label}) ===`);
+  await loginMonteur(page, null);
+  await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900 });
+  await probe(page, `${label} Umschalter: Entstörungen`, btn('/Entstörungen/'), { reflow: true, ms: 900 });
+  await probe(page, `${label} Umschalter: Meldungen`, btn('/Meldungen/'), { reflow: true, ms: 900 });
+  await probe(page, `${label} Umschalter: Reparaturen`, btn('/Reparaturen/'), { reflow: true, ms: 900 });
+  await probe(page, `${label} Reparatur öffnen`, `() => document.querySelector('#app [data-list] > [data-k]')`, { reflow: true, ms: 900 });
+  const wide = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  report(!wide, `${label} Reparatur: Seite nicht breiter als der Bildschirm`);
+  await page.context().close();
+}
+
 async function dispoChecks(browser, base, viewport, errors) {
   const label = `${viewport.width}px`,
     page = await newPage(browser, base, viewport, errors);
@@ -922,6 +1137,25 @@ async function overflowChecks(browser, base, errors) {
   await openOrderWithItems(page);
   w = await wide();
   report(!w.length, 'Auftragsansicht ragt nicht über den Rand', w.join(', '));
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
+  await pause(page, 500);
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Auftragsarten/.test(b.textContent)).click());
+  await pause(page, 600);
+  w = await wide();
+  report(!w.length, 'Startseite (Auftragsarten) ragt nicht über den Rand', w.join(', '));
+  for (const k of ['Reparaturen', 'Entstörungen', 'Meldungen']) {
+    await chooseKind(page, k);
+    w = await wide();
+    report(!w.length, `Liste ${k} ragt nicht über den Rand`, w.join(', '));
+    if (k !== 'Meldungen') {
+      await page.evaluate(() => document.querySelector('#app [data-list] > [data-k]').click());
+      await pause(page, 600);
+      w = await wide();
+      report(!w.length, `Auftrag aus ${k} ragt nicht über den Rand`, w.join(', '));
+      await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
+      await pause(page, 500);
+    }
+  }
   await page.context().close();
 }
 
@@ -939,8 +1173,17 @@ async function overflowChecks(browser, base, errors) {
       await deviceChecks(browser, base, errors);
       return;
     }
+    if (process.env.TEST_ONLY === 'auftragsarten') {
+      await kindUploadChecks(browser, base, errors);
+      await kindChecks(browser, base, { width: 390, height: 844 }, errors);
+      await kindChecksWide(browser, base, { width: 1280, height: 800 }, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return;
+    }
     const found = await waitForCoordinates(base);
     console.log(`Adressen mit Koordinaten: ${found} (Mini-Geocoder: ${geocoder.requests()} Anfragen)`);
+    await kindUploadChecks(browser, base, errors);
+    await kindChecks(browser, base, { width: 390, height: 844 }, errors);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);
     await poorAccuracyChecks(browser, base, errors);
@@ -951,6 +1194,7 @@ async function overflowChecks(browser, base, errors) {
     await overflowChecks(browser, base, errors);
     // Desktop (breit): dieselben Grundabläufe
     await monteurChecks(browser, base, { width: 1280, height: 800 }, errors);
+    await kindChecksWide(browser, base, { width: 1280, height: 800 }, errors);
     report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
   } finally {
     await browser.close();

@@ -9,7 +9,10 @@
  *   · Push-Nachrichten des Disponenten an Monteur-Geräte (Web Push, VAPID, ohne Fremdbibliothek)
  *
  * TABELLEN
- *   orders    Aufträge (del = 1: gelöscht/verschoben, bleibt als Markierung, damit Geräte es erfahren)
+ *   orders    Aufträge (del = 1: gelöscht/verschoben, bleibt als Markierung, damit Geräte es erfahren). kind = Auftragsart der App:
+ *             war Wartung (3NAW/FWS) · dau Dauerauftrag (3NAW/FWD) · rep Reparatur (3NAR) · ent Entstörung (3NAE). Bei Reparaturen ist
+ *             jeder Vorgang ein eigener Eintrag: auftrag = „Nummer-Vorgang“ (z. B. 65046778-0010), nr = die echte Auftragsnummer
+ *   meldung   Meldungen (Schäden): mit Auftrag (auftrag = echte Auftragsnummer) oder noch ohne (auftrag = '')
  *   pruef     Prüfobjekt-Liste je Auftrag (JSON)       ergebnis  Bewertung/Zeit je Auftrag (JSON, Format siehe index.html)
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
  *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
@@ -103,6 +106,11 @@ CREATE TABLE IF NOT EXISTS orders(auftrag TEXT PRIMARY KEY, team TEXT NOT NULL, 
   del INTEGER NOT NULL DEFAULT 0, ts INTEGER, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS orders_seq ON orders(seq);
 CREATE INDEX IF NOT EXISTS orders_team ON orders(team, del);
+-- Meldungen (Schäden): nr = Meldungsnummer, dat = Angelegt am (wie im Auftrag als Text), txt = Beschreibung, code = Codierung (Schaden, Gebrechen …),
+-- auftrag = verknüpfter Auftrag (leer = noch ohne Auftrag), team = verantwortlicher Arbeitsplatz
+CREATE TABLE IF NOT EXISTS meldung(nr TEXT PRIMARY KEY, dat TEXT, txt TEXT, str TEXT, plz TEXT, auftrag TEXT, code TEXT, tp TEXT, stat TEXT, team TEXT, grp TEXT,
+  del INTEGER NOT NULL DEFAULT 0, ts INTEGER, seq INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS meldung_seq ON meldung(seq);
 CREATE TABLE IF NOT EXISTS pruef(auftrag TEXT PRIMARY KEY, items TEXT NOT NULL, seq INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS pruef_seq ON pruef(seq);
 CREATE TABLE IF NOT EXISTS ergebnis(auftrag TEXT PRIMARY KEY, team TEXT, doc TEXT NOT NULL, seq INTEGER NOT NULL);
@@ -137,6 +145,12 @@ const addColumn = (table, column, type) => {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 };
 // Benutzer, der etwas getan hat: dev.usr = angemeldeter Benutzer des Geräts, die übrigen = wer bestätigt/bewertet hat
+// Auftragsarten: bisherige Aufträge sind Wartungsaufträge. nr = echte Auftragsnummer (bei Reparaturen hat `auftrag` noch den Vorgang
+// angehängt), vg/vtxt = Vorgang und dessen Kurztext, lart = Leistungsart, uhr/uhr2 = Uhrzeit von/bis, arb = geplante Arbeit (Stunden),
+// mel = Meldungsnummer laut Aufträge-Excel
+for (const [column, type] of [['kind', 'TEXT'], ['nr', 'TEXT'], ['vg', 'TEXT'], ['vtxt', 'TEXT'], ['lart', 'TEXT'], ['uhr', 'TEXT'], ['uhr2', 'TEXT'], ['arb', 'TEXT'], ['mel', 'TEXT']])
+  addColumn('orders', column, type);
+db.exec("UPDATE orders SET kind='war' WHERE kind IS NULL; UPDATE orders SET nr=auftrag WHERE nr IS NULL; CREATE INDEX IF NOT EXISTS orders_nr ON orders(nr)");
 addColumn('dev', 'usr', 'TEXT');
 addColumn('gas', 'usr', 'TEXT');
 addColumn('mack', 'usr', 'TEXT');
@@ -174,6 +188,32 @@ const sql = {
   setMeta: db.prepare('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v'),
   delMeta: db.prepare('DELETE FROM meta WHERE k=?'),
   teamCounts: db.prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team'),
+  // Meldungen: Monteure bekommen die ihres Teams (ohne Auftrag) und die zu Aufträgen ihres Teams
+  meldungFullTeam: db.prepare(
+    'SELECT * FROM meldung WHERE del=0 AND (team=?1 OR auftrag IN (SELECT nr FROM orders WHERE team=?1 AND del=0 AND nr<>\'\'))'
+  ),
+  // mine = 0: gelöscht oder nicht mehr (zu) diesem Team – das Gerät soll sie vergessen
+  meldungSinceTeam: db.prepare(
+    'SELECT *, (del=0 AND (team=?2 OR auftrag IN (SELECT nr FROM orders WHERE team=?2 AND del=0 AND nr<>\'\'))) AS mine FROM meldung WHERE seq>?1'
+  ),
+  meldungSince: db.prepare('SELECT * FROM meldung WHERE seq>?'),
+  meldungSinceLive: db.prepare('SELECT * FROM meldung WHERE seq>? AND del=0'),
+  upMeldung: db.prepare(`INSERT INTO meldung(nr,dat,txt,str,plz,auftrag,code,tp,stat,team,grp,del,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,0,?)
+    ON CONFLICT(nr) DO UPDATE SET dat=excluded.dat,txt=excluded.txt,str=excluded.str,plz=excluded.plz,auftrag=excluded.auftrag,code=excluded.code,tp=excluded.tp,
+      stat=excluded.stat,team=excluded.team,grp=excluded.grp,del=0,seq=excluded.seq
+    WHERE meldung.del=1 OR meldung.dat IS NOT excluded.dat OR meldung.txt IS NOT excluded.txt OR meldung.str IS NOT excluded.str OR meldung.plz IS NOT excluded.plz
+       OR meldung.auftrag IS NOT excluded.auftrag OR meldung.code IS NOT excluded.code OR meldung.tp IS NOT excluded.tp OR meldung.stat IS NOT excluded.stat
+       OR meldung.team IS NOT excluded.team OR meldung.grp IS NOT excluded.grp`),
+  // Meldungen der Teams in der Datei, die dort fehlen, als gelöscht markieren
+  tombMeldungTeam: db.prepare(
+    'UPDATE meldung SET del=1, ts=?, seq=? WHERE team=? AND del=0 AND nr NOT IN (SELECT value FROM json_each(?))'
+  ),
+  tombMeldungAll: db.prepare('UPDATE meldung SET del=1, ts=?, seq=? WHERE del=0'),
+  // Meldungen zu Aufträgen, die sich gerade geändert haben (neuer Auftrag, anderes Team): neue Nummer, damit die Geräte sie mitholen
+  touchMeldungOfOrders: db.prepare(
+    'UPDATE meldung SET seq=? WHERE del=0 AND auftrag<>\'\' AND auftrag IN (SELECT nr FROM orders WHERE seq=?)'
+  ),
+  meldungMax: db.prepare('SELECT MAX(seq) m FROM meldung'),
   ordersFullTeam: db.prepare('SELECT * FROM orders WHERE del=0 AND team=?'),
   ergebnisTeam: db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>? AND team=?'),
   ergebnisAll: db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>?'),
@@ -201,7 +241,7 @@ const sql = {
   ordersOfIds: db.prepare('SELECT auftrag,team FROM orders WHERE auftrag IN (SELECT value FROM json_each(?))'),
   pruefOne: db.prepare('SELECT items FROM pruef WHERE auftrag=?'),
   maxSeq: db.prepare(
-    'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas)'
+    'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM meldung UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas)'
   ),
   upMark: db.prepare(
     'INSERT INTO dmark(auftrag,v,at,seq) VALUES(?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET v=excluded.v, at=excluded.at, seq=excluded.seq'
@@ -209,15 +249,25 @@ const sql = {
   upErg: db.prepare(
     'INSERT INTO ergebnis(auftrag,team,doc,seq,usr) VALUES(?,?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET team=excluded.team, doc=excluded.doc, seq=excluded.seq, usr=excluded.usr'
   ),
+  // je Team UND Auftragsart: eine Datei nur mit Reparaturen lässt die Wartungsaufträge des Teams in Ruhe
   tombTeam: db.prepare(
-    'UPDATE orders SET del=1, ts=?, seq=? WHERE team=? AND del=0 AND auftrag NOT IN (SELECT value FROM json_each(?))'
+    'UPDATE orders SET del=1, ts=?, seq=? WHERE team=? AND kind=? AND del=0 AND auftrag NOT IN (SELECT value FROM json_each(?))'
+  ),
+  // gleiche Auftragsnummer, anderer Schlüssel (z. B. ein Reparaturauftrag, der bisher ohne Vorgänge geladen war): der alte Eintrag fällt weg
+  tombSameNr: db.prepare(
+    'UPDATE orders SET del=1, ts=?, seq=? WHERE del=0 AND nr IN (SELECT value FROM json_each(?)) AND auftrag NOT IN (SELECT value FROM json_each(?))'
   ),
   tombAll: db.prepare('UPDATE orders SET del=1, ts=?, seq=? WHERE del=0'),
   upOrder:
-    db.prepare(`INSERT INTO orders(auftrag,team,tp,art,plz,str,kurz,start,ende,del,seq) VALUES(?,?,?,?,?,?,?,?,?,0,?)
-    ON CONFLICT(auftrag) DO UPDATE SET team=excluded.team,tp=excluded.tp,art=excluded.art,plz=excluded.plz,str=excluded.str,kurz=excluded.kurz,start=excluded.start,ende=excluded.ende,del=0,seq=excluded.seq
+    db.prepare(`INSERT INTO orders(auftrag,team,tp,art,plz,str,kurz,start,ende,kind,nr,vg,vtxt,lart,uhr,uhr2,arb,mel,del,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+    ON CONFLICT(auftrag) DO UPDATE SET team=excluded.team,tp=excluded.tp,art=excluded.art,plz=excluded.plz,str=excluded.str,kurz=excluded.kurz,start=excluded.start,
+      ende=COALESCE(NULLIF(excluded.ende,''),orders.ende),kind=excluded.kind,nr=excluded.nr,vg=excluded.vg,vtxt=excluded.vtxt,lart=excluded.lart,uhr=excluded.uhr,uhr2=excluded.uhr2,
+      arb=excluded.arb,mel=excluded.mel,del=0,seq=excluded.seq
     WHERE orders.del=1 OR orders.team IS NOT excluded.team OR orders.tp IS NOT excluded.tp OR orders.art IS NOT excluded.art OR orders.plz IS NOT excluded.plz
-       OR orders.str IS NOT excluded.str OR orders.kurz IS NOT excluded.kurz OR orders.start IS NOT excluded.start OR orders.ende IS NOT excluded.ende`),
+       OR orders.str IS NOT excluded.str OR orders.kurz IS NOT excluded.kurz OR orders.start IS NOT excluded.start
+       OR orders.ende IS NOT COALESCE(NULLIF(excluded.ende,''),orders.ende) OR orders.kind IS NOT excluded.kind OR orders.nr IS NOT excluded.nr
+       OR orders.vg IS NOT excluded.vg OR orders.vtxt IS NOT excluded.vtxt OR orders.lart IS NOT excluded.lart OR orders.uhr IS NOT excluded.uhr
+       OR orders.uhr2 IS NOT excluded.uhr2 OR orders.arb IS NOT excluded.arb OR orders.mel IS NOT excluded.mel`),
   upPruef: db.prepare(
     'INSERT INTO pruef(auftrag,items,seq) VALUES(?,?,?) ON CONFLICT(auftrag) DO UPDATE SET items=excluded.items, seq=excluded.seq WHERE pruef.items IS NOT excluded.items'
   ),
@@ -868,7 +918,22 @@ const orderFields = r => ({
   str: r.str,
   kurz: r.kurz,
   start: r.start,
-  ende: r.ende
+  ende: r.ende,
+  kind: r.kind || 'war',
+  nr: r.nr || r.auftrag,
+  ...(r.vg ? { vg: r.vg, vtxt: r.vtxt } : r.vtxt ? { vtxt: r.vtxt } : {}),
+  ...(r.lart ? { lart: r.lart } : {}),
+  ...(r.uhr ? { uhr: r.uhr } : {}),
+  ...(r.uhr2 ? { uhr2: r.uhr2 } : {}),
+  ...(r.arb ? { arb: r.arb } : {}),
+  ...(r.mel ? { mel: r.mel } : {})
+});
+// nur die bekannten Felder einer Meldung an die Geräte schicken (leere Felder weglassen)
+const meldungFields = r => ({
+  nr: r.nr,
+  ...Object.fromEntries(
+    ['dat', 'txt', 'str', 'plz', 'auftrag', 'code', 'tp', 'stat', 'team', 'grp'].filter(k => r[k]).map(k => [k, r[k]])
+  )
 });
 
 // ---------- Koordinaten der Adressen (Entfernungs-Sortierung der Monteure) ----------
@@ -1261,6 +1326,13 @@ async function handleApi(req, res, url) {
       }
       const rows = team ? sql.ergebnisTeam.all(from, team) : sql.ergebnisAll.all(from);
       out.ergebnis = rows.map(r => ({ a: r.auftrag, doc: JSON.parse(r.doc), sq: r.seq }));
+      // Meldungen (Schäden): Monteur die seines Teams und die zu seinen Aufträgen, Disponent alle; gelöschte nur bei einem Teil-Abgleich
+      const meldungRows = team
+        ? full
+          ? sql.meldungFullTeam.all(team)
+          : sql.meldungSinceTeam.all(from, team)
+        : (full ? sql.meldungSinceLive : sql.meldungSince).all(from);
+      out.meldungen = meldungRows.map(r => (r.del || r.mine === 0 ? { nr: r.nr, del: 1 } : meldungFields(r)));
       const lim = Date.now() - MESSAGE_HOURS * 3600e3;
       if (team)
         out.msgs = sql.msgsTeam
@@ -1360,7 +1432,7 @@ async function handleApi(req, res, url) {
   }
   // Monteur: Ergebnis eines Auftrags speichern – PUT /api/ergebnis/<Auftragsnummer>
   let match;
-  if ((match = pathname.match(/^\/api\/ergebnis\/(\d{1,20})$/)) && method === 'PUT') {
+  if ((match = pathname.match(/^\/api\/ergebnis\/(\d{1,20}(?:-\d{1,4})?)$/)) && method === 'PUT') {
     // _b = Stand (Änderungsnummer), auf dem die Eingabe beruht. Hat inzwischen ein anderes Gerät gespeichert, gewinnt der Server:
     // die Eingabe wird abgelehnt (409) und das Gerät bekommt den aktuellen Stand zurück. Ohne _b (alte App-Version): wie bisher.
     const user = userFromRequest(req);
@@ -1784,7 +1856,7 @@ async function handleApi(req, res, url) {
     // Aufträge abhaken / Haken entfernen
     const body = await readBody(req, 2e6),
       ids = [
-        ...new Set((Array.isArray(body.ids) ? body.ids : []).map(String).filter(a => /^\d{1,20}$/.test(a)))
+        ...new Set((Array.isArray(body.ids) ? body.ids : []).map(String).filter(a => /^\d{1,20}(-\d{1,4})?$/.test(a)))
       ].slice(0, 20000);
     if (!ids.length) return sendJson(req, res, 400, { error: 'Keine Aufträge angegeben' });
     const now = Date.now(),
@@ -1806,24 +1878,34 @@ async function handleApi(req, res, url) {
     );
     return sendJson(req, res, 200, { ok: true, sq, at: now });
   }
-  // Aufträge hochladen: ersetzt je enthaltenem Team alle Aufträge, die in der Datei fehlen (keep = nur ergänzen); fehlende werden als gelöscht markiert
+  // Aufträge hochladen: ersetzt je enthaltenem Team UND je enthaltener Auftragsart alle Aufträge, die in der Datei fehlen (keep = nur
+  // ergänzen); fehlende werden als gelöscht markiert. Dazu optional Meldungen (ersetzen je enthaltenem Team die Meldungen, die fehlen).
   if (pathname === '/api/orders' && method === 'POST') {
     const body = await readBody(req),
-      rows = (Array.isArray(body.rows) ? body.rows : []).filter(
-        r => r && String(r.auftrag || '').replace(/\D/g, '') && r.team
+      KINDS = ['war', 'dau', 'rep', 'ent'],
+      // Schlüssel: Auftragsnummer, bei Reparaturen „Nummer-Vorgang“
+      keyOf = r => String(r.auftrag || '').replace(/[^\d-]/g, '').replace(/^-+|-+$/g, ''),
+      rows = (Array.isArray(body.rows) ? body.rows : []).filter(r => r && /^\d{1,20}(-\d{1,4})?$/.test(keyOf(r)) && r.team),
+      meldungen = (Array.isArray(body.meldungen) ? body.meldungen : []).filter(
+        m => m && /^\d{1,20}$/.test(String(m.nr || '').replace(/\D/g, ''))
       );
     transaction(() => {
       changeSeq++;
       const now = Date.now(),
-        byTeam = new Map();
+        byGroup = new Map(),
+        kindOf = r => (KINDS.includes(r.kind) ? r.kind : 'war');
       for (const r of rows) {
-        const t = clipString(r.team, 100);
-        (byTeam.get(t) || byTeam.set(t, []).get(t)).push(String(r.auftrag).replace(/\D/g, ''));
+        const g = clipString(r.team, 100) + '\u0000' + kindOf(r);
+        (byGroup.get(g) || byGroup.set(g, []).get(g)).push(keyOf(r));
       }
-      if (!body.keep) for (const [t, ids] of byTeam) sql.tombTeam.run(now, changeSeq, t, JSON.stringify(ids)); // nur Aufträge entfernen, die in der neuen Datei fehlen
+      if (!body.keep)
+        for (const [g, ids] of byGroup) {
+          const [t, kind] = g.split('\u0000');
+          sql.tombTeam.run(now, changeSeq, t, kind, JSON.stringify(ids)); // nur Aufträge entfernen, die in der neuen Datei fehlen
+        }
       for (const r of rows)
         sql.upOrder.run(
-          String(r.auftrag).replace(/\D/g, ''),
+          keyOf(r),
           clipString(r.team, 100),
           clipString(r.tp, 60),
           clipString(r.art, 30),
@@ -1832,9 +1914,62 @@ async function handleApi(req, res, url) {
           clipString(r.kurz),
           clipString(r.start, 20),
           clipString(r.ende, 20),
+          kindOf(r),
+          clipString(String(r.nr || keyOf(r)).replace(/\D/g, ''), 20),
+          clipString(r.vg, 8),
+          clipString(r.vtxt, 200),
+          clipString(r.lart, 10),
+          clipString(r.uhr, 5),
+          clipString(r.uhr2, 5),
+          clipString(r.arb, 10),
+          clipString(String(r.mel || '').replace(/\D/g, ''), 20),
           changeSeq
         );
-      setMeta('upload', { at: now, files: clipString(body.files), count: rows.length });
+      // dieselbe Auftragsnummer unter anderem Schlüssel (z. B. vorher ohne Vorgänge geladen): der alte Eintrag ist überholt
+      if (rows.length)
+        sql.tombSameNr.run(
+          now,
+          changeSeq,
+          JSON.stringify([...new Set(rows.map(r => String(r.nr || keyOf(r)).replace(/\D/g, '')))]),
+          JSON.stringify(rows.map(keyOf))
+        );
+      if (meldungen.length) {
+        const teams = new Map();
+        for (const m of meldungen) {
+          const t = clipString(m.team, 100),
+            nr = String(m.nr).replace(/\D/g, '');
+          (teams.get(t) || teams.set(t, []).get(t)).push(nr);
+        }
+        if (!body.keep) for (const [t, ids] of teams) sql.tombMeldungTeam.run(now, changeSeq, t, JSON.stringify(ids));
+        for (const m of meldungen)
+          sql.upMeldung.run(
+            String(m.nr).replace(/\D/g, ''),
+            clipString(m.dat, 20),
+            clipString(m.txt, 300),
+            clipString(m.str, 100),
+            clipString(m.plz, 10),
+            clipString(String(m.auftrag || '').replace(/\D/g, ''), 20),
+            clipString(m.code, 60),
+            clipString(m.tp, 60),
+            clipString(m.stat, 40),
+            clipString(m.team, 100),
+            clipString(m.grp, 60),
+            changeSeq
+          );
+      }
+      // Geräte, die einen Auftrag neu bekommen, brauchen auch dessen Meldungen
+      sql.touchMeldungOfOrders.run(changeSeq, changeSeq);
+      const upload = getMeta('upload') || {},
+        counts = { war: 0, dau: 0, rep: 0, ent: 0 };
+      for (const r of rows) counts[kindOf(r)]++;
+      setMeta('upload', {
+        at: now,
+        files: clipString(body.files),
+        count: rows.length || upload.count || 0,
+        kinds: rows.length ? counts : upload.kinds,
+        meldungen: meldungen.length || upload.meldungen || 0,
+        ignored: body.ignored && typeof body.ignored === 'object' ? Object.fromEntries(Object.entries(body.ignored).slice(0, 20).map(([k, v]) => [clipString(k, 10), +v | 0])) : undefined
+      });
       catalogVer++;
     });
     announce(changeSeq);
@@ -1845,6 +1980,7 @@ async function handleApi(req, res, url) {
     transaction(() => {
       changeSeq++;
       sql.tombAll.run(Date.now(), changeSeq);
+      sql.tombMeldungAll.run(Date.now(), changeSeq);
       setMeta('upload', null);
       catalogVer++;
     });

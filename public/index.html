@@ -950,6 +950,61 @@
         grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
         gap: 10px;
       }
+      /* ---- Auftragsarten: Startseite des Monteurs (.kind), Umschalter in den Listen (.ksw), Termin mit Uhrzeit (.trm), Meldungen ---- */
+      .kh {
+        margin: 4px 0 10px;
+      }
+      button.big.kind {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 0;
+        min-height: 5.25rem;
+        position: relative;
+      }
+      .kind .ki {
+        font-size: 2rem;
+        line-height: 1;
+        flex: 0 0 auto;
+      }
+      .kind .kb {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+        flex: 1;
+      }
+      .kind .kn {
+        font-weight: 600;
+      }
+      .kind .mu {
+        font-size: 0.875rem;
+      }
+      .kind .mu.sm {
+        font-size: 0.8125rem;
+      }
+      .kind > .tag {
+        flex: 0 0 auto;
+        align-self: flex-start;
+      }
+      .ksw {
+        margin-bottom: 10px;
+      }
+      .trm {
+        font-weight: 600;
+        margin-top: 4px;
+        color: var(--tx);
+      }
+      .mel1 {
+        margin-top: 2px;
+      }
+      .mld .kt {
+        margin-top: 4px;
+      }
+      .ukinds {
+        margin: 0 0 8px;
+        padding-left: 1.2rem;
+      }
       .ugrid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
@@ -1777,9 +1832,10 @@
        * Aufträge nach Team – Oberfläche (eine Datei, ohne Framework und ohne Build-Schritt)
        *
        * ROLLEN
-       *   Monteur   bestätigt täglich vor der Arbeit das Gaswarngerät (Fenster, siehe showGasCheck), wählt sein Team, sieht
-       *             dessen Aufträge, bewertet die Prüfobjekte (OK / Nicht OK mit Text) und meldet die Zeit zurück. Ein Auftrag gilt als „erledigt“, wenn alle Prüfobjekte bewertet sind UND
-       *             die Zeit vollständig ist (Datum + Beginn + Dauer).
+       *   Monteur   bestätigt täglich vor der Arbeit das Gaswarngerät (Fenster, siehe showGasCheck), wählt sein Team und dann auf der
+       *             Startseite die Auftragsart (Wartung, Reparatur, Entstörung, Dauerauftrag, Meldungen), sieht dort die Aufträge des
+       *             Teams, bewertet bei Wartungen die Prüfobjekte (OK / Nicht OK mit Text) und meldet die Zeit zurück. Ein Auftrag gilt als
+       *             „erledigt“, wenn alle Prüfobjekte bewertet sind (nur Wartung) UND die Zeit vollständig ist (Datum + Beginn + Dauer).
        *   Disponent PIN-geschützt: Übersicht (Filter, Excel-Export, Abhaken), Fortschritt aller Teams (+ Nachricht ans
        *             Team), Upload (eigener PIN), Vergleich (Aufträge-Excel gegen Export) und Geräte (wer ist wo
        *             angemeldet, Spitznamen, Geräte ausloggen, Standort der Monteur-Geräte).
@@ -1796,7 +1852,11 @@
        *   (DOM-Aufbau über el()) und hält dabei Scroll-Position und Fokus fest.
        *
        * DATENFORMATE
-       *   Auftrag        { auftrag, team, tp (Techn. Platz), art, plz, str, kurz, start, ende }
+       *   Auftrag        { auftrag, team, tp (Techn. Platz), art, plz, str, kurz, start, ende, kind, nr, vg?, vtxt?, lart?, uhr?, uhr2?, arb?, mel? }
+       *                  kind = Auftragsart der App: war Wartung (3NAW/FWS) · rep Reparatur (3NAR) · ent Entstörung (3NAE) · dau Dauerauftrag
+       *                  (3NAW/FWD). `auftrag` ist der Schlüssel (Reparatur: „Nummer-Vorgang“, weil jeder Vorgang ein eigener Auftrag ist),
+       *                  nr die echte Auftragsnummer, vg/vtxt Vorgang und dessen Text, uhr/uhr2 Uhrzeit von/bis (HH:MM), mel Meldungsnummer
+       *   Meldung        { nr, dat, txt, str, plz, auftrag (leer = noch ohne Auftrag), code, tp, stat, team, grp }
        *   Prüfobjekte    Liste von Kurztexten je Auftrag (aus dem Prüflos-Excel)
        *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von?, u?, tu? } je Auftrag (u = SAP-User, der zuletzt gespeichert hat,
        *                  tu = SAP-User, der die Zeit zurückgemeldet hat – beide setzt der Server,
@@ -1903,6 +1963,13 @@
         sendState = new Map(),
         // dispoTab: Tab der Disponentenansicht: 'ue' Übersicht, 'st' Fortschritt, 'up' Upload, 'vg' Vergleich
         dispoTab = 'ue',
+        // viewKind: gewählte Auftragsart (siehe KINDS). Monteur: '' = Startseite mit der Auswahl; Disponent: Auftragsart der Übersicht
+        viewKind = '',
+        // meldungen: Meldungsnummer -> Meldung (Schäden) · meldungenByOrder: Auftragsnummer -> Meldungen dazu ·
+        // melFilter: Liste „Meldungen“ des Disponenten: 'frei' ohne Auftrag (Standard) | 'mit' mit Auftrag | '' alle
+        meldungen = new Map(),
+        meldungenByOrder = new Map(),
+        melFilter = 'frei',
         // statusFilter: Statusfilter der Dispo-Übersicht: '' alle | 'nok' | 'done' | 'teil' | 'offen'
         statusFilter = '',
         // armAllOk: false oder Zeitstempel des ersten Klicks auf „Alles OK“ (zweiter Klick bestätigt, siehe drawOrderDetail)
@@ -1918,9 +1985,9 @@
         pinInput = '',
         pinError = false,
         // dispoFiltersOpen: Filter der Dispo-Übersicht am Handy aufgeklappt · listSort: Sortierung der Listen
-        // ('nr' Nummer | 'nah' Entfernung (Monteur) | 'rueck' Rückmeldung (Disponent))
+        // ('nr' Nummer | 'zeit' Termin & Uhrzeit (Reparatur, Entstörung) | 'nah' Entfernung (Monteur) | 'rueck' Rückmeldung (Disponent))
         dispoFiltersOpen = false,
-        listSort = 'nr',
+        listSort = '', // '' = Standard der Auftragsart (Reparatur/Entstörung: 'zeit', sonst 'nr')
         // timeFormOpen: Eingabefelder (Datum, Beginn, Dauer) der Zeitkarte aufgeklappt ·
         // timeFlash: Zeit wurde gerade gespeichert (Karte blinkt kurz auf)
         timeFormOpen = false,
@@ -2273,29 +2340,40 @@
         infoMsg = 'Lese Datei …';
         render();
         try {
-          const rows = new Map();
-          let skip = 0;
-          for (const f of files) {
-            const buf = await f.arrayBuffer();
-            const r = await runExcelWorker({ type: 'orders', buf }, [buf]);
-            skip += r.skip;
-            for (const o of r.rows) rows.set(o.auftrag, o);
-          }
-          if (!rows.size)
+          // Alle Dateien gemeinsam: Aufträge-, Vorgänge- und Meldungen-Excel werden an ihren Spalten erkannt und zusammengeführt
+          const bufs = [];
+          for (const f of files) bufs.push(await f.arrayBuffer());
+          const r = await runExcelWorker({ type: 'orders', bufs }, bufs);
+          if (!r.rows.length && !r.meldungen.length)
             throw new Error(
-              'Keine Aufträge mit Verantw. Arb. Pl. gefunden (Spalten Auftrag + Verantw.ArbPl. nötig)'
+              'Keine Aufträge oder Meldungen gefunden (Aufträge: Spalten Auftrag + Verantw.ArbPl., Vorgänge: Auftrag + Vorgang, Meldungen: Meldung + Beschreibung)'
             );
           infoMsg = 'Speichere …';
           render();
           await api(
             'POST',
             '/api/orders',
-            { rows: [...rows.values()], keep, files: files.map(f => f.name).join(', ') },
+            { rows: r.rows, meldungen: r.meldungen, keep, ignored: r.ignored, files: files.map(f => f.name).join(', ') },
             120000
           );
           await poll();
+          const counts = {};
+          for (const o of r.rows) counts[o.kind] = (counts[o.kind] || 0) + 1;
+          const ignoredTotal = Object.values(r.ignored).reduce((a, n) => a + n, 0);
           infoMsg =
-            `${rows.size} Aufträge gespeichert` + (skip ? ` · ${skip} Zeilen ohne Team übersprungen` : '');
+            [
+              ...KINDS.filter(x => counts[x.k]).map(x => kindCount(x.k, counts[x.k])),
+              r.meldungen.length && kindCount('mel', r.meldungen.length)
+            ]
+              .filter(Boolean)
+              .join(' · ') +
+            ' gespeichert' +
+            (r.skip ? ` · ${r.skip} Zeilen ohne Team übersprungen` : '') +
+            (ignoredTotal
+              ? ` · ${ignoredTotal === 1 ? '1 Auftrag' : ignoredTotal + ' Aufträge'} anderer Auftragsarten übergangen (${Object.entries(r.ignored)
+                  .map(([art, n]) => `${n}× ${art}`)
+                  .join(', ')})`
+              : '');
         } catch (e) {
           infoMsg = '';
           errorMsg = errorMessageOf(e);
@@ -2459,7 +2537,13 @@
               'Nicht OK – Prüfobjekt → Text',
               'Hinweis',
               'Abgehakt am',
-              'Zuletzt gespeichert von'
+              'Zuletzt gespeichert von',
+              'Auftragsart (App)',
+              'Vorgang',
+              'Vorgang Kurztext',
+              'Uhrzeit von',
+              'Uhrzeit bis',
+              'Meldung(en)'
             ]
           ];
           const checklistRows = [
@@ -2481,7 +2565,7 @@
               stale = !!(status.s && count > 0 && !valid),
               total = count || status.n;
             orderRows.push([
-              order.auftrag,
+              orderNr(order),
               order.team,
               order.tp,
               order.art,
@@ -2517,13 +2601,19 @@
                 ? new Date(marks.get(order.auftrag).at).toLocaleString('de-AT') +
                   (markState(order.auftrag) === 2 ? ' (danach geändert)' : '')
                 : null,
-              status.u ? userLabel(status.u) : null
+              status.u ? userLabel(status.u) : null,
+              kindInfo(orderKind(order)).name,
+              order.vg || '',
+              order.vtxt || '',
+              order.uhr || '',
+              order.uhr2 || '',
+              meldungenOf(order).map(m => `${m.nr}: ${m.txt}`).join(' | ') || order.mel || ''
             ]);
             items.forEach((t, i) => {
               const itemMark = valid ? status.s[i] : '-',
                 z = valid ? status.nok.find(z => z.i === i) : null;
               checklistRows.push([
-                order.auftrag,
+                orderNr(order),
                 order.team,
                 order.kurz,
                 i + 1,
@@ -2541,7 +2631,7 @@
             tc: orderRows[0].indexOf('Beginn (Uhrzeit)')
           });
           const fileName =
-            'Pruefergebnisse' +
+            (viewKind === 'war' || !viewKind ? 'Pruefergebnisse' : 'Auftraege_' + kindInfo(viewKind).plural) +
             (teamFilter ? '_' + teamFilter.replace(/[^A-Za-z0-9_-]/g, '_') : '') +
             (statusFilter ? '_' + statusFilter : '') +
             (reportedRange()
@@ -2588,6 +2678,12 @@
           existingResult && existingResult.min != null && existingResult.von
             ? roundQuarterHHMM(existingResult.von)
             : '';
+        // Reparatur/Entstörung ohne Zeit: Datum und Beginn des Termins vorbelegen (nicht in der Zukunft)
+        if (isTimedKind(orderKind(order)) && !(existingResult && existingResult.min != null)) {
+          const planned = isoOfDate(order.start);
+          if (planned && planned <= today()) timeDate = planned;
+          if (order.uhr && /^\d{2}:\d{2}$/.test(order.uhr)) timeStart = roundQuarterHHMM(order.uhr);
+        }
         timeWith = existingResult && existingResult.min != null && existingResult.mit ? [...existingResult.mit] : [];
         // neue Zeit: alle aus dem Team sind vorausgewählt (sobald die Kollegenliste da ist), solange der Monteur nichts ändert
         timeWithAuto = session.role === 'monteur' && !(existingResult && existingResult.min != null);
@@ -2596,6 +2692,12 @@
         if (session.role === 'monteur') loadColleagues(order.team);
         timeFormAtOpen = timeFormSnapshot();
         render();
+        // nur Wartungen haben Prüfobjekte
+        if (orderKind(order) !== 'war') {
+          checklist = { st: 'ok', list: [] };
+          render();
+          return;
+        }
         try {
           let items = checklistsByOrder.get(order.auftrag);
           if (!items) {
@@ -2632,17 +2734,18 @@
         const result = resultOf(order.auftrag);
         if (!result) return STATUS_NONE;
         let status = statusCache.get(result);
-        if (!status) statusCache.set(result, (status = computeOrderStatus(result)));
+        if (!status) statusCache.set(result, (status = computeOrderStatus(result, orderKind(order) !== 'war')));
         return status;
       };
-      const computeOrderStatus = result => {
+      // withoutList: Auftragsart ohne Prüfobjekte (Reparatur, Entstörung, Dauerauftrag) – erledigt ist sie mit vollständiger Zeit
+      const computeOrderStatus = (result, withoutList) => {
         const openCount = Math.max(0, (result.n | 0) - (result.ok | 0) - (result.nx | 0));
         return {
           ...result,
           op: openCount,
           nok: (result.nok || []).map(z => (typeof z === 'string' ? { t: z, m: '' } : z)),
           st:
-            result.n > 0 && !openCount && timeComplete(result)
+            (result.n > 0 || withoutList) && !openCount && timeComplete(result)
               ? 'done'
               : result.ok + result.nx > 0 || result.min != null
                 ? 'teil'
@@ -3646,6 +3749,8 @@
         devices = {};
         gasRows = new Map();
         gasReady = false;
+        meldungen = new Map();
+        rebuildMeldungen();
         rebuildOrdersByTeam();
         const cached = await idb.get('st:' + key);
         if (cached) {
@@ -3660,7 +3765,10 @@
           checklistMeta = cached.pmeta || null;
           // Zwischenspeicher aus einer Version ohne Gaswarngerät (oder, beim Monteur, ohne Haken des Disponenten): komplett neu
           // laden, damit die Bestätigungen bzw. die gesperrten (abgehakten) Aufträge kommen
-          syncSeq = cached.gas && (cached.mk || key === 'dispo') ? cached.since || 0 : 0;
+          // (ebenso aus einer Version ohne Auftragsarten und Meldungen: `kv`)
+          syncSeq = cached.gas && cached.kv && (cached.mk || key === 'dispo') ? cached.since || 0 : 0;
+          for (const m of cached.mel || []) meldungen.set(m.nr, m);
+          rebuildMeldungen();
           for (const g of cached.gas || []) gasRows.set(g.d + '|' + g.t, g);
           messages = cached.msgs || [];
           devices = cached.devs || {};
@@ -3684,6 +3792,8 @@
             pmeta: checklistMeta,
             marks: Object.fromEntries(marks),
             mk: 1, // Haken sind enthalten (auch beim Monteur)
+            kv: 1, // Auftragsarten und Meldungen sind enthalten
+            mel: [...meldungen.values()],
             msgs: messages,
             devs: devices,
             pcfg: pushConfig,
@@ -3771,7 +3881,13 @@
               resultSeq = new Map();
               marks = new Map();
               gasRows = new Map();
+              meldungen = new Map();
             }
+            for (const m of response.meldungen || []) {
+              if (m.del) meldungen.delete(m.nr);
+              else meldungen.set(m.nr, m);
+            }
+            if (response.full || (response.meldungen && response.meldungen.length)) rebuildMeldungen();
             for (const g of response.gas || []) mergeGas(g);
             for (const x of response.marks || [])
               if (x.sq > ((marks.get(x.a) || {}).sq || 0)) marks.set(x.a, { v: x.v, at: x.at, sq: x.sq });
@@ -3817,6 +3933,7 @@
                 response.full ||
                 sig !== lastSyncSig ||
                 (response.orders && response.orders.length) ||
+                (response.meldungen && response.meldungen.length) ||
                 (response.ergebnis && response.ergebnis.length) ||
                 (response.gas && response.gas.length) ||
                 (response.marks && response.marks.length);
@@ -4010,6 +4127,37 @@
       };
       // [[Team, Anzahl]] sortiert
       const teamCounts = () => teamList.map(([t, n]) => [t, n]).sort((a, b) => naturalCompare(a[0], b[0]));
+      // ---- Auftragsarten ----
+      // Jeder Auftrag hat eine Auftragsart der App (kind): war Wartung (3NAW, Leistungsart FWS), rep Reparatur (3NAR – jeder Vorgang ist ein
+      // eigener Auftrag), ent Entstörung (3NAE), dau Dauerauftrag (3NAW, Leistungsart FWD). Dazu gibt es „mel“: Meldungen (Schäden), die noch
+      // keinem Auftrag zugeordnet sind – das sind keine Aufträge, sondern nur eine Liste. Ältere Aufträge ohne kind sind Wartungen.
+      // timed: Termin und Uhrzeit sind wichtig (Anzeige, Sortierung, Vorbelegung der Zeit)
+      const KINDS = [
+        { k: 'war', name: 'Wartung', plural: 'Wartungen', icon: '🔧', note: 'Prüfobjekte bewerten, Zeit melden' },
+        { k: 'rep', name: 'Reparatur', plural: 'Reparaturen', icon: '🛠️', note: 'Vorgänge mit Termin und Uhrzeit', timed: true },
+        { k: 'ent', name: 'Entstörung', plural: 'Entstörungen', icon: '🚨', note: 'mit Termin und Uhrzeit', timed: true },
+        { k: 'dau', name: 'Dauerauftrag', plural: 'Daueraufträge', icon: '♻️', note: 'laufende Arbeiten' },
+        { k: 'mel', name: 'Meldung', plural: 'Meldungen', icon: '📋', note: 'gemeldete Schäden ohne Auftrag' }
+      ];
+      const kindInfo = k => KINDS.find(x => x.k === k) || KINDS[0];
+      // „1 Reparatur“ / „4 Reparaturen“
+      const kindCount = (k, n) => `${n} ${n === 1 ? kindInfo(k).name : kindInfo(k).plural}`;
+      const orderKind = order => order.kind || 'war';
+      const isTimedKind = k => !!kindInfo(k).timed;
+      // echte Auftragsnummer (bei Reparaturen ist `auftrag` „Nummer-Vorgang“)
+      const orderNr = order => order.nr || order.auftrag;
+      // Aufträge einer Auftragsart (Meldungen sind keine Aufträge)
+      const ordersOfKind = (rows, k) => rows.filter(r => orderKind(r) === k);
+      // ---- Meldungen (Schäden) ----
+      function rebuildMeldungen() {
+        meldungenByOrder = new Map();
+        for (const m of meldungen.values())
+          if (m.auftrag) (meldungenByOrder.get(m.auftrag) || meldungenByOrder.set(m.auftrag, []).get(m.auftrag)).push(m);
+      }
+      // Meldungen zu einem Auftrag (nach Nummer)
+      const meldungenOf = order => meldungenByOrder.get(orderNr(order)) || [];
+      // Meldungen ohne Auftrag (team = nur die dieses Teams)
+      const freeMeldungen = team => [...meldungen.values()].filter(m => !m.auftrag && (!team || m.team === team));
       // ---- Abhaken (Disponent) ----
       // 0 = nicht abgehakt, 1 = abgehakt, 2 = abgehakt, aber das Ergebnis wurde danach noch geändert
       const markState = orderNo => {
@@ -4152,11 +4300,38 @@
         return m ? `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : '';
       };
       const dateDe = t => (isoOfDate(t) ? formatIsoDate(isoOfDate(t)) : String(t || ''));
+      // Wochentag („Mi“) zu einem Datum JJJJ-MM-TT
+      const weekdayShort = iso => new Date(iso + 'T12:00:00').toLocaleDateString('de-AT', { weekday: 'short' }).replace('.', '');
+      /**
+       * Termin einer Reparatur/Entstörung mit Uhrzeit: „Mi 07.01.2026 · 04:00–06:30 Uhr“ (über Mitternacht: „… 13:00 Uhr bis 08.01.2026,
+       * 05:55 Uhr“). Fehlt die Uhrzeit, steht nur das Datum; fehlt das Datum, ein leerer Text.
+       */
+      const termText = order => {
+        const from = isoOfDate(order.start),
+          to = isoOfDate(order.ende);
+        if (!from) return '';
+        const day = weekdayShort(from) + ' ' + dateDe(order.start);
+        if (to && to !== from)
+          return `${day}${order.uhr ? ' · ' + order.uhr + ' Uhr' : ''} bis ${weekdayShort(to)} ${dateDe(order.ende)}${order.uhr2 ? ', ' + order.uhr2 + ' Uhr' : ''}`;
+        return day + (order.uhr ? ' · ' + order.uhr + (order.uhr2 && order.uhr2 > order.uhr ? '–' + order.uhr2 : '') + ' Uhr' : '');
+      };
+      // Etikett „Heute“ / „Morgen“ für noch nicht erledigte Reparaturen und Entstörungen (Termin = Beginndatum)
+      const termTag = order => {
+        if (!isTimedKind(orderKind(order)) || isFinished(order)) return null;
+        const from = isoOfDate(order.start);
+        if (!from) return null;
+        const days = Math.round((new Date(from + 'T12:00:00') - new Date(today() + 'T12:00:00')) / 864e5);
+        return days === 0
+          ? el('span', { class: 'tag st-zf' }, '📅 Heute')
+          : days === 1
+            ? el('span', { class: 'tag st-zf' }, '📅 Morgen')
+            : null;
+      };
       // Fälligkeit nach dem Endtermin (nur für nicht erledigte Aufträge): überfällig | heute | in höchstens 3 Tagen, sonst null.
       // Die Aufträge gelten für das ganze Jahr: „überfällig“ gibt es deshalb nur, wenn der Endtermin im Vorjahr (oder früher) liegt.
       const dueInfo = order => {
         const end = isoOfDate(order.ende);
-        if (!end || isFinished(order)) return null;
+        if (!end || orderKind(order) !== 'war' || isFinished(order)) return null;
         const now = today(),
           days = Math.round((new Date(end + 'T12:00:00') - new Date(now + 'T12:00:00')) / 864e5);
         if (days < 0) return end.slice(0, 4) < now.slice(0, 4) ? { kind: 'over', days: -days } : null;
@@ -4173,8 +4348,22 @@
       // Sortierung der Listen: Auftragsnummer (alle), Entfernung (Monteur: nächste zuerst, ohne Adresse zuletzt) oder Rückmeldung
       // (Disponent: zuletzt zurückgemeldete zuerst, ohne Rückmeldung zuletzt). Gespeichert ist die letzte Wahl; gilt sie in der
       // aktuellen Rolle nicht, wird nach Nummer sortiert (sortMode).
+      // Reparaturen und Entstörungen sind zeitlich wichtig: Standard ist hier „zeit“ (heute und später aufsteigend, dann das Vergangene mit
+      // dem Neuesten zuerst); wer „Auftragsnummer“ antippt, bekommt die Nummer.
       const sortMode = () =>
-        session.role === 'dispo' ? (listSort === 'rueck' ? 'rueck' : 'nr') : listSort === 'nah' ? 'nah' : 'nr';
+        session.role === 'dispo'
+          ? listSort === 'rueck'
+            ? 'rueck'
+            : isTimedKind(viewKind) && listSort !== 'nr'
+              ? 'zeit'
+              : 'nr'
+          : listSort === 'nah'
+            ? 'nah'
+            : isTimedKind(viewKind) && listSort !== 'nr'
+              ? 'zeit'
+              : 'nr';
+      // Sortierschlüssel nach Termin: Datum + Uhrzeit (ohne Uhrzeit vor der ersten Uhrzeit des Tages)
+      const termKey = r => (isoOfDate(r.start) || '') + ' ' + (r.uhr || '00:00');
       const sortRows = rows => {
         const byNr = (a, b) => naturalCompare(a.auftrag, b.auftrag),
           mode = sortMode(),
@@ -4186,6 +4375,17 @@
         if (mode === 'nah' && geoPos) {
           const far = new Map(rows.map(r => [r.auftrag, distanceKm(r) ?? Infinity]));
           return rows.sort((a, b) => far.get(a.auftrag) - far.get(b.auftrag) || byNr(a, b)); // Infinity − Infinity = NaN -> Nummer
+        }
+        if (mode === 'zeit') {
+          const now = today() + ' 00:00',
+            upcoming = r => isoOfDate(r.start) && termKey(r) >= now;
+          return rows.sort((a, b) => {
+            // ohne Datum ans Ende; ab heute aufsteigend; davor (Vergangenes) absteigend
+            if (!isoOfDate(a.start) || !isoOfDate(b.start)) return !isoOfDate(a.start) - !isoOfDate(b.start) || byNr(a, b);
+            if (upcoming(a) !== upcoming(b)) return upcoming(a) ? -1 : 1;
+            const c = termKey(a).localeCompare(termKey(b));
+            return (upcoming(a) ? c : -c) || byNr(a, b);
+          });
         }
         return rows.sort(mode === 'rueck' ? (a, b) => reported(b) - reported(a) || byNr(a, b) : byNr);
       };
@@ -4390,6 +4590,7 @@
           { class: 'chips ab' },
           el('span', { class: 'mu' }, 'Sortierung:'),
           [
+            ...(isTimedKind(viewKind) ? [['zeit', 'Termin & Uhrzeit']] : []),
             ['nr', 'Auftragsnummer'],
             session.role === 'dispo' ? ['rueck', 'Rückmeldung (neueste zuerst)'] : ['nah', 'Entfernung']
           ].map(([k, l]) =>
@@ -4400,7 +4601,7 @@
                 onclick: () => {
                   listSort = k;
                   try {
-                    localStorage.setItem('lsort', k);
+                    if (k !== 'zeit') localStorage.setItem('lsort', k); // „Termin & Uhrzeit“ ist der Standard der Reparaturen/Entstörungen, nicht merken
                   } catch (e) {}
                   if (k === 'nah') locateMe(); // auch beim erneuten Antippen: Standort neu bestimmen
                   else render();
@@ -4412,12 +4613,23 @@
         );
       try {
         const saved = localStorage.getItem('lsort');
-        if (saved === 'rueck' || saved === 'nah') listSort = saved; // (früher gab es auch „termin“: wird wie „nr“ behandelt)
+        if (saved === 'rueck' || saved === 'nah' || saved === 'nr') listSort = saved; // (früher gab es auch „termin“: wird wie „nr“ behandelt)
       } catch (e) {}
       // Suche: Text kommt in Auftrag, Kurztext, Straße, PLZ oder Technischem Platz vor
       const matchesSearch = r => {
         const t = searchText.trim().toLowerCase();
-        return !t || [r.auftrag, r.kurz, r.str, r.plz, r.tp].join(' ').toLowerCase().includes(t);
+        return (
+          !t ||
+          [orderNr(r), r.vg, r.vtxt, r.kurz, r.str, r.plz, r.tp, r.mel, ...meldungenOf(r).map(m => m.nr + ' ' + m.txt)]
+            .join(' ')
+            .toLowerCase()
+            .includes(t)
+        );
+      };
+      // Suche in einer Meldung (Nummer, Beschreibung, Adresse, Technischer Platz, Auftrag)
+      const matchesSearchMeldung = m => {
+        const t = searchText.trim().toLowerCase();
+        return !t || [m.nr, m.txt, m.str, m.plz, m.tp, m.code, m.auftrag].join(' ').toLowerCase().includes(t);
       };
       // Arbeitszeit eines Ergebnisses als Text: „06.10.2026, 08:00–08:40 Uhr“ (Ende = Beginn + Dauer; über Mitternacht „+1 Tag“)
       const workSpanText = r => {
@@ -4435,7 +4647,13 @@
        */
       const orderCard = (order, showTeam, clickable = true) => {
         const isDispo = session.role === 'dispo',
-          result = resultOf(order.auftrag);
+          result = resultOf(order.auftrag),
+          kind = orderKind(order),
+          timed = isTimedKind(kind),
+          melds = meldungenOf(order),
+          // Reparatur: der Vorgang ist der Auftrag – sein Text ist der Titel, der Kurztext des Auftrags darunter
+          title = kind === 'rep' && order.vtxt ? order.vtxt : order.kurz,
+          subtitle = kind === 'rep' ? (order.vtxt && order.kurz !== order.vtxt ? order.kurz : '') : order.vtxt;
         return el(
           'div',
           {
@@ -4458,16 +4676,27 @@
           el(
             'div',
             { class: 'row' },
-            el('b', {}, order.auftrag),
+            el('b', {}, orderNr(order)),
+            order.vg && el('span', { class: 'tag' }, 'Vorgang ' + order.vg),
             showTeam && el('span', { class: 'tag' }, order.team),
             order.art && el('span', { class: 'tag' }, order.art),
             statusTags(order),
             timeTag(order),
+            termTag(order),
             dueTag(order),
+            melds.length > 0 && el('span', { class: 'tag st-teil' }, melds.length === 1 ? '📋 Meldung' : `📋 ${melds.length} Meldungen`),
             isLocked(order.auftrag) && el('span', { class: 'tag' }, '🔒 Abgehakt'),
-            clickable && el('span', { class: 'chev' }, 'Prüfobjekte ›')
+            clickable && el('span', { class: 'chev' }, kind === 'war' ? 'Prüfobjekte ›' : 'Details ›')
           ),
-          el('div', { class: 'kt' }, order.kurz || '–'),
+          // Termin mit Uhrzeit gleich unter der Nummer (Reparatur, Entstörung): wann es ausgeführt wird, ist das Wichtigste
+          timed && termText(order) && el('div', { class: 'trm' }, '🕒 ' + termText(order)),
+          el('div', { class: 'kt' }, title || '–'),
+          subtitle && el('div', { class: 'mu' }, subtitle),
+          // Meldung (Schaden) zum Auftrag: erste Beschreibung direkt auf der Karte; ohne Meldungsdatei zumindest die Nummer
+          melds.length > 0 &&
+            (melds[0].txt !== title || melds.length > 1) &&
+            el('div', { class: 'mu mel1' }, '📋 ' + melds[0].txt + (melds.length > 1 ? ` (+${melds.length - 1})` : '')),
+          !melds.length && order.mel && el('div', { class: 'mu mel1' }, '📋 Meldung ' + order.mel),
           (order.str || order.plz) &&
             el(
               'div',
@@ -4477,7 +4706,8 @@
               clickable && sortMode() === 'nah' && distanceText(order) && ' · 📍 ' + distanceText(order)
             ),
           order.tp && el('div', { class: 'mu' }, 'Techn. Platz: ' + order.tp),
-          (order.start || order.ende) &&
+          !timed &&
+            (order.start || order.ende) &&
             el('div', { class: 'mu' }, 'Termin: ' + [dateDe(order.start), dateDe(order.ende)].filter(Boolean).join(' – ')),
           isDispo &&
             result &&
@@ -4563,7 +4793,7 @@
        * Karte „Fortschritt“ für die Monteur-Teamliste: Prozent erledigt, Balken und das nötige Wochenpensum
        * (offene Aufträge / Arbeitswochen bis zur Frist). 100 % erscheint nur, wenn wirklich alles erledigt ist.
        */
-      function progressCard(total, done) {
+      function progressCard(total, done, withQuota = true) {
         const openCount = total - done,
           percentDone = done === total ? 100 : Math.min(99, Math.round((done / total) * 100)),
           deadlineDate = deadline(),
@@ -4601,6 +4831,8 @@
                 : `Alle ${total} Aufträge erledigt`
             )
           ),
+          // das Wochenpensum bis zur Frist (31.12.) gibt es nur für Wartungen
+          withQuota &&
           el(
             'div',
             { class: 'ps' + (openCount && !workingDays ? ' warn' : '') },
@@ -4625,7 +4857,7 @@
           total = Math.min(filtered.length, LIST_MAX);
         // Karten werden in Portionen gezeichnet (LIST_CHUNK), weitere kommen beim Scrollen dazu: so bleibt das Neuzeichnen auch bei
         // langen Listen schnell. Ändert sich Filter, Suche oder Ansicht, beginnt die Liste wieder mit der ersten Portion.
-        const sig = [teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab, sortMode(), sortMode() === 'nah' ? geoVer : ''].join('|');
+        const sig = [viewKind, teamFilter, statusFilter, markedFilter, reportedFilter, reportedFrom, reportedTo, monteurFilter, searchText, session.role, session.team, dispoTab, sortMode(), sortMode() === 'nah' ? geoVer : ''].join('|');
         if (sig !== listSig) {
           listSig = sig;
           listLimit = LIST_CHUNK;
@@ -4933,7 +5165,8 @@
       // Kennzahlen je Team: { team, n (Aufträge), done, teil (in Arbeit), nok (mit Nicht OK) }
       function teamStats() {
         const byTeam = new Map();
-        for (const r of allOrders()) {
+        // Fortschritt und Wochenpensum (Frist 31.12.) gelten für die Wartungen
+        for (const r of ordersOfKind(allOrders(), 'war')) {
           let stats = byTeam.get(r.team);
           if (!stats) byTeam.set(r.team, (stats = { team: r.team, n: 0, done: 0, teil: 0, nok: 0 }));
           const status = orderStatus(r);
@@ -6002,7 +6235,8 @@
         if (result && ((result.ok | 0) + (result.nx | 0) > 0 || result.min != null)) {
           // nur wenn schon etwas erfasst wurde (reines Ansehen -> kein Hinweis)
           const count = checklistItems ? checklistItems.length : result.n | 0,
-            valid = !checklistItems || !!(result.s && result.n === count && result.s.length === count);
+            // ohne Prüfobjekte (Reparatur, Entstörung, Dauerauftrag) gibt es nichts zu prüfen
+            valid = orderKind(order) !== 'war' || !checklistItems || !!(result.s && result.n === count && result.s.length === count);
           if (!valid) warnings.push(['Die Prüfliste wurde geändert – bitte neu prüfen', '.pcard .it']);
           else {
             const openCount = Math.max(0, count - (result.ok | 0) - (result.nx | 0));
@@ -6105,9 +6339,19 @@
       try {
         history.scrollRestoration = 'manual';
       } catch (e) {}
-      if (history.state && history.state.a) history.replaceState(null, '');
+      if (history.state && (history.state.a || history.state.k)) history.replaceState(null, '');
       addEventListener('popstate', () => {
-        if (!openOrder) return;
+        // Zurück-Taste in der Liste einer Auftragsart: zurück zur Startseite (Monteur). Steht der Verlauf noch auf der Liste (state.k),
+        // kommt das Ereignis vom Schließen eines Auftrags und die Liste bleibt.
+        if (!openOrder) {
+          if (viewKind && session.role === 'monteur' && !(history.state && history.state.k)) {
+            viewKind = '';
+            searchText = '';
+            render();
+            scrollTo(0, 0);
+          }
+          return;
+        }
         const i = leaveDialog.open ? null : unsavedWarnings();
         // Zurück-Taste/-Geste: erst nachfragen
         if (leaveDialog.open || i) {
@@ -6138,6 +6382,7 @@
         }
         searchText = '';
         teamFilter = '';
+        viewKind = role === 'dispo' ? 'war' : ''; // Monteur: Startseite mit der Auswahl der Auftragsart, Disponent: Wartung
         deviceTeamFilter = '';
         monteurFilter = 'open';
         reportedFilter = '';
@@ -6378,7 +6623,14 @@
           const n = anchorNode(key);
           if (n) {
             const d = n.getBoundingClientRect().top - top;
-            if (Math.abs(d) >= 1) scrollBy(0, d);
+            if (Math.abs(d) >= 1) {
+              // Ist die neue Seite zu kurz, um den Bereich an seiner Stelle zu halten (z. B. Umschalter der Auftragsart: eine kurze
+              // Liste ersetzt eine lange), reserviert sie unten den fehlenden Platz – sonst käme die Seite höher zu stehen und der
+              // Bereich unter dem Finger spränge nach unten. Das Neuzeichnen gibt den Platz wieder frei.
+              const lack = d - (document.documentElement.scrollHeight - innerHeight - scrollY);
+              if (lack > 0) app.style.paddingBottom = `calc(40px + ${Math.ceil(lack)}px)`;
+              scrollBy(0, d);
+            }
             break;
           }
         }
@@ -6895,6 +7147,45 @@
       // Detailansicht eines Auftrags: Auftragskarte, Zeitkarte und die Prüfobjekte. Monteur: OK / Nicht OK je Prüfobjekt
       // und „Alles OK“ (mit Rückfrage, Klicks in den ersten 250 ms nach dem ersten zählen nicht – Schutz vor Doppel-Tipp);
       // Disponent: nur Ansicht.
+      // Eine Meldung (Schaden) als Karte: Nummer, Datum, Art, Beschreibung, Adresse, Technischer Platz. showTeam: Team (Disponent)
+      const meldungCardEl = (m, showTeam = false) =>
+        el(
+          'div',
+          { class: 'card mld', 'data-k': 'm' + m.nr },
+          el(
+            'div',
+            { class: 'row' },
+            el('b', {}, 'Meldung ' + m.nr),
+            m.dat && el('span', { class: 'tag' }, dateDe(m.dat)),
+            m.code && el('span', { class: 'tag' }, m.code),
+            showTeam && m.team && el('span', { class: 'tag' }, m.team),
+            m.auftrag && showTeam && el('span', { class: 'tag st-teil' }, 'Auftrag ' + m.auftrag)
+          ),
+          el('div', { class: 'kt' }, m.txt || '–'),
+          (m.str || m.plz) && el('div', { class: 'mu' }, [m.plz, m.str].filter(Boolean).join(' ')),
+          m.tp && el('div', { class: 'mu' }, 'Techn. Platz: ' + m.tp),
+          m.stat && el('div', { class: 'mu' }, 'Status: ' + m.stat)
+        );
+      // Karte „Meldung(en)“ in der Auftrags-Detailansicht (Schaden genauer dokumentiert); ohne Meldung ein kurzer Hinweis
+      function meldungCard(order) {
+        const melds = meldungenOf(order),
+          card = el('div', { class: 'card d-check', 'data-k': 'pc' }, el('b', {}, melds.length > 1 ? `Meldungen (${melds.length})` : 'Meldung'));
+        if (!melds.length)
+          card.append(el('p', { class: 'mu' }, `Meldung ${order.mel} – die Beschreibung liegt (noch) nicht vor.`));
+        for (const m of melds)
+          card.append(
+            el(
+              'div',
+              { class: 'it' },
+              el('div', { class: 'row' }, el('b', {}, m.nr), m.dat && el('span', { class: 'tag' }, dateDe(m.dat)), m.code && el('span', { class: 'tag' }, m.code)),
+              el('div', { class: 'kt' }, m.txt || '–'),
+              (m.str || m.plz) && el('div', { class: 'mu' }, [m.plz, m.str].filter(Boolean).join(' ')),
+              m.tp && el('div', { class: 'mu' }, 'Techn. Platz: ' + m.tp),
+              m.stat && el('div', { class: 'mu' }, 'Status: ' + m.stat)
+            )
+          );
+        return card;
+      }
       function drawOrderDetail() {
         const order = openOrder,
           isMonteur = session.role === 'monteur';
@@ -6911,7 +7202,7 @@
           el(
             'div',
             { class: 'bar stk' },
-            el('h1', {}, 'Auftrag ' + order.auftrag),
+            el('h1', {}, 'Auftrag ' + orderNr(order) + (order.vg ? ' · Vorgang ' + order.vg : '')),
             el('button', { onclick: requestBack }, '← Zurück')
           ),
           ...(locked
@@ -6919,6 +7210,11 @@
             : []),
           detail
         );
+        // Reparatur, Entstörung, Dauerauftrag: keine Prüfobjekte – rechts stehen die Meldungen (Schadensbeschreibung) zum Auftrag
+        if (orderKind(order) !== 'war') {
+          if (meldungenOf(order).length || order.mel) detail.append(meldungCard(order));
+          return;
+        }
         const checklistCard = el(
           'div',
           { class: 'card pcard d-check', 'data-k': 'pc' },
@@ -7346,9 +7642,136 @@
           );
       }
 
-      // Monteur: Fortschritt, Filter (Standard „Offen“), Suche, Schriftgröße und die Auftragsliste des Teams
+      // Auftragsart öffnen / zurück zur Startseite (Monteur). Die Zurück-Taste des Geräts führt von der Liste zur Startseite.
+      const openKind = k => {
+        viewKind = k;
+        monteurFilter = 'open';
+        searchText = '';
+        if (!(history.state && (history.state.k || history.state.a))) history.pushState({ k: 1 }, '');
+        render();
+        scrollTo(0, 0);
+      };
+      const closeKind = () => {
+        viewKind = '';
+        searchText = '';
+        render();
+        scrollTo(0, 0);
+        if (history.state && history.state.k) history.back();
+      };
+      // offene / gesamte Aufträge je Auftragsart eines Teams (Meldungen: ohne Auftrag)
+      const kindCounts = teamRows => {
+        const out = {};
+        for (const { k } of KINDS) {
+          if (k === 'mel') {
+            const n = freeMeldungen(session.team).length;
+            out[k] = { n, open: n, today: 0 };
+            continue;
+          }
+          const list = ordersOfKind(teamRows, k),
+            open = list.filter(r => !isFinished(r));
+          out[k] = {
+            n: list.length,
+            open: open.length,
+            today: isTimedKind(k) ? open.filter(r => isoOfDate(r.start) === today()).length : 0
+          };
+        }
+        return out;
+      };
+      // Auswahl der Auftragsart oben in jeder Liste (Wechsel mit einem Tipp, ohne Umweg über die Startseite)
+      const kindSwitcher = counts =>
+        el(
+          'div',
+          { class: 'chips ksw', 'data-k': 'ks' },
+          KINDS.map(({ k, plural, icon }) =>
+            el(
+              'button',
+              {
+                class: 'chip' + (viewKind === k ? ' on' : ''),
+                onclick: () => {
+                  viewKind = k;
+                  monteurFilter = 'open';
+                  searchText = '';
+                  render();
+                }
+              },
+              `${icon} ${plural} (${counts[k].open})`
+            )
+          )
+        );
+      // Startseite des Monteurs: eine große Fläche je Auftragsart mit der Zahl offener Aufträge (Reparatur/Entstörung: auch „heute“)
+      function drawKindHome(counts) {
+        app.append(
+          el('p', { class: 'mu kh' }, 'Welche Aufträge möchtest du sehen?'),
+          el(
+            'div',
+            { class: 'tgrid kinds' },
+            KINDS.map(({ k, plural, icon, note }) => {
+              const c = counts[k];
+              return el(
+                'button',
+                { class: 'big kind', 'data-k': 'kd-' + k, onclick: () => openKind(k) },
+                el('span', { class: 'ki' }, icon),
+                el(
+                  'span',
+                  { class: 'kb' },
+                  el('span', { class: 'kn' }, plural),
+                  el(
+                    'span',
+                    { class: 'mu' },
+                    k === 'mel'
+                      ? c.n
+                        ? `${c.n} ohne Auftrag`
+                        : 'Keine offenen Meldungen'
+                      : c.n
+                        ? `${c.open} offen · ${c.n} gesamt`
+                        : 'Keine Aufträge'
+                  ),
+                  el('span', { class: 'mu sm' }, note)
+                ),
+                c.today > 0 && el('span', { class: 'tag st-zf' }, `📅 ${c.today} heute`)
+              );
+            })
+          )
+        );
+      }
+      // Meldungen ohne Auftrag (Schäden, noch nicht verknüpft): neueste zuerst. showTeam: Team auf der Karte (Disponent)
+      function meldungList(items, showTeam) {
+        const filtered = items
+            .filter(matchesSearchMeldung)
+            .sort((a, b) => (isoOfDate(b.dat) || '').localeCompare(isoOfDate(a.dat) || '') || naturalCompare(b.nr, a.nr)),
+          shown = filtered.slice(0, LIST_MAX),
+          container = el('div', {});
+        container.append(
+          el('p', { class: 'mu cnt' }, filtered.length === 1 ? '1 Meldung' : `${filtered.length} Meldungen`),
+          el('div', { class: 'grid', 'data-list': '1' }, shown.map(m => meldungCardEl(m, showTeam)))
+        );
+        if (filtered.length > LIST_MAX)
+          container.append(el('p', { class: 'mu' }, `Nur die ersten ${LIST_MAX} angezeigt – Suche nutzen.`));
+        return container;
+      }
+      // Monteur: Liste „Meldungen“ (Schäden des Teams, die noch keinem Auftrag zugeordnet sind)
+      function drawMeldungenView() {
+        const items = freeMeldungen(session.team),
+          container = el('div', {}),
+          searchRow = searchBox(v => {
+            searchText = v;
+            swapList(container, meldungList(items, false));
+          });
+        searchRow.append(fontScaleButtons());
+        app.append(
+          el('p', { class: 'mu' }, 'Gemeldete Schäden, für die es noch keinen Auftrag gibt.'),
+          el('div', { class: 'ctl' }, searchRow),
+          container
+        );
+        container.append(meldungList(items, false));
+        if (uploadMeta) app.append(el('p', { class: 'mu' }, 'Stand: ' + new Date(uploadMeta.at).toLocaleString('de-AT')));
+      }
+
+      // Monteur: Startseite mit der Auswahl der Auftragsart; danach Fortschritt, Filter (Standard „Offen“), Suche, Schriftgröße und die
+      // Auftragsliste des Teams in dieser Auftragsart
       function drawMonteurList(back) {
-        const rows = allOrders().filter(r => r.team === session.team);
+        const teamRows = allOrders().filter(r => r.team === session.team),
+          rows = ordersOfKind(teamRows, viewKind);
         app.append(
           el(
             'div',
@@ -7358,7 +7781,7 @@
               'div',
               { class: 'row' },
               !(userInfo && userInfo.lock) && el('button', { onclick: () => switchRole('monteur') }, 'Team wechseln'),
-              back
+              viewKind ? el('button', { onclick: closeKind }, '← Auftragsarten') : back
             )
           ),
           ...(userInfo
@@ -7378,6 +7801,31 @@
           app.append(skeletonPage());
           return;
         }
+        const counts = kindCounts(teamRows);
+        const banner = pushBanner();
+        if (banner) app.append(banner);
+        // Zeile steht immer da (auch ohne Bestätigung), damit die Liste nicht springt, wenn die Bestätigung eintrifft
+        const gasAt = gasConfirmedAt(session.team);
+        const gasLine = el(
+          'p',
+          { class: 'mu gasl' + (gasAt ? ' ok' : '') },
+          gasAt
+            ? `✓ Gaswarngerät heute um ${timeText(gasAt)} Uhr bestätigt`
+            : 'Gaswarngerät heute noch nicht bestätigt'
+        );
+        if (!viewKind) {
+          app.append(gasLine);
+          drawKindHome(counts);
+          if (uploadMeta)
+            app.append(el('p', { class: 'mu' }, 'Stand: ' + new Date(uploadMeta.at).toLocaleString('de-AT')));
+          return;
+        }
+        app.append(gasLine, kindSwitcher(counts));
+        if (viewKind === 'mel') {
+          drawMeldungenView();
+          return;
+        }
+        const withList = viewKind === 'war';
         const view = () =>
           rows.filter(
             r =>
@@ -7404,7 +7852,7 @@
               ['', 'Alle', rows.length],
               ['open', 'Offen', rows.length - doneCount],
               ['done', 'Erledigt', doneCount],
-              ['nok', 'Nicht OK', nokCount]
+              ...(withList ? [['nok', 'Nicht OK', nokCount]] : [])
             ],
             monteurFilter,
             k => {
@@ -7414,22 +7862,9 @@
           sortChips(),
           searchRow
         );
-        const banner = pushBanner();
-        if (banner) app.append(banner);
-        // Zeile steht immer da (auch ohne Bestätigung), damit die Liste nicht springt, wenn die Bestätigung eintrifft
-        const gasAt = gasConfirmedAt(session.team);
-        app.append(
-          el(
-            'p',
-            { class: 'mu gasl' + (gasAt ? ' ok' : '') },
-            gasAt
-              ? `✓ Gaswarngerät heute um ${timeText(gasAt)} Uhr bestätigt`
-              : 'Gaswarngerät heute noch nicht bestätigt'
-          )
-        );
         app.append(
           rows.length
-            ? el('div', { class: 'mtop' }, progressCard(rows.length, doneCount), controls)
+            ? el('div', { class: 'mtop' }, progressCard(rows.length, doneCount, withList), controls)
             : controls,
           container
         );
@@ -7479,7 +7914,9 @@
             el(
               'p',
               { class: 'mu' },
-              'Stand: ' + new Date(uploadMeta.at).toLocaleString('de-AT') + ' · aktualisiert sich automatisch'
+              'Fortschritt der Wartungen (Prüfobjekte, Frist 31.12.) · Stand: ' +
+                new Date(uploadMeta.at).toLocaleString('de-AT') +
+                ' · aktualisiert sich automatisch'
             )
           );
       }
@@ -7537,7 +7974,17 @@
             el(
               'p',
               { class: 'mu' },
-              'Spalte „Verantw.ArbPl." = Teamname. Standard: Aufträge der enthaltenen Teams werden durch die neue Datei ersetzt.'
+              'Aufträge, Vorgänge und Meldungen – eine oder mehrere Dateien auf einmal, jede wird an ihren Spalten erkannt. Spalte „Verantw.ArbPl." = Teamname. ' +
+                'Standard: Aufträge der enthaltenen Teams und Auftragsarten (und Meldungen der enthaltenen Teams) werden durch die neue Datei ersetzt.'
+            ),
+            el(
+              'ul',
+              { class: 'mu ukinds' },
+              el('li', {}, el('b', {}, 'Wartung'), ': 3NAW mit Leistungsart FWS'),
+              el('li', {}, el('b', {}, 'Dauerauftrag'), ': 3NAW mit Leistungsart FWD'),
+              el('li', {}, el('b', {}, 'Reparatur'), ': 3NAR – jeder Vorgang ist ein eigener Auftrag (Vorgänge-Excel)'),
+              el('li', {}, el('b', {}, 'Entstörung'), ': 3NAE (Termin und Uhrzeit aus dem Vorgang)'),
+              el('li', {}, el('b', {}, 'Meldungen'), ': Schäden – mit Auftrag beim Auftrag, sonst in der Liste „Meldungen“')
             ),
             canWrite
               ? el(
@@ -7548,7 +7995,7 @@
                     'label',
                     { class: 'ck' },
                     keepExisting,
-                    ' Nur ergänzen/aktualisieren (bestehende Aufträge behalten)'
+                    ' Nur ergänzen/aktualisieren (bestehende Aufträge und Meldungen behalten)'
                   ),
                   el(
                     'button',
@@ -7572,7 +8019,11 @@
               el(
                 'p',
                 { class: 'mu' },
-                `Letzter Upload: ${new Date(uploadMeta.at).toLocaleString('de-AT')} · ${uploadMeta.files} · ${uploadMeta.count} Aufträge`
+                `Letzter Upload: ${new Date(uploadMeta.at).toLocaleString('de-AT')} · ${uploadMeta.files} · ${uploadMeta.count} Aufträge` +
+                  (uploadMeta.kinds
+                    ? ' (' + KINDS.filter(x => uploadMeta.kinds[x.k]).map(x => kindCount(x.k, uploadMeta.kinds[x.k])).join(', ') + ')'
+                    : '') +
+                  (uploadMeta.meldungen ? ` · ${kindCount('mel', uploadMeta.meldungen)}` : '')
               )
           )
         );
@@ -7636,7 +8087,7 @@
         if (ordersByTeam.size && canWrite)
           app.append(
             armWipeOrders
-              ? el('button', { class: 'er', onclick: wipeOrders }, 'Wirklich ALLE Aufträge löschen?')
+              ? el('button', { class: 'er', onclick: wipeOrders }, 'Wirklich ALLE Aufträge und Meldungen löschen?')
               : el(
                   'button',
                   {
@@ -7646,26 +8097,106 @@
                       render();
                     }
                   },
-                  'Alle Aufträge löschen'
+                  'Alle Aufträge und Meldungen löschen'
                 )
           );
       }
 
       // Dispo-Tab „Übersicht“: Filter (Team, Rückgemeldet, Status, Abgehakte), Excel-Export, „Alle abhaken“, Suche und Kartenliste
+      // Auswahl der Auftragsart in der Übersicht des Disponenten (Wartung, Reparatur, Entstörung, Dauerauftrag, Meldungen)
+      function dispoKindBar() {
+        const all = allOrders();
+        return el(
+          'div',
+          { class: 'chips ksw', 'data-k': 'ks' },
+          KINDS.map(({ k, plural, icon }) =>
+            el(
+              'button',
+              {
+                class: 'chip' + (viewKind === k ? ' on' : ''),
+                onclick: () => {
+                  viewKind = k;
+                  statusFilter = '';
+                  armMarkAll = false;
+                  searchText = '';
+                  render();
+                }
+              },
+              `${icon} ${plural} (${k === 'mel' ? freeMeldungen('').length : ordersOfKind(all, k).length})`
+            )
+          )
+        );
+      }
+      // Dispo-Tab „Übersicht“, Auftragsart „Meldungen“: Schäden ohne Auftrag (oder mit), je Team filterbar
+      function drawDispoMeldungen() {
+        const all = [...meldungen.values()],
+          teams = [...new Set(all.map(m => m.team).filter(Boolean))].sort(naturalCompare),
+          withOrder = m => !!m.auftrag,
+          base = all.filter(m => !teamFilter || m.team === teamFilter),
+          counts = { frei: base.filter(m => !withOrder(m)).length, mit: base.filter(withOrder).length },
+          items = base.filter(m => (melFilter === 'frei' ? !withOrder(m) : melFilter === 'mit' ? withOrder(m) : true)),
+          container = el('div', {});
+        if (!all.length) app.append(el('p', { class: 'mu' }, 'Noch keine Meldungen – im Tab „Upload" hochladen.'));
+        app.append(
+          el(
+            'div',
+            { class: 'flt', 'data-k': 'fl' },
+            el('span', { class: 'mu' }, 'Team'),
+            el(
+              'select',
+              {
+                onchange: e => {
+                  teamFilter = e.target.value;
+                  render();
+                }
+              },
+              el('option', { value: '' }, 'Alle Teams'),
+              teams.map(t => el('option', { value: t, ...(t === teamFilter ? { selected: 'selected' } : {}) }, t))
+            )
+          ),
+          filterChips(
+            [
+              ['frei', 'Ohne Auftrag', counts.frei],
+              ['mit', 'Mit Auftrag', counts.mit],
+              ['', 'Alle', base.length]
+            ],
+            melFilter,
+            k => {
+              melFilter = k;
+            }
+          ),
+          searchBox(v => {
+            searchText = v;
+            swapList(container, meldungList(items, true));
+          }),
+          container
+        );
+        container.append(meldungList(items, true));
+      }
       function drawDispoOverview() {
         // Daten laden noch: Platzhalter statt leerer Filter und Liste
         if (!dataReady) {
           app.append(skeletonPage());
           return;
         }
-        if (dataReady && !ordersByTeam.size)
+        if (!viewKind) viewKind = 'war';
+        if (dataReady && !ordersByTeam.size && !meldungen.size)
           app.append(el('p', { class: 'mu' }, 'Noch keine Aufträge – im Tab „Upload" hochladen.'));
-        const teamEntries = teamCounts(),
+        app.append(dispoKindBar());
+        if (viewKind === 'mel') {
+          drawDispoMeldungen();
+          return;
+        }
+        const kindRows = ordersOfKind(allOrders(), viewKind),
+          withList = viewKind === 'war',
+          kindTeamCounts = new Map();
+        for (const r of kindRows) kindTeamCounts.set(r.team, (kindTeamCounts.get(r.team) || 0) + 1);
+        const teamEntries = [...kindTeamCounts].sort((a, b) => naturalCompare(a[0], b[0])),
           range = reportedRange();
         const matchesStatus = r =>
           !statusFilter ||
           (statusFilter === 'nok' ? orderStatus(r).nx > 0 : orderStatus(r).st === statusFilter);
-        const candidates = allOrders().filter(
+        const candidates = kindRows.filter(
           r => (!teamFilter || r.team === teamFilter) && (!range || inRange(r, range)) && matchesSearch(r)
         );
         const visibleBefore = candidates.filter(matchesStatus),
@@ -7686,7 +8217,7 @@
         });
         const view = () => base.filter(matchesStatus);
         const nokByTeam = new Map();
-        allOrders().forEach(r => {
+        kindRows.forEach(r => {
           if (orderStatus(r).nx > 0) nokByTeam.set(r.team, (nokByTeam.get(r.team) || 0) + 1);
         });
         const teamSelect = el(
@@ -7801,7 +8332,7 @@
           filterChips(
             [
               ['', 'Alle', base.length],
-              ['nok', 'Nicht OK', counts.nok],
+              ...(withList ? [['nok', 'Nicht OK', counts.nok]] : []),
               ['done', 'Erledigt', counts.done],
               ['teil', 'In Arbeit', counts.teil],
               ['offen', 'Offen', counts.offen]

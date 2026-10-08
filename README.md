@@ -34,7 +34,7 @@ Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 
 ## Daten
 - Beim ersten Start entsteht `data/data.db` (zusammen mit `data.db-wal` und `data.db-shm`, das ist normal).
-- Öffnen und auswerten kann man sie mit jedem SQLite-Programm (z. B. DB Browser for SQLite, oder `sqlite3 data/data.db`). Tabellen: `orders`, `pruef`, `ergebnis` (Ergebnis als JSON in `doc`), `dmark` (vom Disponenten abgehakte Aufträge, `v`=1 abgehakt, `at`=Zeitpunkt), `dev` (Geräte, `usr` = angemeldeter Benutzer), `gas` (Gaswarngerät-Bestätigungen: `day`, `team`, `at` = Uhrzeit der Bestätigung, `rec` = Eingang beim Server, `did` = Gerät, `usr` = Benutzer), `usr` (Benutzer der Monteure), `act` (Protokoll: wer hat wann was getan), `geo` (Koordinaten der Auftragsadressen, siehe „Sortierung nach Entfernung“), `meta`.
+- Öffnen und auswerten kann man sie mit jedem SQLite-Programm (z. B. DB Browser for SQLite, oder `sqlite3 data/data.db`). Tabellen: `orders` (Aufträge aller Auftragsarten, Spalte `kind`), `meldung` (Meldungen/Schäden), `pruef`, `ergebnis` (Ergebnis als JSON in `doc`), `dmark` (vom Disponenten abgehakte Aufträge, `v`=1 abgehakt, `at`=Zeitpunkt), `dev` (Geräte, `usr` = angemeldeter Benutzer), `gas` (Gaswarngerät-Bestätigungen: `day`, `team`, `at` = Uhrzeit der Bestätigung, `rec` = Eingang beim Server, `did` = Gerät, `usr` = Benutzer), `usr` (Benutzer der Monteure), `act` (Protokoll: wer hat wann was getan), `geo` (Koordinaten der Auftragsadressen, siehe „Sortierung nach Entfernung“), `meta`.
 - Jede Eingabe ist beim Bestätigen fest auf der Platte (`synchronous=FULL`), auch bei Stromausfall.
 - Pro Tag entsteht eine Sicherung in `data/backups/` (`data-JJJJ-MM-TT.db`, die letzten 30 bleiben). Sie ist eine vollständige, direkt nutzbare Datenbankdatei.
 - Umzug/Sicherung von Hand: Server stoppen und `data.db` kopieren (oder Sicherung aus `backups/` verwenden). Die Sicherungen enthalten auch den Schlüssel für die Anmeldung, bitte nicht öffentlich ablegen.
@@ -43,7 +43,7 @@ Beispiel: `DISPO_PIN=4711 UPLOAD_PIN=8150 PORT=8080 node server.js`
 Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zustandsvariablen sind kommentiert.
 - `server.js` – Server: API unter `/api/`, SQLite, Push, statische Dateien. Der Kopfkommentar listet Tabellen, Zugriffsstufen und Umgebungsvariablen.
 - `public/index.html` – die gesamte Oberfläche (Stile + Skript in einer Datei, ohne Framework/Build). Das Skript ist in Abschnitte gegliedert (Zustand, Upload, Ergebnisse/Status, Zeitrückmeldung, Outbox, Abgleich, Vergleich, Fortschritt, Nachrichten, Zeichnen …). `render()` zeichnet alles aus dem Zustand neu; `draw()` wählt dafür eine der Ansichten `drawOrderDetail`, `drawMonteurList`, `drawDispo` usw.
-- `public/worker.js` – Excel lesen/schreiben im Hintergrund (Aufträge, Prüflose, Vergleich, Export).
+- `public/worker.js` – Excel lesen/schreiben im Hintergrund (Aufträge samt Vorgängen und Meldungen, Prüflose, Vergleich, Export).
 - `public/fonts/` – die Schrift **Inter** (vier Schnitte als `.woff2`, nur die gebrauchten Zeichen; Lizenz OFL, siehe `LICENSE-Inter.txt`). Sie kommt vom eigenen Server, wird für den Offline-Start mitgespeichert und die App zeichnet erst, wenn sie geladen ist (sonst würde der Text beim Nachladen springen). Farben, Rundungen und Schatten stehen als Variablen am Anfang der Stile in `index.html` (`:root`, hell/dunkel).
 - `public/sw.js` – Service Worker: Offline-Start und Push-Benachrichtigungen.
 
@@ -121,9 +121,30 @@ Jede Datei beginnt mit einem Kopfkommentar, der sie erklärt; Funktionen und Zus
 ## Offline
 Die Oberfläche startet auch ohne Netz (nach dem ersten Öffnen mit Netz). Eingaben der Monteure werden im Gerät gesichert und automatisch gesendet, sobald der Server wieder erreichbar ist. Den letzten Stand der Aufträge und die Prüfobjekte des eigenen Teams merkt sich das Gerät in IndexedDB.
 
+## Auftragsarten
+Die App kennt fünf Auftragsarten. Der Monteur wählt sie auf der **Startseite** (große Flächen mit der Zahl offener Aufträge, bei Reparatur/Entstörung auch „heute“) und wechselt in jeder Liste mit dem Umschalter oben (die Zurück-Taste des Geräts führt zur Startseite zurück). Der Disponent hat denselben Umschalter in der Übersicht.
+
+| Auftragsart | Quelle (SAP) | Besonderheiten |
+|---|---|---|
+| **Wartung** (`war`) | `3NAW` mit Leistungsart `FWS` (fehlt die Spalte „IH-Leistungsart“ ganz, gilt jeder `3NAW` als Wartung – ältere Dateien) | Prüfobjekte bewerten + Zeit; Fortschritt und Wochenpensum bis 31.12. |
+| **Reparatur** (`rep`) | `3NAR` | **Jeder Vorgang ist ein eigener Auftrag** (Schlüssel „Auftragsnummer-Vorgang“, z. B. `65046778-0010`; Team = Arbeitsplatz des Vorgangs). Termin **und Uhrzeit**, Meldung(en) |
+| **Entstörung** (`ent`) | `3NAE` | Termin **und Uhrzeit** (aus dem Vorgang), Meldung(en) |
+| **Dauerauftrag** (`dau`) | `3NAW` mit Leistungsart `FWD` | laufende Arbeiten, keine Meldung |
+| **Meldungen** (`mel`) | Meldungen-Excel | Schäden, die noch **keinem Auftrag** zugeordnet sind (nur eine Liste); Meldungen **mit** Auftrag stehen beim Auftrag (Karte „Meldung“ in der Detailansicht, erste Beschreibung auf der Karte) |
+
+- Reparatur, Entstörung und Dauerauftrag haben **keine Prüfobjekte**: erledigt ist ein Auftrag, sobald die Zeit vollständig zurückgemeldet ist (Datum, Beginn, Dauer). Bei Reparatur/Entstörung sind Datum und Beginn der Zeitkarte mit dem Termin vorbelegt.
+- **Termin & Uhrzeit:** Reparaturen und Entstörungen zeigen unter der Nummer „🕒 Mi 07.01.2026 · 04:00–06:30 Uhr“ (über Mitternacht: „… 22:00 Uhr bis Mi 08.10.2026, 05:30 Uhr“), „📅 Heute/Morgen“ als Etikett und sind standardmäßig nach Termin und Uhrzeit sortiert (heute und später aufsteigend, danach das Vergangene mit dem Neuesten zuerst). Fehlt eine Uhrzeit (SAP liefert `00:00:00`), steht nur das Datum.
+- Andere Auftragsarten (`3NAV`, `3NIN`, `3NBT`, `3NAW` mit anderer Leistungsart) werden beim Upload **übergangen**; die Meldung nach dem Upload nennt sie.
+- Der Fortschritt (Tab „Fortschritt“, Wochenpensum) zählt nur Wartungen.
+
 ## Excel-Spalten, die gelesen werden
-Aufträge: Auftrag, Verantw.ArbPl. (= Team), Techn. Platz, Auftragsart, Postleitzahl, Straße, Kurztext, Eckstarttermin, Eckendtermin.
-Prüflose: Auftrag, Kurztext des Prüfobjektes.
+Im Tab „Upload“ können **mehrere Dateien auf einmal** gewählt werden; jede wird an ihren Spalten erkannt und mit den anderen zusammengeführt:
+- **Aufträge**: Auftrag, Verantw.ArbPl. (= Team), Techn. Platz, Auftragsart, IH-Leistungsart, Postleitzahl, Straße, Kurztext, Eckstarttermin bzw. Term. Start, Eckendtermin (bzw. Term. Ende), Meldung.
+- **Vorgänge** (Reparatur, Entstörung): Auftrag, Auftragsart, Eckstarttermin, Eckendtermin, Kurztext, Vorgang, Kurztext Vrg., VrgArbeitsplatz, Arbeit, Iststart Uzt, Istende Uzt. Ohne Vorgänge-Datei bleibt eine Reparatur ein einziger Auftrag; Aufträge, die nur in der Vorgänge-Datei stehen, werden aus ihr aufgebaut (ohne Adresse).
+- **Meldungen**: Angelegt am, Meldung, Beschreibung, Straße, Postleitzahl, Auftrag (leer = noch ohne Auftrag), Codier.Code.Txt, Techn. Platz, Anwenderstat., Verantw.ArbPl., Codier.Grp.Text. Eine Meldung gehört über die Spalte „Auftrag“ zu einem Auftrag (ein Auftrag kann mehrere haben); ohne Meldungen-Datei zeigt die Karte nur die Nummer aus der Aufträge-Datei.
+- **Prüflose**: Auftrag, Kurztext des Prüfobjektes.
+
+Beim Upload ersetzt die Datei je enthaltenem **Team und Auftragsart** die Aufträge, die in ihr fehlen (eine Datei nur mit Reparaturen lässt die Wartungen unberührt); „Nur ergänzen“ behält alles. Meldungen ersetzen je enthaltenem Team die fehlenden. Fehlt in einer neuen Aufträge-Datei der Eckendtermin, bleibt der bisherige erhalten.
 
 ## Benutzer (Monteur-Anmeldung)
 

@@ -18,5 +18,6 @@ Eine Datei Oberfläche (`public/index.html`, ohne Framework), ein Server (`serve
 - `prefers-reduced-motion` immer beachten (dann kein Übergang, aber trotzdem kein Springen).
 
 ## Sonstiges
+- **Auftragsarten:** Wartung (`war`), Reparatur (`rep`, jeder Vorgang ein eigener Auftrag, Schlüssel „Nummer-Vorgang“), Entstörung (`ent`), Dauerauftrag (`dau`) und die Liste „Meldungen“ (`mel`). Alles dazu steht im README (Abschnitt „Auftragsarten“). Wer `order.auftrag` anzeigt, nimmt stattdessen `orderNr(order)`; neue Listen/Karten für eine Auftragsart prüft `TEST_ONLY=auftragsarten npm run test:ui` (schnell, nur Upload + Ansichten der Auftragsarten).
 - Der Server liefert `public/` direkt von der Platte aus (kein Build-Schritt).
 - Der Test startet einen eigenen Server mit **Kopie** von `data/data.db`; die echten Daten bleiben unverändert.

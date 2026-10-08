@@ -2,7 +2,8 @@
  * Excel-Worker: liest und schreibt Excel-Dateien im Hintergrund (Web Worker), damit die Oberfläche nicht einfriert.
  * Die Oberfläche (index.html, runExcelWorker) schickt je Aufgabe eine Nachricht { type, … } und bekommt
  * { res } oder { error } zurück:
- *   type 'orders'  { buf }          -> { rows: Aufträge, skip: Zeilen ohne Team }      (Aufträge-Excel hochladen)
+ *   type 'orders'  { bufs }         -> { rows: Aufträge, meldungen, skip, ignored, files } (Aufträge-, Vorgänge- und Meldungen-Excel
+ *                                       hochladen; jede Datei wird an ihren Spalten erkannt, siehe parseOrderFiles)
  *   type 'pruef'   { buf }          -> { by: { Auftrag: [Kurztexte] } }                (Prüflos-Excel hochladen)
  *   type 'cmp'     { buf }          -> { rows, hasStatus }                             (Vergleich Excel <-> Export)
  *   sonst          { A, P, dc, tc } -> ArrayBuffer der fertigen .xlsx                  (Export)
@@ -24,61 +25,227 @@ const ORDER_COLUMNS = {
   team: ['verantwarbpl'],
   tp: ['technplatz'],
   art: ['auftragsart'],
+  lart: ['ihleistungsart'],
   plz: ['postleitzahl'],
   str: ['straße', 'strasse'],
   kurz: ['kurztext'],
+  start: ['eckstarttermin', 'termstart'],
+  ende: ['eckendtermin', 'termende'],
+  mel: ['meldung']
+};
+// Spalten der Vorgänge-Excel: je Zeile ein Vorgang eines Auftrags (Reparatur 3NAR, Entstörung 3NAE)
+const VORGANG_COLUMNS = {
+  auftrag: ['auftrag'],
+  art: ['auftragsart'],
   start: ['eckstarttermin'],
-  ende: ['eckendtermin']
+  ende: ['eckendtermin'],
+  kurz: ['kurztext'],
+  vg: ['vorgang'],
+  vtxt: ['kurztextvrg'],
+  team: ['verantwarbpl'],
+  lart: ['ihleistungsart'],
+  vteam: ['vrgarbeitsplatz'],
+  arb: ['arbeit'],
+  uhr: ['iststartuzt'],
+  uhr2: ['istendeuzt']
+};
+// Spalten der Meldungen-Excel: Schäden, die gemeldet wurden – mit oder ohne Auftrag
+const MELDUNG_COLUMNS = {
+  nr: ['meldung'],
+  dat: ['angelegtam'],
+  txt: ['beschreibung'],
+  str: ['straße', 'strasse'],
+  plz: ['postleitzahl'],
+  auftrag: ['auftrag'],
+  code: ['codiercodetxt'],
+  tp: ['technplatz'],
+  stat: ['anwenderstat'],
+  team: ['verantwarbpl'],
+  grp: ['codiergrptext']
 };
 // Excel-Datumszahl -> „TT.MM.JJJJ“ (UTC); alles andere bleibt Text
 const formatExcelDate = v =>
   typeof v === 'number' && v > 20000
     ? new Date(Math.round((v - 25569) * 864e5)).toLocaleDateString('de-AT', { timeZone: 'UTC' })
     : String(v || '').trim();
+// Uhrzeit -> „HH:MM“. Kommt als Text („13:17:40“) oder als Excel-Zeit (Bruchteil eines Tages). Leer und 00:00 = nicht gesetzt
+// (SAP liefert für fehlende Zeiten 00:00:00).
+const formatExcelTime = v => {
+  let minutes = -1;
+  if (typeof v === 'number' && v >= 0) minutes = Math.round((v % 1) * 1440);
+  else {
+    const m = /^(\d{1,2}):(\d{2})/.exec(String(v ?? '').trim());
+    if (m) minutes = +m[1] * 60 + +m[2];
+  }
+  if (minutes <= 0 || minutes >= 1440) return '';
+  return String(Math.floor(minutes / 60)).padStart(2, '0') + ':' + String(minutes % 60).padStart(2, '0');
+};
 // liest alle Blätter einer Excel-Datei als Zeilen (Arrays), leere Zellen = ''
 const readSheets = buf => {
   const wb = XLSX.read(buf, { type: 'array' });
   return wb.SheetNames.map(n => XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' }));
 };
+// Kopfzeile eines Blattes suchen (innerhalb der ersten 10 Zeilen): ok(Menge der normalisierten Überschriften) muss stimmen
+const findHeader = (rows, ok) =>
+  rows.slice(0, 10).findIndex(r => ok(new Set(r.map(normalizeHeader))));
+// Spaltenindizes: Schlüssel -> Index der ersten passenden Überschrift (-1 = Spalte fehlt)
+const columnsOf = (header, spec) => {
+  const index = {};
+  for (const k in spec) index[k] = header.findIndex(c => spec[k].includes(normalizeHeader(c)));
+  return index;
+};
+// Zeilen eines Blattes als Objekte (Text bereinigt); Datum -> „TT.MM.JJJJ“, Uhrzeit -> „HH:MM“
+const readRows = (rows, headerRow, spec, dates = [], times = []) => {
+  const index = columnsOf(rows[headerRow], spec);
+  return rows.slice(headerRow + 1).map(r => {
+    const o = { _present: index };
+    for (const k in spec) {
+      const v = index[k] < 0 ? '' : r[index[k]];
+      o[k] = dates.includes(k)
+        ? formatExcelDate(v)
+        : times.includes(k)
+          ? formatExcelTime(v)
+          : String(v ?? '')
+              .replace(/\s+/g, ' ')
+              .trim();
+    }
+    return o;
+  });
+};
 
 /**
- * Aufträge aus der Excel lesen. Die Kopfzeile (innerhalb der ersten 10 Zeilen) braucht „Auftrag“ und „Verantw.ArbPl.“.
- * Zeilen ohne Team werden gezählt (skip) und nicht übernommen.
+ * Kategorie („Auftragsart“ in der App) eines Auftrags nach SAP-Auftragsart und Leistungsart:
+ *   war  Wartung     3NAW mit Leistungsart FWS (fehlt die Spalte „IH-Leistungsart“ ganz, gilt jeder 3NAW als Wartung – ältere Dateien)
+ *   dau  Dauerauftrag 3NAW mit Leistungsart FWD
+ *   rep  Reparatur   3NAR (jeder Vorgang ist in der App ein eigener Auftrag)
+ *   ent  Entstörung  3NAE
+ * Alle anderen (z. B. 3NAV, 3NIN, 3NBT, 3NAW mit anderer Leistungsart) gehören nicht dazu: '' .
  */
-function parseOrders(buf) {
-  const out = [];
+const kindOf = (art, lart, hasLart) => {
+  art = art.toUpperCase();
+  if (art === '3NAW') return !hasLart || lart === 'FWS' ? 'war' : lart === 'FWD' ? 'dau' : '';
+  return art === '3NAR' ? 'rep' : art === '3NAE' ? 'ent' : '';
+};
+
+/**
+ * Aufträge aus einer oder mehreren Excel-Dateien lesen. Jede Datei wird an ihren Spalten erkannt (auch mehrere Blätter):
+ *   Vorgänge   Spalten „Auftrag“ + „Vorgang“           -> je Vorgang eine Zeile (3NAR/3NAE)
+ *   Meldungen  Spalten „Meldung“ + „Beschreibung“      -> Schäden, mit oder ohne Auftrag
+ *   Aufträge   Spalten „Auftrag“ + „Verantw.ArbPl.“    -> ein Auftrag je Zeile
+ * Zusammengeführt wird zu den Einheiten der App (rows):
+ *   · Wartung, Dauerauftrag, Entstörung: ein Eintrag je Auftrag (Schlüssel = Auftragsnummer)
+ *   · Reparatur: ein Eintrag je Vorgang (Schlüssel = „Auftragsnummer-Vorgang“, Team = Arbeitsplatz des Vorgangs)
+ * Ohne Vorgänge-Datei bleibt ein Reparaturauftrag ein Eintrag je Auftrag. Aufträge anderer Auftragsarten werden übergangen (ignored:
+ * Auftragsart -> Anzahl), Zeilen ohne Team gezählt (skip). files = was in den Dateien gefunden wurde.
+ */
+function parseOrderFiles(bufs) {
+  const orders = new Map(),
+    steps = [],
+    meldungen = new Map(),
+    ignored = {};
   let skip = 0;
-  for (const rows of readSheets(buf)) {
-    const headerRow = rows
-      .slice(0, 10)
-      .findIndex(
-        r =>
-          r.some(c => normalizeHeader(c) === 'auftrag') && r.some(c => normalizeHeader(c) === 'verantwarbpl')
-      );
-    if (headerRow < 0) continue;
-    const columnIndex = {};
-    for (const k in ORDER_COLUMNS)
-      columnIndex[k] = rows[headerRow].findIndex(c => ORDER_COLUMNS[k].includes(normalizeHeader(c)));
-    for (const r of rows.slice(headerRow + 1)) {
-      const g = k => (columnIndex[k] < 0 ? '' : r[columnIndex[k]]),
-        s = k => String(g(k)).replace(/\s+/g, ' ').trim();
-      const o = {
-        auftrag: normalizeOrderNo(g('auftrag')),
-        team: s('team'),
-        tp: s('tp'),
-        art: s('art'),
-        plz: s('plz'),
-        str: s('str'),
-        kurz: s('kurz'),
-        start: formatExcelDate(g('start')),
-        ende: formatExcelDate(g('ende'))
-      };
-      if (!o.auftrag) continue;
-      if (!o.team) skip++;
-      else out.push(o);
+  const files = { orders: 0, vorgaenge: 0, meldungen: 0 };
+  for (const buf of bufs)
+    for (const rows of readSheets(buf)) {
+      let h = findHeader(rows, s => s.has('auftrag') && s.has('vorgang'));
+      if (h >= 0) {
+        for (const o of readRows(rows, h, VORGANG_COLUMNS, ['start', 'ende'], ['uhr', 'uhr2'])) {
+          o.auftrag = normalizeOrderNo(o.auftrag);
+          if (o.auftrag) steps.push(o);
+        }
+        files.vorgaenge++;
+        continue;
+      }
+      h = findHeader(rows, s => s.has('meldung') && s.has('beschreibung'));
+      if (h >= 0) {
+        for (const o of readRows(rows, h, MELDUNG_COLUMNS, ['dat'])) {
+          o.nr = normalizeOrderNo(o.nr);
+          o.auftrag = normalizeOrderNo(o.auftrag);
+          if (o.nr) meldungen.set(o.nr, o);
+        }
+        files.meldungen++;
+        continue;
+      }
+      h = findHeader(rows, s => s.has('auftrag') && s.has('verantwarbpl'));
+      if (h < 0) continue;
+      for (const o of readRows(rows, h, ORDER_COLUMNS, ['start', 'ende'])) {
+        o.auftrag = normalizeOrderNo(o.auftrag);
+        o.mel = normalizeOrderNo(o.mel);
+        if (!o.auftrag) continue;
+        if (!o.team) skip++;
+        else orders.set(o.auftrag, o);
+      }
+      files.orders++;
+    }
+  // Vorgänge je Auftrag (nach Vorgangsnummer)
+  const stepsOf = new Map();
+  for (const v of steps) (stepsOf.get(v.auftrag) || stepsOf.set(v.auftrag, []).get(v.auftrag)).push(v);
+  for (const l of stepsOf.values()) l.sort((a, b) => a.vg.localeCompare(b.vg, 'de', { numeric: true }));
+  // Aufträge, die nur in der Vorgänge-Datei stehen, werden aus ihr aufgebaut (ohne Adresse)
+  for (const [nr, l] of stepsOf)
+    if (!orders.has(nr)) {
+      const v = l[0];
+      if (v.team) orders.set(nr, { auftrag: nr, team: v.team, art: v.art, lart: v.lart, kurz: v.kurz, start: v.start, ende: v.ende, _present: { lart: 0 } });
+    }
+  const rows = [];
+  for (const o of orders.values()) {
+    const kind = kindOf(o.art, o.lart, o._present.lart >= 0);
+    if (!kind) {
+      ignored[o.art || '?'] = (ignored[o.art || '?'] || 0) + 1;
+      continue;
+    }
+    const base = {
+      kind,
+      nr: o.auftrag,
+      vg: '',
+      vtxt: '',
+      lart: o.lart || '',
+      art: o.art,
+      tp: o.tp || '',
+      plz: o.plz || '',
+      str: o.str || '',
+      kurz: o.kurz,
+      mel: o.mel || ''
+    };
+    const l = stepsOf.get(o.auftrag) || [];
+    if (kind === 'rep' && l.length)
+      for (const v of l)
+        rows.push({
+          ...base,
+          auftrag: o.auftrag + '-' + v.vg,
+          vg: v.vg,
+          vtxt: v.vtxt,
+          team: v.vteam || o.team,
+          start: v.start || o.start || '',
+          ende: v.ende || '',
+          uhr: v.uhr,
+          uhr2: v.uhr2,
+          arb: v.arb
+        });
+    else {
+      // Entstörung: Beginn laut erstem, Ende laut letztem Vorgang
+      const first = l[0],
+        last = l[l.length - 1];
+      rows.push({
+        ...base,
+        auftrag: o.auftrag,
+        vtxt: (first && first.vtxt) || '',
+        team: o.team,
+        start: (first && first.start) || o.start || '',
+        ende: (last && last.ende) || o.ende || '',
+        uhr: (first && first.uhr) || '',
+        uhr2: (last && last.uhr2) || '',
+        arb: first ? l.reduce((a, v) => a + (+v.arb || 0), 0) : ''
+      });
     }
   }
-  return { rows: out, skip };
+  return {
+    rows,
+    meldungen: [...meldungen.values()].map(({ _present, ...m }) => m),
+    skip,
+    ignored,
+    files
+  };
 }
 /**
  * Prüfobjekte aus der Prüflos-Excel lesen: Spalten „Auftrag“ und „Kurztext des Prüfobjektes“.
@@ -181,11 +348,11 @@ function buildExport(A, P, dc, tc) {
 }
 // Nachricht der Oberfläche verarbeiten; große Ergebnisse (ArrayBuffer) werden ohne Kopie übergeben
 onmessage = e => {
-  const { type, buf, A, P, dc, tc } = e.data;
+  const { type, buf, bufs, A, P, dc, tc } = e.data;
   try {
     const res =
       type === 'orders'
-        ? parseOrders(buf)
+        ? parseOrderFiles(bufs || [buf])
         : type === 'pruef'
           ? parseChecklists(buf)
           : type === 'cmp'
