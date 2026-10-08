@@ -14,7 +14,8 @@
  *   · Die Seite wird nie breiter als der Bildschirm (sonst lässt sie sich seitlich verschieben und wackelt).
  *   · Keine JavaScript-Fehler.
  * Dazu Einzelprüfungen (Dunkelmodus, Suche, Scroll-Stelle bleibt erhalten, Formulare erscheinen sichtbar, Live-Update,
- * Sortierung nach Entfernung mit Test-Standort und einem Mini-Geocoder statt des echten Nominatim-Dienstes).
+ * Sortierung nach Entfernung mit Test-Standort und einem Mini-Geocoder statt des echten Nominatim-Dienstes,
+ * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
  * ================================================================================================= */
@@ -62,7 +63,7 @@ const freePort = () =>
 
 // ---------- Mini-Geocoder (ersetzt Nominatim): Koordinaten = Bezirksmitte + fester Versatz je Straße ----------
 // Der Server fragt ihn nach den Adressen der Aufträge; „Unbekannt“ und U-Bahn/Haltestellen findet er nicht (dann gilt die Bezirksmitte).
-const TEST_POS = { latitude: 48.283, longitude: 16.4 }; // Standort des Test-Geräts: Mitte von Floridsdorf (1210)
+const TEST_POS = { latitude: 48.283, longitude: 16.4, accuracy: 25 }; // Standort des Test-Geräts: Mitte von Floridsdorf (1210)
 const CENTERS = { 1010: [48.2082, 16.373], 1020: [48.217, 16.4], 1030: [48.198, 16.4], 1040: [48.192, 16.369], 1050: [48.188, 16.356], 1060: [48.196, 16.348], 1070: [48.203, 16.348], 1080: [48.211, 16.343], 1090: [48.226, 16.356], 1100: [48.162, 16.378], 1110: [48.169, 16.44], 1120: [48.174, 16.332], 1130: [48.185, 16.29], 1140: [48.201, 16.276], 1150: [48.196, 16.327], 1160: [48.214, 16.307], 1170: [48.233, 16.3], 1180: [48.233, 16.331], 1190: [48.253, 16.345], 1200: [48.24, 16.378], 1210: [48.28, 16.4], 1220: [48.235, 16.475], 1230: [48.138, 16.29] };
 async function startGeocoder() {
   const http = require('http'),
@@ -357,6 +358,56 @@ async function distanceChecks(page, label) {
   const back = await readDistances(page);
   report(back.every(c => c.km == null) && back.map(c => c.k).join() === nrOrder.join(), `${label} Entfernung: zurück zur Auftragsnummer stellt Reihenfolge und Karten wieder her`);
 }
+// Ortung durch den Disponenten (Tab „Geräte“): Monteur-Geräte antworten auf die Abfrage, die Karte zeigt den Standort bzw. den Grund,
+// warum es keinen gibt; „Ausloggen“ bringt das Gerät zum Startbildschirm, und die erneute Anmeldung bleibt bestehen.
+async function deviceChecks(browser, base, errors) {
+  console.log('\n=== Ortung durch den Disponenten (Geräte) ===');
+  const vp = { width: 390, height: 844 },
+    didOf = page => page.evaluate(() => localStorage.getItem('did')),
+    deviceCard = (page, did) => page.evaluate(did => { const c = [...document.querySelectorAll('#app .card.dv')].find(n => n.dataset.k === 'd' + did); return c ? c.innerText.replace(/\s+/g, ' ') : null; }, did),
+    waitCard = async (page, did, re, ms = 14000) => {
+      for (let t = 0; t < ms; t += 500) {
+        const text = await deviceCard(page, did);
+        if (text && re.test(text)) return text;
+        await page.waitForTimeout(500);
+      }
+      return await deviceCard(page, did);
+    };
+  const monteur = await newPage(browser, base, vp, errors),
+    denied = await newPage(browser, base, vp, errors, { geolocation: false, denyLocation: true }),
+    dispo = await newPage(browser, base, vp, errors, { geolocation: false });
+  await loginMonteur(monteur);
+  await loginMonteur(denied);
+  const [didMonteur, didDenied] = [await didOf(monteur), await didOf(denied)];
+  await loginDispo(dispo);
+  await dispo.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === 'Geräte').click());
+  const found = await waitCard(dispo, didMonteur, /Auf Karte öffnen · ±25 m/);
+  report(/Auf Karte öffnen · ±25 m/.test(found || ''), 'Geräte: Monteur-Gerät antwortet auf die Standortabfrage', (found || 'Karte fehlt').slice(-80));
+  report(await monteur.evaluate(() => /Standort abgefragt/.test(document.querySelector('.toast').textContent)), 'Geräte: Monteur sieht „Der Disponent hat deinen Standort abgefragt“');
+  const refused = await waitCard(dispo, didDenied, /Standort nicht freigegeben/);
+  report(/Standort nicht freigegeben/.test(refused || ''), 'Geräte: verweigerter Standort wird als „nicht freigegeben“ gezeigt', (refused || 'Karte fehlt').slice(-80));
+  // Geräte ohne Standort, die nicht geöffnet sind, antworten nie: das steht dort so, statt „noch keine Antwort“
+  const stale = await dispo.evaluate(() => [...document.querySelectorAll('#app .card.dv')].map(c => c.innerText.replace(/\s+/g, ' ')).filter(t => /Monteur/.test(t) && /Offline/.test(t) && /📍 (Standort: noch keine Antwort|Gerät ist offline)/.test(t)));
+  report(stale.every(t => /Gerät ist offline/.test(t)), 'Geräte: nicht geöffnete Geräte ohne Standort sagen „offline“', `${stale.length} Geräte`);
+  // „Standorte jetzt aktualisieren“: das Gerät antwortet neu (neuer Zeitstempel)
+  await probe(dispo, 'Geräte: „Standorte jetzt aktualisieren“', btn('/Standorte jetzt aktualisieren/'), { at: 300, ms: 1500 });
+  const again = await waitCard(dispo, didMonteur, /Auf Karte öffnen · ±25 m · (gerade eben|vor 0 Min)/);
+  report(/Auf Karte öffnen/.test(again || ''), 'Geräte: nach „jetzt aktualisieren“ weiterhin Standort', (again || '').slice(-60));
+  // Ausloggen: das Gerät kehrt zum Startbildschirm zurück
+  const click = (page, did, re) => page.evaluate(({ did, src }) => { const c = [...document.querySelectorAll('#app .card.dv')].find(n => n.dataset.k === 'd' + did); [...c.querySelectorAll('button')].find(b => new RegExp(src).test(b.textContent.trim())).click(); }, { did, src: re });
+  await click(dispo, didMonteur, '^Ausloggen$');
+  await dispo.waitForTimeout(300);
+  await click(dispo, didMonteur, 'Wirklich ausloggen');
+  await monteur.waitForTimeout(2500);
+  const afterKick = await monteur.evaluate(() => ({ start: !!([...document.querySelectorAll('#app button')].find(b => /Ich bin Monteur/.test(b.textContent))), msg: ((document.querySelector('#app .msg') || {}).textContent || '') }));
+  report(afterKick.start && /abgemeldet/.test(afterKick.msg), 'Geräte: ausgeloggtes Gerät kehrt zum Startbildschirm zurück', afterKick.msg.slice(0, 60));
+  // erneut anmelden: bleibt angemeldet (wird nicht sofort wieder abgemeldet)
+  await loginMonteur(monteur);
+  await monteur.waitForTimeout(3000);
+  const afterLogin = await monteur.evaluate(() => ({ list: !![...document.querySelectorAll('#app button')].find(b => /^Entfernung$/.test(b.textContent.trim())), msg: ((document.querySelector('#app .msg') || {}).textContent || '') }));
+  report(afterLogin.list && !/abgemeldet/.test(afterLogin.msg), 'Geräte: erneute Anmeldung nach dem Ausloggen bleibt bestehen', afterLogin.msg.slice(0, 60));
+  for (const page of [monteur, denied, dispo]) await page.context().close();
+}
 // Standort nicht erlaubt: Hinweis statt Absturz, Liste bleibt nach Auftragsnummer, nichts springt
 async function noLocationChecks(browser, base, errors) {
   console.log('\n=== Entfernung ohne Standort-Erlaubnis ===');
@@ -390,7 +441,8 @@ async function monteurChecks(browser, base, viewport, errors) {
   // Filter, Sortierung (unterwegs auf der Liste)
   for (const f of ['Alle', 'Erledigt', 'Nicht OK', 'Offen'])
     await probe(page, `${label} Liste: Filter „${f}“`, btn(`/^${f}/`), { at: 300 });
-  await probe(page, `${label} Liste: Sortierung Termin`, btn('/^Termin$/'), { at: 300 });
+  const sortButtons = await page.evaluate(() => [...document.querySelectorAll('#app .chips.ab button')].map(b => b.textContent.trim()));
+  report(sortButtons.join(',') === 'Auftragsnummer,Entfernung', `${label} Liste: Sortierung nur nach Auftragsnummer und Entfernung (kein Termin)`, sortButtons.join(', '));
   await probe(page, `${label} Liste: Sortierung Auftragsnummer`, btn('/^Auftragsnummer$/'), { at: 300 });
   await distanceChecks(page, label);
 
@@ -591,6 +643,7 @@ async function overflowChecks(browser, base, errors) {
     console.log(`Adressen mit Koordinaten: ${found} (Mini-Geocoder: ${geocoder.requests()} Anfragen)`);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);
+    await deviceChecks(browser, base, errors);
     await dispoChecks(browser, base, { width: 390, height: 844 }, errors);
     await overflowChecks(browser, base, errors);
     // Desktop (breit): dieselben Grundabläufe

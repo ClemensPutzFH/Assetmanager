@@ -226,6 +226,8 @@ const sql = {
   // „zuletzt aktiv“ nur dann schreiben, wenn der letzte Eintrag älter als eine Minute ist (nicht bei jedem Abgleich)
   touchDev: db.prepare('UPDATE dev SET seen=? WHERE did=? AND (seen IS NULL OR seen<?)'),
   getKick: db.prepare('SELECT kick, kick_at FROM dev WHERE did=?'),
+  // Anmeldung auf dem Gerät: die Abmeldung durch den Disponenten ist damit erledigt (sonst würde das Gerät gleich wieder abgemeldet)
+  clearKick: db.prepare('UPDATE dev SET kick=0 WHERE did=? AND kick=1'),
   // meldet das Gerät an/um/ab (Rolle, Team, Push-Abo) und hebt eine angeforderte Abmeldung auf; Spitzname bleibt erhalten
   upDev: db.prepare(
     'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick,usr) VALUES(?,?,?,?,?,?,?,0,?) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0, usr=excluded.usr'
@@ -1016,6 +1018,7 @@ async function handleApi(req, res, url) {
       return sendJson(req, res, 403, { error: 'SAP-User oder Passwort falsch.' });
     }
     sql.loginUsr.run(Date.now(), sap);
+    if (did) sql.clearKick.run(did);
     logAct('login', sap, did, result.row.team);
     return sendJson(req, res, 200, {
       token: userTokenFor(sap, did),
@@ -1030,7 +1033,9 @@ async function handleApi(req, res, url) {
   // Disponent: PIN (+ Geräte-ID) -> Token
   if (pathname === '/api/login' && method === 'POST') {
     const body = await readBody(req, 1e4),
-      t = login(ip, body.pin, DISPO_PIN, '', validDeviceId(body.did));
+      did = validDeviceId(body.did),
+      t = login(ip, body.pin, DISPO_PIN, '', did);
+    if (t && did) sql.clearKick.run(did);
     return t
       ? sendJson(req, res, 200, { token: t })
       : sendJson(req, res, 403, { error: 'Falscher PIN (oder zu viele Versuche – 10 Minuten warten)' });
@@ -1040,19 +1045,16 @@ async function handleApi(req, res, url) {
     const since = +params.get('since') || 0,
       team = params.get('team') || '',
       did = validDeviceId(params.get('did'));
+    // Hat der Disponent das Gerät ausgeloggt, sind seine Tokens schon ungültig: ohne diese Meldung käme nur „bitte anmelden“ (401)
+    // statt der Rückkehr zum Startbildschirm. Die Anmeldung auf dem Gerät hebt das Kennzeichen wieder auf (siehe Login).
+    const kicked = !!(did && (sql.getKick.get(did) || {}).kick);
+    if (kicked) return sendJson(req, res, 200, { seq: changeSeq, same: true, kicked: true, ver: appVersion() });
     // Monteure (team=<Name> oder „-“) brauchen die Anmeldung mit SAP-User, der Gesamtstand (kein Team) ist dem Disponenten vorbehalten
     const me = team ? userFromRequest(req) : null;
     if (team && !me) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
     if (!team && !isDispo(req)) return sendJson(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
-    // Gerät bekannt? Dann „zuletzt aktiv“ festhalten und melden, ob der Disponent es abgemeldet hat (kicked)
-    let kicked = false;
-    if (did) {
-      const k = sql.getKick.get(did);
-      if (k) {
-        kicked = !!k.kick;
-        sql.touchDev.run(Date.now(), did, Date.now() - 60e3);
-      }
-    }
+    // Gerät bekannt? Dann „zuletzt aktiv“ festhalten
+    if (did) sql.touchDev.run(Date.now(), did, Date.now() - 60e3);
     // festes Team: für ein anderes Team gibt es keine Daten, nur die Angabe des erlaubten Teams (die App wechselt dann dorthin)
     if (me && team !== '-' && !teamAllowed(me, team))
       return sendJson(req, res, 200, {
@@ -1068,7 +1070,6 @@ async function handleApi(req, res, url) {
         same: true,
         ver: appVersion(),
         gday: dayOf(Date.now()),
-        ...(kicked ? { kicked: true } : {}),
         ...(me ? { me: meOf(me) } : {}),
         ...locateField()
       });
@@ -1079,7 +1080,6 @@ async function handleApi(req, res, url) {
       full,
       ver: appVersion(),
       gday: dayOf(Date.now()),
-      ...(kicked ? { kicked: true } : {}),
       ...(me ? { me: meOf(me) } : {}),
       ...locateField(),
       teams: teamsList(),

@@ -1844,7 +1844,7 @@
         pinInput = '',
         pinError = false,
         // dispoFiltersOpen: Filter der Dispo-Übersicht am Handy aufgeklappt · listSort: Sortierung der Listen
-        // ('nr' Nummer | 'termin' Termin (Monteur) | 'nah' Entfernung (Monteur) | 'rueck' Rückmeldung (Disponent))
+        // ('nr' Nummer | 'nah' Entfernung (Monteur) | 'rueck' Rückmeldung (Disponent))
         dispoFiltersOpen = false,
         listSort = 'nr',
         // timeFormOpen: Eingabefelder (Datum, Beginn, Dauer) der Zeitkarte aufgeklappt ·
@@ -3677,6 +3677,15 @@
               render();
             }
           }
+          // der Disponent hat dieses Gerät ausgeloggt
+          if (response.kicked) forcedLogout();
+          // der Disponent hat die Geräteübersicht offen und fragt Standorte ab (locate = Nummer der Abfragerunde)
+          // Eine Runde, die schon lief, als die App gestartet wurde, bleibt ohne Hinweis. Nur wenn der Disponent die Abfrage
+          // danach neu auslöst (Geräteübersicht geöffnet oder „Standorte jetzt aktualisieren“), erscheint die Kurzmeldung.
+          const announceLocate =
+            locateRoundSeen !== null && !!response.locate && response.locate !== locateRoundSeen;
+          locateRoundSeen = response.locate || 0;
+          if (response.locate) reportLocationIfAsked(response.locate, announceLocate);
           if (!response.same) {
             if (response.full) {
               ordersMap = new Map();
@@ -4083,21 +4092,14 @@
           ? el('span', { class: 'tag st-nok' }, `⏰ überfällig seit ${plural(d.days)}`)
           : el('span', { class: 'tag st-zf' }, d.kind === 'today' ? '⏰ heute fällig' : `⏰ fällig in ${plural(d.days)}`);
       };
-      // Sortierung der Listen: Auftragsnummer (alle), Endtermin (Monteur: früheste zuerst, ohne Termin zuletzt), Entfernung (Monteur:
-      // nächste zuerst, ohne Adresse zuletzt) oder Rückmeldung (Disponent: zuletzt zurückgemeldete zuerst, ohne Rückmeldung zuletzt).
-      // Gespeichert ist die letzte Wahl; gilt sie in der aktuellen Rolle nicht, wird nach Nummer sortiert (sortMode).
+      // Sortierung der Listen: Auftragsnummer (alle), Entfernung (Monteur: nächste zuerst, ohne Adresse zuletzt) oder Rückmeldung
+      // (Disponent: zuletzt zurückgemeldete zuerst, ohne Rückmeldung zuletzt). Gespeichert ist die letzte Wahl; gilt sie in der
+      // aktuellen Rolle nicht, wird nach Nummer sortiert (sortMode).
       const sortMode = () =>
-        session.role === 'dispo'
-          ? listSort === 'rueck'
-            ? 'rueck'
-            : 'nr'
-          : listSort === 'termin' || listSort === 'nah'
-            ? listSort
-            : 'nr';
+        session.role === 'dispo' ? (listSort === 'rueck' ? 'rueck' : 'nr') : listSort === 'nah' ? 'nah' : 'nr';
       const sortRows = rows => {
         const byNr = (a, b) => naturalCompare(a.auftrag, b.auftrag),
           mode = sortMode(),
-          end = r => isoOfDate(r.ende) || '9999-99-99',
           reported = r => {
             const d = resultOf(r.auftrag);
             return d && d.min != null && d.tat ? d.tat : 0;
@@ -4107,13 +4109,7 @@
           const far = new Map(rows.map(r => [r.auftrag, distanceKm(r) ?? Infinity]));
           return rows.sort((a, b) => far.get(a.auftrag) - far.get(b.auftrag) || byNr(a, b)); // Infinity − Infinity = NaN -> Nummer
         }
-        return rows.sort(
-          mode === 'termin'
-            ? (a, b) => end(a).localeCompare(end(b)) || byNr(a, b)
-            : mode === 'rueck'
-              ? (a, b) => reported(b) - reported(a) || byNr(a, b)
-              : byNr
-        );
+        return rows.sort(mode === 'rueck' ? (a, b) => reported(b) - reported(a) || byNr(a, b) : byNr);
       };
       // ---- Entfernung: Koordinaten der Adressen (vom Server) + Standort des Geräts ----
       // geoMap: "PLZ|Straße" -> [Breite, Länge, 'h' Hausnummer gefunden | 's' nur die Straße] · geoSince: Stand beim Server (?since=) ·
@@ -4269,12 +4265,7 @@
           el('span', { class: 'mu' }, 'Sortierung:'),
           [
             ['nr', 'Auftragsnummer'],
-            ...(session.role === 'dispo'
-              ? [['rueck', 'Rückmeldung (neueste zuerst)']]
-              : [
-                  ['termin', 'Termin'],
-                  ['nah', 'Entfernung']
-                ])
+            session.role === 'dispo' ? ['rueck', 'Rückmeldung (neueste zuerst)'] : ['nah', 'Entfernung']
           ].map(([k, l]) =>
             el(
               'button',
@@ -4295,7 +4286,7 @@
         );
       try {
         const saved = localStorage.getItem('lsort');
-        if (saved === 'termin' || saved === 'rueck' || saved === 'nah') listSort = saved;
+        if (saved === 'rueck' || saved === 'nah') listSort = saved; // (früher gab es auch „termin“: wird wie „nr“ behandelt)
       } catch (e) {}
       // Suche: Text kommt in Auftrag, Kurztext, Straße, PLZ oder Technischem Platz vor
       const matchesSearch = r => {
@@ -6066,19 +6057,27 @@
        * Es wird nur der jeweils letzte Standort gespeichert.
        */
       function reportLocationIfAsked(round, announce) {
-        if (session.role !== 'monteur' || locating || document.hidden) return;
+        if (session.role !== 'monteur' || document.hidden) return;
+        // eine Abfrage läuft noch (höchstens 30 s lang, dann gilt sie als hängend, siehe watchdog)
+        if (locating && Date.now() - lastLocationAt < 30000) return;
         const newRound = round !== lastLocateRound;
         if (!newRound && Date.now() - lastLocationAt < 60000) return;
         locating = true;
         lastLocateRound = round;
         lastLocationAt = Date.now();
         if (announce) toast('📍 Der Disponent hat deinen Standort abgefragt.');
-        const send = body =>
-          api('POST', '/api/devices/location', { did: deviceId, ...body })
+        let watchdog = 0;
+        const send = body => {
+          clearTimeout(watchdog);
+          return api('POST', '/api/devices/location', { did: deviceId, ...body })
             .catch(() => {})
             .finally(() => {
               locating = false;
             });
+        };
+        // Manche Browser melden gar nichts zurück, wenn die Frage nach der Erlaubnis nur weggewischt wird: dann sieht der
+        // Disponent „keine Antwort“ statt ewig nichts, und spätere Abfragen sind nicht blockiert (kommt die Position doch noch, wird sie nachgesendet)
+        watchdog = setTimeout(() => send({ error: 'timeout' }), 30000);
         if (!navigator.geolocation) return send({ error: 'unavailable' });
         navigator.geolocation.getCurrentPosition(
           position =>
@@ -7082,6 +7081,7 @@
             saveUser();
             clearLoginPass();
             loginBusy = false;
+            infoMsg = ''; // z. B. „Dieses Gerät wurde vom Disponenten abgemeldet.“ gilt nach der Anmeldung nicht mehr
             switchRole('monteur', (r.user.lock ? null : last) || r.user.team || undefined);
           } catch (e) {
             loginBusy = false;
@@ -7921,6 +7921,15 @@
         }
         await loadDevices();
       }
+      // ein Gerät gilt als online, wenn es sich in den letzten 2 Minuten beim Server gemeldet hat
+      const DEVICE_ONLINE_MS = 2 * 60e3;
+      // Die Monteur-Geräte antworten auf die Standortabfrage innerhalb weniger Sekunden: Liste nach 3, 8 und 15 Sekunden nachladen
+      function reloadDevicesSoon() {
+        for (const ms of [3000, 8000, 15000])
+          setTimeout(() => {
+            if (dispoTab === 'dv' && deviceRenameId === null && !document.hidden) loadDevices();
+          }, ms);
+      }
       // Standortzeile einer Gerätekarte: Karten-Link mit Genauigkeit und Alter, oder der Grund, warum es keinen gibt
       function locationLine(device, now) {
         if (device.locError)
@@ -7936,7 +7945,14 @@
               ' · ' +
               agoText(device.locAt, now)
           );
-        if (device.lat == null) return el('div', { class: 'mu' }, '📍 Standort: noch keine Antwort');
+        if (device.lat == null)
+          return el(
+            'div',
+            { class: 'mu' },
+            now - device.seen < DEVICE_ONLINE_MS
+              ? '📍 Standort: noch keine Antwort'
+              : '📍 Gerät ist offline – Standort unbekannt (nur geöffnete Geräte antworten)'
+          );
         const url = `https://www.openstreetmap.org/?mlat=${device.lat}&mlon=${device.lon}#map=17/${device.lat}/${device.lon}`;
         return el(
           'div',
@@ -7957,7 +7973,7 @@
           return;
         }
         const now = Date.now() + deviceListOffset,
-          isOnline = device => now - device.seen < 2 * 60e3,
+          isOnline = device => now - device.seen < DEVICE_ONLINE_MS,
           loggedIn = deviceList.filter(device => device.role).length,
           online = deviceList.filter(isOnline).length;
         app.append(
@@ -7986,10 +8002,7 @@
                 class: 'pri',
                 onclick: () => {
                   loadDevices(true);
-                  // Geräte antworten innerhalb weniger Sekunden
-                  setTimeout(() => {
-                    if (dispoTab === 'dv') loadDevices();
-                  }, 6000);
+                  reloadDevicesSoon();
                 }
               },
               '📍 Standorte jetzt aktualisieren'
@@ -8744,10 +8757,7 @@
                   deviceLogoutArmed = null;
                   render();
                   loadDevices();
-                  // die Monteur-Geräte antworten auf die Standortabfrage innerhalb weniger Sekunden
-                  setTimeout(() => {
-                    if (dispoTab === 'dv') loadDevices();
-                  }, 6000);
+                  reloadDevicesSoon();
                 }
               },
               'Geräte'
