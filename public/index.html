@@ -2361,18 +2361,61 @@
         border-top-right-radius: 0;
         border-bottom-right-radius: 0;
       }
+      /* Ränder zum Ändern der Länge: links der Beginn, rechts das Ende. Immer da (ändern weder Größe noch Lage des Balkens), schmale
+         Balken lassen ihrer Mitte mindestens ein Drittel zum Verschieben. Sichtbar beim Darüberfahren, beim gewählten Auftrag, beim
+         Entwurf und beim Ziehen; der Zeiger wird am Rand immer zum Doppelpfeil. */
+      .gt-lz,
       .gt-rz {
         position: absolute;
         top: 0;
-        right: 0;
         bottom: 0;
-        width: 10px;
+        width: min(10px, 33%);
         cursor: ew-resize;
         touch-action: none;
+        opacity: 0;
+      }
+      .gt-lz {
+        left: 0;
+        background: linear-gradient(to left, transparent, rgba(255, 255, 255, 0.45));
+      }
+      .gt-rz {
+        right: 0;
         background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.45));
+      }
+      .gt-bar.draft .gt-lz {
+        background: linear-gradient(to left, transparent, color-mix(in srgb, var(--bc) 35%, transparent));
       }
       .gt-bar.draft .gt-rz {
         background: linear-gradient(to right, transparent, color-mix(in srgb, var(--bc) 35%, transparent));
+      }
+      .gt-bar.sel .gt-lz,
+      .gt-bar.sel .gt-rz,
+      .gt-bar.draft .gt-lz,
+      .gt-bar.draft .gt-rz,
+      .gt-bar.drag .gt-lz,
+      .gt-bar.drag .gt-rz {
+        opacity: 1;
+      }
+      .gt-bar.drag.rz {
+        cursor: ew-resize;
+      }
+      @media (hover: hover) {
+        .gt-bar:hover .gt-lz,
+        .gt-bar:hover .gt-rz {
+          opacity: 1;
+        }
+      }
+      @media (pointer: coarse) {
+        .gt-lz,
+        .gt-rz {
+          width: min(16px, 33%);
+        }
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        .gt-lz,
+        .gt-rz {
+          transition: opacity 0.12s;
+        }
       }
       .gt-leg {
         display: flex;
@@ -7668,7 +7711,8 @@
        * Antwort des Servers kommt gleich danach); schlägt das Speichern fehl, kehrt es zurück und die Meldung erscheint. what = Text für die
        * Meldung mit „Rückgängig“ (10 Sekunden), leer = ohne.
        */
-      function applyDispoLocal(items) {
+      // still: die Balken sehen danach genauso aus wie vorher (Länge geändert) – dann kein erneutes Einblenden
+      function applyDispoLocal(items, still = false) {
         for (const it of items) {
           const o = ordersMap.get(it.a);
           if (!o) continue;
@@ -7691,11 +7735,11 @@
               sap
             });
           ordersMap.set(it.a, next);
-          gFresh.set(it.a, performance.now());
+          if (!still) gFresh.set(it.a, performance.now());
         }
         rebuildOrdersByTeam();
       }
-      async function dispoSave(items, what) {
+      async function dispoSave(items, what, still = false) {
         const prev = items.map(it => {
           const o = ordersMap.get(it.a),
             slot = o && slotOf(o);
@@ -7712,7 +7756,7 @@
             gUndo = null;
             render();
           }, 10000);
-        applyDispoLocal(items);
+        applyDispoLocal(items, still);
         render();
         let failed = '';
         try {
@@ -7947,6 +7991,16 @@
           late = lateInfo(o),
           label = o.auftrag,
           text = (kind === 'rep' && o.vtxt ? o.vtxt : o.kurz) || '',
+          // (auch der schmalste Balken ist 16 px breit – Polster und Rand –, die Ränder nehmen höchstens je ein Drittel)
+          grip = !it.ghosted,
+          edge = (side, mode) =>
+            el('div', {
+              class: 'gt-' + side + 'z',
+              onpointerdown: e => {
+                e.stopPropagation();
+                startBarDrag(e, o, it.slot, mode, !!draft);
+              }
+            }),
           node = el(
             'div',
             {
@@ -7975,7 +8029,9 @@
             // (in einem schmalen Balken, im Monat meist, stünde von der Nummer nur ein abgeschnittener Rest)
             right - left >= 44 && el('b', {}, label),
             text && h >= 16 && right - left >= 44 && el('span', {}, text),
-            (sel || draft) && el('div', { class: 'gt-rz', onpointerdown: e => { e.stopPropagation(); startBarDrag(e, o, it.slot, 'resize', !!draft); } })
+            // Ränder zum Ändern der Länge (nicht am abgeschnittenen Rand: dort endet der Auftrag nicht; nicht am blassen Platzhalter eines Entwurfs)
+            grip && x0 >= 0 && edge('l', 'start'),
+            grip && x1 <= g.days * g.dayPx && edge('r', 'end')
           );
         return node;
       }
@@ -8084,7 +8140,7 @@
             )
           ),
           el('div', { class: 'gt-wrap' }, names, scroller),
-          el('div', { class: 'gt-leg' }, el('span', {}, el('i', {}), 'Reparatur'), el('span', {}, el('i', { class: 'ent' }), 'Entstörung'), el('span', {}, el('i', { class: 'dr' }), 'Entwurf'), el('span', {}, '⚠ gelber Rand = Überschneidung im Team'))
+          el('div', { class: 'gt-leg' }, el('span', {}, el('i', {}), 'Reparatur'), el('span', {}, el('i', { class: 'ent' }), 'Entstörung'), el('span', {}, el('i', { class: 'dr' }), 'Entwurf'), el('span', {}, '⚠ gelber Rand = Überschneidung im Team'), el('span', {}, '↔ Rand des Balkens ziehen = Länge ändern'))
         );
         return card;
       }
@@ -8130,14 +8186,16 @@
       }
 
       // ---- Ziehen ----
-      // Balken ziehen (move: Zeit und Team, resize: Ende) mit Maus, Stift oder Finger. Während des Ziehens wird nur der Balken verschoben
-      // (kein Neuzeichnen: Live-Änderungen warten); beim Loslassen wird gespeichert (Entwurf: nur der Entwurf geändert).
+      // Balken ziehen (move: Zeit und Team, start: Beginn am linken Rand, end: Ende am rechten Rand) mit Maus, Stift oder Finger. Während des
+      // Ziehens wird nur der Balken verschoben bzw. in der Breite geändert (kein Neuzeichnen: Live-Änderungen warten); beim Loslassen wird
+      // gespeichert (Entwurf: nur der Entwurf geändert).
       let gTip = null;
       function startBarDrag(e, o, slot, mode, isDraft) {
         if (gDrag || (e.button != null && e.button > 0)) return;
-        const node = e.currentTarget,
+        // (der Rand ist ein Kind des Balkens: bewegt und gemessen wird immer der Balken)
+        const node = e.currentTarget.closest('.gt-bar'),
           scroller = node.closest('.gt-scroll'),
-          d = (gDrag = { a: o.auftrag, kind: orderKind(o), mode, draft: isDraft, node, scroller, id: e.pointerId, x0: e.clientX, y0: e.clientY, sx0: scroller.scrollLeft, slot, next: slot, moved: false, last: e, w0: node.offsetWidth, row0: gGeo.teams.indexOf(slot.team), raf: 0 });
+          d = (gDrag = { a: o.auftrag, kind: orderKind(o), mode, draft: isDraft, node, scroller, id: e.pointerId, x0: e.clientX, y0: e.clientY, sx0: scroller.scrollLeft, slot, next: slot, moved: false, last: e, row0: gGeo.teams.indexOf(slot.team), raf: 0 });
         try {
           node.setPointerCapture(e.pointerId);
         } catch (x) {}
@@ -8165,7 +8223,7 @@
             } else if (d.draft) {
               gDraft = { ...gDraft, ...next };
               render();
-            } else dispoSave([{ a: d.a, ...next }], `${d.a} → ${next.team}, ${slotText(next)}`);
+            } else dispoSave([{ a: d.a, ...next }], `${d.a} → ${next.team}, ${slotText(next)}`, d.mode !== 'move'); // (Länge ändern: der Balken blendet nicht neu ein)
             if (liveDirty) renderLive();
           },
           onUp = ev => ev.pointerId === d.id && finish(true),
@@ -8186,17 +8244,26 @@
           if (Math.hypot(dx, dy) < 5) return;
           d.moved = true;
           d.node.classList.add('drag');
+          if (d.mode !== 'move') d.node.classList.add('rz');
           gTip = el('div', { class: 'gt-tip' });
           document.body.append(gTip);
           autoScroll(d);
         }
-        const dMin = Math.round(((dx / g.pxh) * 60) / g.snap) * g.snap;
+        const dMin = Math.round(((dx / g.pxh) * 60) / g.snap) * g.snap,
+          minLen = Math.min(g.snap, 30); // kürzer wird ein Auftrag nicht (der Rand geht nie über den anderen hinaus)
         let next;
-        if (d.mode === 'resize') {
+        if (d.mode === 'end') {
           next = { ...d.slot, bis: addMinutes(d.slot.bis, dMin) };
-          const minLen = Math.min(g.snap, 30);
           if (minutesBetween(d.slot.von, next.bis) < minLen) next.bis = addMinutes(d.slot.von, minLen);
-          d.node.style.width = Math.max(g.minBar, d.w0 + ((minutesBetween(d.slot.bis, next.bis)) / 60) * g.pxh) + 'px';
+          // (Lage und Breite wie in ganttBar aus der Zeit gerechnet, auch für den Mindestbreiten-Balken: nach dem Loslassen springt nichts)
+          d.node.style.width = Math.max(g.minBar, Math.min(g.days * g.dayPx, gX(g, stampMs(next.bis))) - parseFloat(d.node.style.left)) + 'px';
+        } else if (d.mode === 'start') {
+          next = { ...d.slot, von: addMinutes(d.slot.von, dMin) };
+          if (minutesBetween(next.von, d.slot.bis) < minLen) next.von = addMinutes(d.slot.bis, -minLen);
+          // der linke Rand wandert (translateX), das Ende bleibt stehen
+          const left = Math.max(0, gX(g, stampMs(next.von)));
+          d.node.style.width = Math.max(g.minBar, Math.min(g.days * g.dayPx, gX(g, stampMs(d.slot.bis))) - left) + 'px';
+          d.node.style.transform = `translateX(${left - parseFloat(d.node.style.left)}px)`;
         } else {
           const row = Math.max(0, laneRow(ev.clientY) < 0 ? d.row0 : laneRow(ev.clientY)),
             team = g.teams[row] || d.slot.team;

@@ -1334,9 +1334,148 @@ async function dispositionChecks(browser, base, viewport, errors) {
     await settle(900);
     const o3c = await orderOf('65900003');
     report(o3c.uhr === '09:30' && o3c.uhr2 === '13:15' && o3c.team === 'FW-IH03', `${label} Länge ändern: rechter Rand +2 Std (Ende 13:15), Beginn bleibt`, `${o3c.uhr}–${o3c.uhr2}`);
-    // Monat: Ziehen verschiebt um ganze Tage (36 px = 1 Tag), Uhrzeit und Team bleiben
     await page.evaluate(() => { const x = document.querySelector('#app .gt-sheet .gt-x'); if (x) x.click(); });
     await settle(500);
+
+    // ---- Länge ändern am Rand des Balkens, ohne den Auftrag vorher zu wählen: links = Beginn, rechts = Ende ----
+    const A3 = '65900003',
+      edge = (side, a = A3) =>
+        page.evaluate(([side, a]) => {
+          const h = document.querySelector(`#app .gt-bar[data-k="gb-${a}"] .gt-${side}z`);
+          if (!h) return null;
+          const r = h.getBoundingClientRect(),
+            x = r.left + r.width / 2,
+            y = r.top + r.height / 2;
+          return { x, y, w: r.width, cursor: getComputedStyle(document.elementFromPoint(x, y)).cursor, hit: document.elementFromPoint(x, y) === h };
+        }, [side, a]),
+      box = (a = A3) =>
+        page.evaluate(a => {
+          const b = document.querySelector(`#app .gt-bar[data-k="gb-${a}"]`),
+            r = b.getBoundingClientRect(),
+            hl = b.querySelector('.gt-lz'),
+            hr = b.querySelector('.gt-rz');
+          return { l: r.left, r: r.right, t: r.top, h: r.height, sel: b.classList.contains('sel'), hw: Math.max(hl ? hl.offsetWidth : 0, hr ? hr.offsetWidth : 0), tip: (document.querySelector('.gt-tip') || {}).textContent || '' };
+        }, a),
+      // Rand fassen und um dx Pixel ziehen; gemessen wird kurz vor dem Loslassen und danach
+      dragEdge = async (side, dx, opts = {}) => {
+        const e = await edge(side);
+        await page.mouse.move(e.x, e.y);
+        await page.mouse.down();
+        await page.mouse.move(e.x + dx / 2, e.y, { steps: 4 });
+        await page.mouse.move(e.x + dx, e.y, { steps: 4 });
+        const mid = await box();
+        if (opts.escape) await page.keyboard.press('Escape');
+        await page.mouse.up();
+        // (gleich nach dem Loslassen: läuft auf dem neu gezeichneten Balken eine Animation, würde er kurz verschwinden und neu einblenden)
+        const anims = await page.evaluate(a => { const b = document.querySelector(`#app .gt-bar[data-k="gb-${a}"]`); return b ? b.getAnimations().length : -1; }, A3);
+        await settle(900);
+        return { mid, anims, after: await box() };
+      };
+    const e0 = { l: await edge('l'), r: await edge('r') },
+      b0 = await box();
+    report(!b0.sel && !!e0.l && !!e0.r && e0.l.hit && e0.r.hit, `${label} Rand ziehen: beide Ränder des Balkens haben auch ohne Auswahl einen Anfasser`, JSON.stringify({ sel: b0.sel, l: !!e0.l, r: !!e0.r }));
+    report(e0.l && e0.r && e0.l.cursor === 'ew-resize' && e0.r.cursor === 'ew-resize' && e0.l.w <= 10.5 && e0.r.w <= 10.5, `${label} Rand ziehen: Zeiger wird am Rand zum Doppelpfeil (↔), schmaler Anfasser`, `${e0.l && e0.l.cursor}/${e0.r && e0.r.cursor} · ${e0.l && e0.l.w}`);
+    // sichtbar nur, wenn der Zeiger über dem Balken steht (ändert nur die Deckkraft, nie Größe oder Lage)
+    const rzOpacity = () => page.evaluate(a => getComputedStyle(document.querySelector(`#app .gt-bar[data-k="gb-${a}"] .gt-rz`)).opacity, A3);
+    await page.mouse.move(e0.r.x, e0.r.y);
+    await settle(400);
+    const opHover = await rzOpacity();
+    await page.mouse.move(5, 5);
+    await settle(400);
+    const opAway = await rzOpacity();
+    report(opHover === '1' && opAway === '0', `${label} Rand ziehen: der Rand zeigt sich nur, solange der Zeiger über dem Balken steht`, `${opHover} / ${opAway}`);
+    // links: Beginn +1 Std (09:30 → 10:30), Ende bleibt
+    const L1 = await dragEdge('l', 48),
+      o3d = await orderOf(A3);
+    report(Math.abs(L1.mid.l - (b0.l + 48)) <= 1.5 && Math.abs(L1.mid.r - b0.r) <= 1.5 && Math.abs(L1.mid.t - b0.t) < 0.5 && L1.mid.h === b0.h && L1.mid.hw <= 10.5, `${label} Linker Rand: Balken schrumpft beim Ziehen am Rand (rechter Rand und Zeile stehen, Anfasser wächst nicht)`, JSON.stringify({ dl: L1.mid.l - b0.l, dr: L1.mid.r - b0.r, dt: L1.mid.t - b0.t, hw: L1.mid.hw }));
+    report(/10:30–13:15/.test(L1.mid.tip) && /Std/.test(L1.mid.tip), `${label} Linker Rand: Hinweis nennt Zeitraum und Dauer`, L1.mid.tip);
+    report(o3d.team === 'FW-IH03' && o3d.start === todayIso && o3d.uhr === '10:30' && o3d.uhr2 === '13:15', `${label} Linker Rand: Beginn +1 Std (10:30), Ende 13:15 und Team bleiben`, JSON.stringify({ team: o3d.team, uhr: o3d.uhr, uhr2: o3d.uhr2 }));
+    report(Math.abs(L1.after.l - L1.mid.l) <= 1.5 && Math.abs(L1.after.r - L1.mid.r) <= 1.5 && !L1.after.sel && L1.anims === 0, `${label} Linker Rand: beim Loslassen springt der Balken nicht und blendet nicht neu ein`, `${L1.after.l - L1.mid.l} / ${L1.after.r - L1.mid.r} · ${L1.anims} Animationen`);
+    // rechts: Ende −2 Std (13:15 → 11:15), Beginn bleibt
+    const b1 = await box(),
+      R1 = await dragEdge('r', -96),
+      o3e = await orderOf(A3);
+    report(Math.abs(R1.mid.r - (b1.r - 96)) <= 1.5 && Math.abs(R1.mid.l - b1.l) <= 1.5 && Math.abs(R1.mid.t - b1.t) < 0.5 && R1.mid.hw <= 10.5, `${label} Rechter Rand: Balken schrumpft beim Ziehen am Rand (linker Rand und Zeile stehen)`, JSON.stringify({ dl: R1.mid.l - b1.l, dr: R1.mid.r - b1.r, dt: R1.mid.t - b1.t }));
+    report(o3e.uhr === '10:30' && o3e.uhr2 === '11:15' && o3e.start === todayIso && o3e.team === 'FW-IH03', `${label} Rechter Rand: Ende −2 Std (11:15), Beginn 10:30 bleibt`, `${o3e.uhr}–${o3e.uhr2}`);
+    report(Math.abs(R1.after.l - R1.mid.l) <= 1.5 && Math.abs(R1.after.r - R1.mid.r) <= 1.5 && R1.anims === 0, `${label} Rechter Rand: beim Loslassen springt der Balken nicht und blendet nicht neu ein`, `${R1.after.l - R1.mid.l} / ${R1.after.r - R1.mid.r} · ${R1.anims} Animationen`);
+    // über das andere Ende hinaus: mindestens 15 Min bleiben (Beginn = Ende − 15 Min), nichts dreht sich um
+    const L2 = await dragEdge('l', 300),
+      o3f = await orderOf(A3);
+    report(o3f.uhr === '11:00' && o3f.uhr2 === '11:15' && L2.mid.r - L2.mid.l >= 6, `${label} Linker Rand über das Ende hinaus: mindestens 15 Min (11:00–11:15), Balken nie negativ`, `${o3f.uhr}–${o3f.uhr2} · ${L2.mid.r - L2.mid.l}px`);
+    // schmaler Balken (15 Min = 12 px): beide Anfasser lassen sich trotzdem fassen
+    const narrow = { l: await edge('l'), r: await edge('r') };
+    report(narrow.l && narrow.r && narrow.l.hit && narrow.r.hit && narrow.l.cursor === 'ew-resize' && narrow.r.cursor === 'ew-resize', `${label} Schmaler Balken (15 Min): beide Ränder lassen sich fassen`, JSON.stringify({ l: narrow.l && narrow.l.w, r: narrow.r && narrow.r.w }));
+    // zurück: Ende +2 Std (13:15), dann Beginn −1,5 Std (09:30)
+    await dragEdge('r', 96);
+    const o3g = await orderOf(A3);
+    await dragEdge('l', -72);
+    const o3h = await orderOf(A3);
+    report(o3g.uhr === '11:00' && o3g.uhr2 === '13:15' && o3h.uhr === '09:30' && o3h.uhr2 === '13:15' && o3h.team === 'FW-IH03', `${label} Schmaler Balken: Ende +2 Std, dann Beginn −1,5 Std – wieder 09:30–13:15`, `${o3g.uhr}–${o3g.uhr2} → ${o3h.uhr}–${o3h.uhr2}`);
+    // Esc beim Ziehen bricht ab: nichts wird gespeichert, der Balken springt zurück
+    const b2 = await box(),
+      X = await dragEdge('l', 48, { escape: true }),
+      o3i = await orderOf(A3);
+    report(Math.abs(X.mid.l - (b2.l + 48)) <= 1.5 && o3i.uhr === '09:30' && o3i.uhr2 === '13:15' && Math.abs(X.after.l - b2.l) <= 1.5 && Math.abs(X.after.r - b2.r) <= 1.5, `${label} Rand ziehen, dann Esc: nichts gespeichert, Balken steht wieder an seiner Stelle`, `${o3i.uhr}–${o3i.uhr2} · ${X.after.l - b2.l}`);
+    // ein Tipp auf den Rand (ohne Ziehen) wählt den Auftrag wie ein Tipp auf den Balken und ändert nichts
+    const eTap = await edge('r');
+    await page.mouse.click(eTap.x, eTap.y);
+    await settle(600);
+    const o3j = await orderOf(A3);
+    report((await view()).sheet && (await box()).sel && o3j.uhr === '09:30' && o3j.uhr2 === '13:15', `${label} Tipp auf den Rand (ohne Ziehen) wählt den Auftrag und ändert nichts`);
+    await page.evaluate(() => { const x = document.querySelector('#app .gt-sheet .gt-x'); if (x) x.click(); });
+    await settle(500);
+    // Entwurf: auch der gestrichelte Entwurf lässt sich an beiden Rändern ziehen (gespeichert wird erst mit „Disponieren“).
+    // Genommen wird der erste offene Auftrag; sein Entwurf wird über die Felder des Fensters auf heute 14:00 gesetzt (ganz im Bild:
+    // ein abgeschnittener Rand hat keinen Anfasser).
+    const draftKey = (await view()).pool[0] || '';
+    if (draftKey) {
+      await page.evaluate(k => document.querySelector(`#app [data-k="dp-${k}"]`).click(), draftKey);
+      await settle(600);
+      for (const [key, val] of [['gv-d', todayIso], ['gv-t', '14:00']]) {
+        await page.evaluate(([key, val]) => { const n = document.querySelector(`#app .gt-sheet [data-keep="${key}"]`); n.value = val; n.dispatchEvent(new Event('change', { bubbles: true })); }, [key, val]);
+        await settle(400);
+      }
+    }
+    const draftOk = !!draftKey && (await page.evaluate(() => !!document.querySelector('#app .gt-bar.draft:not(.cl):not(.cr)')));
+    report(draftOk, `${label} Entwurf: gewählter offener Auftrag hat einen Entwurf ganz im gezeigten Zeitraum (für die Randprüfung)`, draftKey);
+    if (draftOk) {
+      // (die Auswahl scrollt die Zeitachse nicht: den Entwurf selbst ins Bild holen)
+      await page.evaluate(() => {
+        const s = document.querySelector('#app .gt-scroll'),
+          b = document.querySelector('#app .gt-bar.draft');
+        s.scrollLeft = Math.max(0, parseFloat(b.style.left) - 300);
+        scrollTo(0, 260);
+      });
+      await settle(500);
+      const stamp = async k => Date.parse((await field(k + '-d')) + 'T' + (await field(k + '-t')) + ':00Z'), // (als UTC gelesen: keine Sommerzeit-Sprünge)
+        dEdge = side => page.evaluate(side => { const h = document.querySelector(`#app .gt-bar.draft .gt-${side}z`), r = h.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; return { x, y, hit: document.elementFromPoint(x, y) === h, cursor: getComputedStyle(document.elementFromPoint(x, y)).cursor }; }, side),
+        dBox = () => page.evaluate(() => { const b = document.querySelector('#app .gt-bar.draft'), r = b.getBoundingClientRect(); return { l: r.left, r: r.right, lz: !!b.querySelector('.gt-lz'), rz: !!b.querySelector('.gt-rz'), t: r.top }; }),
+        dDrag = async (side, dx) => {
+          const e = await dEdge(side);
+          await page.mouse.move(e.x, e.y);
+          await page.mouse.down();
+          await page.mouse.move(e.x + dx / 2, e.y, { steps: 4 });
+          await page.mouse.move(e.x + dx, e.y, { steps: 4 });
+          await page.mouse.up();
+          await settle(700);
+        };
+      const d0 = await dBox(),
+        dl = await dEdge('l'),
+        dr = await dEdge('r'),
+        von0 = await stamp('gv'),
+        bis0 = await stamp('gb');
+      report(d0.lz && d0.rz && dl.hit && dr.hit && dl.cursor === 'ew-resize' && dr.cursor === 'ew-resize', `${label} Entwurf: gestrichelter Balken hat beide Anfasser, frei und mit Doppelpfeil`, JSON.stringify({ d0, dl: dl.hit, dr: dr.hit }));
+      await dDrag('l', -48);
+      const d1 = await dBox();
+      report(Math.abs(d1.l - (d0.l - 48)) <= 1.5 && Math.abs(d1.r - d0.r) <= 1.5 && (await stamp('gv')) === von0 - 36e5 && (await stamp('gb')) === bis0, `${label} Entwurf: linker Rand −1 Std (Beginn eine Stunde früher, Ende bleibt)`, `${d1.l - d0.l} / ${d1.r - d0.r}`);
+      await dDrag('r', 48);
+      const d2 = await dBox();
+      report(Math.abs(d2.r - (d1.r + 48)) <= 1.5 && Math.abs(d2.l - d1.l) <= 1.5 && (await stamp('gb')) === bis0 + 36e5 && (await stamp('gv')) === von0 - 36e5, `${label} Entwurf: rechter Rand +1 Std (Ende eine Stunde später, Beginn bleibt)`, `${d2.r - d1.r} / ${d2.l - d1.l}`);
+      report(!(await orderOf(draftKey)).dis, `${label} Entwurf: Rand ziehen speichert nichts (Auftrag bleibt offen)`);
+      await page.evaluate(() => document.querySelector('#app .gt-sheet .gt-x').click());
+      await settle(500);
+    }
+    // Monat: Ziehen verschiebt um ganze Tage (36 px = 1 Tag), Uhrzeit und Team bleiben
     await probe(page, `${label} Zoom „Monat“ (zum Ziehen)`, btn('/^Monat$/', '#app .gt-seg'), { at: 250, ms: 800 });
     const dir = nowD.getDate() + 2 <= dim ? 1 : -1;
     const m3 = await page.evaluate(() => { const r = document.querySelector('#app .gt-bar[data-k="gb-65900003"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
@@ -1349,6 +1488,21 @@ async function dispositionChecks(browser, base, viewport, errors) {
     await settle(900);
     const o3m = await orderOf('65900003');
     report(o3m.start === dayIso(2 * dir) && o3m.uhr === '09:30' && o3m.uhr2 === '13:15' && o3m.team === 'FW-IH03', `${label} Monat: Balken 2 Tage ${dir > 0 ? 'später' : 'früher'} gezogen – Tag ${dayIso(2 * dir)}, Uhrzeit 09:30–13:15 und Team bleiben`, JSON.stringify({ team: o3m.team, start: o3m.start, uhr: o3m.uhr, uhr2: o3m.uhr2 }) + ' · ' + monthTip);
+    // Monat: auch am Rand ändern sich nur ganze Tage (Uhrzeiten bleiben): rechts Ende +1 Tag, links Beginn −1 Tag
+    {
+      const mb = await box(),
+        me = { l: await edge('l'), r: await edge('r') };
+      report(me.l && me.r && me.l.hit && me.r.hit && me.l.cursor === 'ew-resize' && me.r.cursor === 'ew-resize' && me.l.w >= 3 && mb.r - mb.l >= 14, `${label} Monat: auch der 14 px breite Balken hat zwei fassbare Ränder`, JSON.stringify({ l: me.l && me.l.w, r: me.r && me.r.w, w: mb.r - mb.l }));
+      const M1 = await dragEdge('r', 36),
+        o3n = await orderOf(A3);
+      report(o3n.start === dayIso(2 * dir) && o3n.ende === dayIso(2 * dir + 1) && o3n.uhr === '09:30' && o3n.uhr2 === '13:15' && o3n.team === 'FW-IH03', `${label} Monat: rechter Rand +1 Tag – Ende ${dayIso(2 * dir + 1)} 13:15, Beginn und Team bleiben`, JSON.stringify({ start: o3n.start, ende: o3n.ende, uhr: o3n.uhr, uhr2: o3n.uhr2 }) + ' · ' + M1.mid.tip);
+      // (der Balken ist vorher auf 14 px Mindestbreite aufgeweitet: er wächst auf die echte Länge, nicht um genau 36 px; entscheidend ist, dass beim Loslassen nichts springt)
+      report(M1.mid.r - mb.r > 20 && Math.abs(M1.mid.l - mb.l) <= 1.5 && Math.abs(M1.mid.t - mb.t) < 0.5 && Math.abs(M1.after.r - M1.mid.r) <= 1.5 && Math.abs(M1.after.l - M1.mid.l) <= 1.5, `${label} Monat: rechter Rand – Balken wächst beim Ziehen mit, Zeile bleibt, beim Loslassen springt nichts`, `${M1.mid.r - mb.r} · Sprung ${M1.after.r - M1.mid.r}/${M1.after.l - M1.mid.l}`);
+      const M2 = await dragEdge('l', -36),
+        o3o = await orderOf(A3);
+      report(M2.mid.l < M1.after.l - 20 && Math.abs(M2.mid.r - M1.after.r) <= 1.5 && Math.abs(M2.after.l - M2.mid.l) <= 1.5 && Math.abs(M2.after.r - M2.mid.r) <= 1.5, `${label} Monat: linker Rand – Balken wächst nach links, rechter Rand steht, beim Loslassen springt nichts`, `${M2.mid.l - M1.after.l} · Sprung ${M2.after.l - M2.mid.l}/${M2.after.r - M2.mid.r}`);
+      report(o3o.start === dayIso(2 * dir - 1) && o3o.ende === dayIso(2 * dir + 1) && o3o.uhr === '09:30' && o3o.uhr2 === '13:15', `${label} Monat: linker Rand −1 Tag – Beginn ${dayIso(2 * dir - 1)} 09:30, Ende bleibt`, JSON.stringify({ start: o3o.start, ende: o3o.ende, uhr: o3o.uhr, uhr2: o3o.uhr2 }) + ' · ' + M2.mid.tip);
+    }
     // und wieder zurück auf heute (Rückgängig-Hinweis abwarten ist nicht nötig: der Server hält den Stand)
     await probe(page, `${label} Zoom „Tag“ (nach dem Ziehen im Monat)`, btn('/^Tag$/', '#app .gt-seg'), { at: 250, ms: 800 });
     await page.evaluate(() => scrollTo(0, 260));
