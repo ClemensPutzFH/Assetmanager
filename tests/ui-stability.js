@@ -1254,6 +1254,37 @@ async function dispositionChecks(browser, base, viewport, errors) {
   const rangeBack = await page.evaluate(() => document.querySelector('#app .gt-range').textContent);
   await probe(page, `${label} Navigation „Heute“ (zurück)`, btn('/^Heute$/', '#app .gt-top'), { at: 250, ms: 700 });
   report(rangeBack.startsWith(dayIso(-1).split('-').reverse().slice(0, 2).join('.')) && (await page.evaluate(() => document.querySelector('#app .gt-range').textContent)).startsWith(todayIso.split('-').reverse().slice(0, 2).join('.')), `${label} Navigation: ‹ zeigt ab gestern, „Heute“ ab heute`, rangeBack);
+  // ---- Monatsübersicht: ein Kalendermonat, ein Tag = 36 px, Navigation von Monat zu Monat ----
+  const monthNames = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'],
+    nowD = new Date(),
+    dim = new Date(nowD.getFullYear(), nowD.getMonth() + 1, 0).getDate(),
+    monthOf = n => { const d = new Date(nowD.getFullYear(), nowD.getMonth() + n, 1); return `${monthNames[d.getMonth()]} ${d.getFullYear()}`; };
+  await probe(page, `${label} Zoom „Monat“`, btn('/^Monat$/', '#app .gt-seg'), { at: 250, ms: 800 });
+  const mo = await page.evaluate(() => ({
+    days: document.querySelectorAll('#app .gt-day').length,
+    hours: document.querySelectorAll('#app .gt-hr').length,
+    width: parseFloat(getComputedStyle(document.querySelector('#app .gt-in')).width),
+    range: document.querySelector('#app .gt-range').textContent,
+    first: document.querySelector('#app .gt-day').textContent,
+    on: [...document.querySelectorAll('#app .gt-seg button.on')].map(b => b.textContent),
+    weekend: document.querySelectorAll('#app .gt-wk').length,
+    td: (document.querySelector('#app .gt-day.td') || {}).textContent
+  }));
+  report(mo.days === dim && mo.hours === 0 && mo.width === dim * 36 && mo.range === monthOf(0) && mo.first.replace(/\D/g, '') === '1' && mo.on.join() === 'Monat' && mo.weekend >= 8 && mo.td && mo.td.replace(/\D/g, '') === String(nowD.getDate()), `${label} Monat: ${dim} Tage zu je 36 px, Kopf mit Wochentag und Tag, Monatsname, Wochenenden getönt, heute markiert`, JSON.stringify(mo));
+  const mbar = await page.evaluate(() => { const b = document.querySelector('#app .gt-bar[data-k="gb-65900003"]'); return b && { left: parseFloat(b.style.left), width: parseFloat(b.style.width), label: !!b.querySelector('b'), row: b.closest('.gt-row').dataset.team }; });
+  report(mbar && Math.abs(mbar.left - ((nowD.getDate() - 1) * 24 + 8.5) * 1.5) < 1 && mbar.width === 14 && !mbar.label, `${label} Monat: der Balken von heute 08:30 sitzt am richtigen Tag, ist mindestens 14 px breit (antippbar) und trägt keinen abgeschnittenen Text`, JSON.stringify(mbar));
+  await probe(page, `${label} Monat: Navigation „›“ (nächster Monat)`, btn('/^›$/', '#app .gt-top'), { at: 250, ms: 700 });
+  const next = await page.evaluate(() => ({ range: document.querySelector('#app .gt-range').textContent, days: document.querySelectorAll('#app .gt-day').length }));
+  const dimNext = new Date(nowD.getFullYear(), nowD.getMonth() + 2, 0).getDate();
+  report(next.range === monthOf(1) && next.days === dimNext, `${label} Monat: „›“ zeigt ${monthOf(1)} mit ${dimNext} Tagen`, JSON.stringify(next));
+  await probe(page, `${label} Monat: Navigation „‹“ (zurück, ein Monat davor)`, btn('/^‹$/', '#app .gt-top'), { at: 250, ms: 700 });
+  await probe(page, `${label} Monat: Navigation „‹“ (zwei Monate zurück)`, btn('/^‹$/', '#app .gt-top'), { at: 250, ms: 700 });
+  report((await page.evaluate(() => document.querySelector('#app .gt-range').textContent)) === monthOf(-1), `${label} Monat: „‹“ zeigt ${monthOf(-1)}`);
+  await probe(page, `${label} Monat: „Heute“`, btn('/^Heute$/', '#app .gt-top'), { at: 250, ms: 700 });
+  report((await page.evaluate(() => document.querySelector('#app .gt-range').textContent)) === monthOf(0), `${label} Monat: „Heute“ zeigt wieder ${monthOf(0)}`);
+  report(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), `${label} Monat: Seite nicht breiter als der Bildschirm`);
+  await probe(page, `${label} Zoom „Tag“ (zurück aus dem Monat)`, btn('/^Tag$/', '#app .gt-seg'), { at: 250, ms: 800 });
+  report((await page.evaluate(() => document.querySelectorAll('#app .gt-day').length === 3 && document.querySelectorAll('#app .gt-hr').length === 72)), `${label} Zurück zu „Tag“: 3 Tage mit Stunden`);
   await probe(page, `${label} Filter „Reparaturen“`, btn('/^🛠️ Reparaturen/'), { at: 300, ms: 800 });
   v = await view();
   report(v.pool.every(a => !['65900003', '65900004'].includes(a)) && v.bars.every(a => !['65900003', '65900004'].includes(a)), `${label} Filter Reparaturen: Liste und Diagramm ohne Entstörungen`, v.pool.join() + ' | ' + v.bars.join());
@@ -1303,6 +1334,25 @@ async function dispositionChecks(browser, base, viewport, errors) {
     await settle(900);
     const o3c = await orderOf('65900003');
     report(o3c.uhr === '09:30' && o3c.uhr2 === '13:15' && o3c.team === 'FW-IH03', `${label} Länge ändern: rechter Rand +2 Std (Ende 13:15), Beginn bleibt`, `${o3c.uhr}–${o3c.uhr2}`);
+    // Monat: Ziehen verschiebt um ganze Tage (36 px = 1 Tag), Uhrzeit und Team bleiben
+    await page.evaluate(() => { const x = document.querySelector('#app .gt-sheet .gt-x'); if (x) x.click(); });
+    await settle(500);
+    await probe(page, `${label} Zoom „Monat“ (zum Ziehen)`, btn('/^Monat$/', '#app .gt-seg'), { at: 250, ms: 800 });
+    const dir = nowD.getDate() + 2 <= dim ? 1 : -1;
+    const m3 = await page.evaluate(() => { const r = document.querySelector('#app .gt-bar[data-k="gb-65900003"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+    await page.mouse.move(m3.x, m3.y);
+    await page.mouse.down();
+    await page.mouse.move(m3.x + dir * 30, m3.y, { steps: 4 });
+    await page.mouse.move(m3.x + dir * 72, m3.y, { steps: 4 });
+    const monthTip = await page.evaluate(() => (document.querySelector('.gt-tip') || {}).textContent);
+    await page.mouse.up();
+    await settle(900);
+    const o3m = await orderOf('65900003');
+    report(o3m.start === dayIso(2 * dir) && o3m.uhr === '09:30' && o3m.uhr2 === '13:15' && o3m.team === 'FW-IH03', `${label} Monat: Balken 2 Tage ${dir > 0 ? 'später' : 'früher'} gezogen – Tag ${dayIso(2 * dir)}, Uhrzeit 09:30–13:15 und Team bleiben`, JSON.stringify({ team: o3m.team, start: o3m.start, uhr: o3m.uhr, uhr2: o3m.uhr2 }) + ' · ' + monthTip);
+    // und wieder zurück auf heute (Rückgängig-Hinweis abwarten ist nicht nötig: der Server hält den Stand)
+    await probe(page, `${label} Zoom „Tag“ (nach dem Ziehen im Monat)`, btn('/^Tag$/', '#app .gt-seg'), { at: 250, ms: 800 });
+    await page.evaluate(() => scrollTo(0, 260));
+    await settle(400);
     // Entwurf eines Offenen ziehen (Fenster offen): nur der Entwurf bewegt sich, gespeichert wird erst mit „Disponieren“
     await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900008-0010"]'); c.click(); });
     await settle(600);
@@ -1359,6 +1409,163 @@ async function dispositionChecks(browser, base, viewport, errors) {
   await settle(400);
   await page.context().close();
 }
+// ---------- Disposition: Liste der offenen Aufträge im Extra-Fenster (zwei Bildschirme) ----------
+// Der Knopf „⧉ Extra-Fenster“ öffnet die Offen-Liste in einem zweiten Browserfenster, das Hauptfenster zeigt das Diagramm in voller Breite.
+// Geprüft: Aufbau und Stabilität des Hauptfensters (Leiste gleich hoch, nichts springt), Liste im Fenster (Karten, Zahl im Titel, Suche mit
+// erhaltenem Fokus, Auftragsart), „Vorschlag übernehmen“ im Fenster (Karte gleitet aus, Rest rückt weich nach, Balken im Hauptfenster),
+// Antippen einer Karte (Bearbeiten-Fenster im Hauptfenster), Ziehen einer Karte auf eine Teamzeile (HTML5-Ziehen, hier mit synthetischen
+// Ereignissen: echtes Ziehen über Fenstergrenzen lässt sich nicht fernsteuern), Schließen des Fensters von beiden Seiten, Abmelden.
+async function poolWindowChecks(browser, base, errors) {
+  const viewport = { width: 1280, height: 900 },
+    label = '1280px Extra-Fenster:',
+    todayIso = new Date().toLocaleDateString('sv-SE');
+  console.log('\n=== Disposition: Extra-Fenster für die Offen-Liste (1280px) ===');
+  await undispatchAll(base);
+  const page = await newPage(browser, base, viewport, errors);
+  await loginDispo(page);
+  const settle = ms => pause(page, ms);
+  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => /^Disposition/.test(b.textContent.trim())).click());
+  await page.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
+  await settle(900);
+  const orderOf = async a => (await dispatchOrders(base)).find(o => o.auftrag === a);
+  const bar = () => page.evaluate(() => { const r = document.querySelector('#app .gtb').getBoundingClientRect(), g = document.querySelector('#app .gt').getBoundingClientRect(); return { top: r.top, h: Math.round(r.height * 10) / 10, gt: Math.round(g.width) }; });
+  const cardsOf = p => p.evaluate(() => [...document.querySelectorAll('.gt-pool > [data-k]')].map(c => c.dataset.k.slice(3)));
+  report(await page.evaluate(() => !!document.querySelector('#app .gtt-pop') && !!document.querySelector('#app .gtt input[type="search"]') && !document.querySelector('#app .gtp.solo')), `${label} Knopf „⧉ Extra-Fenster“ neben der Suche (Liste steht noch in der Seite)`);
+  const b0 = await bar();
+
+  // ---- öffnen ----
+  const [popup] = await Promise.all([page.context().waitForEvent('page', { timeout: 10000 }), probe(page, `${label} „⧉ Extra-Fenster“ (Diagramm blendet in voller Breite ein, Leiste bleibt stehen)`, `() => document.querySelector('#app .gtt-pop')`, { ms: 1000, anim: true })]);
+  popup.on('pageerror', e => errors.push('Extra-Fenster: ' + e.message));
+  await popup.waitForSelector('.gt-pool > [data-k]', { timeout: 10000 });
+  await settle(900);
+  const b1 = await bar();
+  report(b1.top === b0.top && b1.h === b0.h && b1.gt > b0.gt + 250, `${label} Hauptfenster: Leiste bleibt an derselben Stelle gleich hoch, das Diagramm wird breiter`, `${b0.top}/${b0.h}/${b0.gt} → ${b1.top}/${b1.h}/${b1.gt}`);
+  report(await page.evaluate(() => !document.querySelector('#app .gt-pc') && !document.querySelector('#app .gt-ph') && !!document.querySelector('#app .gtp.solo') && /im Extra-Fenster/.test(document.querySelector('#app .gtt-note').textContent) && !document.querySelector('#app .gtt input')), `${label} Hauptfenster: keine Karten und keine Suche mehr, Hinweis „im Extra-Fenster“ mit Knöpfen`);
+  const wanted = ['65900008-0010', '65900004', '65900003', '65900002-0010', '65900001-0010', '65900001-0020', '65900009'];
+  const info = await popup.evaluate(() => ({ mode: document.compatMode, title: document.title, head: document.querySelector('.gt-ph b').textContent, chips: [...document.querySelectorAll('.chips button')].map(b => b.textContent.trim()), font: getComputedStyle(document.body).fontFamily.split(',')[0], bg: getComputedStyle(document.body).backgroundColor, wide: document.documentElement.scrollWidth <= document.documentElement.clientWidth }));
+  report((await cardsOf(popup)).join() === wanted.join() && info.mode === 'CSS1Compat' && /^\(7\) Offene/.test(info.title) && /\(7\)/.test(info.head) && info.chips.join() === 'Alle (7),🛠️ Reparaturen (5),🚨 Entstörungen (2)' && /Inter/.test(info.font) && info.wide, `${label} Fenster: 7 Karten, das Älteste zuerst, Zahl im Titel, Auftragsarten, Schrift und Stile übernommen, nichts zu breit`, JSON.stringify(info));
+  const gantt0 = await page.evaluate(() => document.querySelectorAll('#app .gt-row').length);
+  report(gantt0 > 5, `${label} Hauptfenster: Diagramm mit ${gantt0} Teamzeilen`);
+
+  // ---- „Vorschlag übernehmen“ im Fenster ----
+  const watch = (src, ms) => popup.evaluate(({ src, ms }) => new Promise(resolve => {
+    const keys = () => new Map([...document.querySelectorAll('.gt-pool > [data-k]')].map(n => [n.dataset.k, Math.round(n.getBoundingClientRect().top * 10) / 10])),
+      running = () => document.getAnimations().filter(a => a.playState === 'running' && !a.transitionProperty && !a.animationName).length,
+      before = keys(), t0 = performance.now(), frames = [];
+    let anims = -1;
+    new Function('return (' + src + ')()')().click();
+    const loop = () => {
+      frames.push([...keys()]);
+      if (frames.length === 3) anims = running();
+      if (performance.now() - t0 < ms) requestAnimationFrame(loop);
+      else resolve({ before: [...before], frames, anims, left: running(), stuck: [...document.querySelectorAll('.gt-pool > [data-k]')].filter(n => +getComputedStyle(n).opacity < 0.99 || getComputedStyle(n).transform !== 'none').length, ghosts: document.querySelectorAll('body > [data-k]').length });
+    };
+    requestAnimationFrame(loop);
+  }), { src, ms });
+  // Sprünge wie in probe(): ein stillstehendes Element springt in einem Bild um ≥ 24 px
+  const jumps = res => {
+    const before = new Map(res.before), last = new Map(res.frames[res.frames.length - 1]);
+    let n = 0;
+    for (const k of before.keys()) {
+      if (!last.has(k)) continue;
+      const series = [before.get(k), ...res.frames.map(f => new Map(f).get(k) ?? null)];
+      for (let i = 2; i < series.length - 1; i++) {
+        const [a, b, c, d] = [series[i - 2], series[i - 1], series[i], series[i + 1]];
+        if ([a, b, c, d].every(v => v != null) && Math.abs(b - a) <= 1 && Math.abs(c - b) >= 24 && Math.abs(d - c) <= 1) n++;
+      }
+    }
+    return n;
+  };
+  const fresh0 = await page.evaluate(() => document.querySelectorAll('#app .gt-bar').length);
+  let r = await watch(`() => document.querySelector('[data-k="dp-65900003"] .gt-go')`, 1100);
+  await settle(300);
+  let got = await cardsOf(popup);
+  report(!got.includes('65900003') && got.length === 6 && jumps(r) === 0 && r.anims >= 1 && !r.left && !r.stuck && !r.ghosts, `${label} Fenster: „Vorschlag übernehmen“ – Karte gleitet aus, die übrigen rücken weich nach (kein Sprung), am Ende steht alles still`, `${got.length} Karten · ${r.anims} Animationen · ${jumps(r)} Sprünge · ${r.left} laufen noch · ${r.stuck} hängen · ${r.ghosts} Kopien`);
+  const o3 = await orderOf('65900003');
+  report(o3 && o3.dis === 1 && o3.team === 'FW-IH01' && o3.start === todayIso && o3.uhr === '08:30', `${label} Fenster: der Server hat 65900003 bei FW-IH01 heute 08:30 disponiert`, JSON.stringify(o3 && { team: o3.team, start: o3.start, uhr: o3.uhr }));
+  report((await page.evaluate(() => document.querySelectorAll('#app .gt-bar').length)) === fresh0 + 1 && (await page.evaluate(() => !!document.querySelector('#app .gt-bar[data-k="gb-65900003"]'))) && /^\(6\) Offene/.test(await popup.title()), `${label} Hauptfenster: der Balken ist im Diagramm, der Titel des Fensters zählt 6`);
+  report(await popup.evaluate(() => /Rückgängig/.test(document.querySelector('.gtw-toast').textContent) && document.querySelector('.gtw-toast').classList.contains('on')), `${label} Fenster: Hinweis mit „Rückgängig“ unten`);
+  await popup.evaluate(() => [...document.querySelectorAll('.gtw-toast button')].find(b => /Rückgängig/.test(b.textContent)).click());
+  await settle(900);
+  report((await cardsOf(popup)).length === 7 && !(await orderOf('65900003')).dis, `${label} Fenster: „Rückgängig“ bringt die Karte zurück (auch am Server)`);
+
+  // ---- Suche und Auftragsart im Fenster ----
+  const input = popup.locator('input[type="search"]');
+  await input.click();
+  await input.pressSequentially('Schieb', { delay: 90 });
+  await settle(500);
+  const typed = await popup.evaluate(() => ({ v: document.querySelector('input[type="search"]').value, focus: document.activeElement === document.querySelector('input[type="search"]'), cards: [...document.querySelectorAll('.gt-pool > [data-k]')].map(c => c.dataset.k.slice(3)) }));
+  report(typed.v === 'Schieb' && typed.focus && typed.cards.join() === '65900002-0010', `${label} Fenster: Tippen in der Suche filtert die Liste, das Feld behält Fokus und Text`, JSON.stringify(typed));
+  await input.fill('');
+  await settle(600);
+  await popup.evaluate(() => [...document.querySelectorAll('.chips button')].find(b => /Entstörungen/.test(b.textContent)).click());
+  await settle(700);
+  report((await cardsOf(popup)).join() === '65900004,65900003' && (await page.evaluate(() => [...document.querySelectorAll('#app .chip.on')].map(b => b.textContent.trim()).join())).startsWith('🚨 Entstörungen'), `${label} Fenster: Auftragsart „Entstörungen“ filtert die Liste, das Hauptfenster zeigt dieselbe Wahl`, (await cardsOf(popup)).join());
+  await popup.evaluate(() => [...document.querySelectorAll('.chips button')].find(b => /^Alle/.test(b.textContent.trim())).click());
+  await settle(700);
+
+  // ---- Karte antippen: Bearbeiten-Fenster im Hauptfenster ----
+  await popup.evaluate(() => document.querySelector('[data-k="dp-65900002-0010"]').click());
+  await settle(700);
+  report(await page.evaluate(() => { const s = document.querySelector('#app .gt-sheet'); return !!s && /65900002-0010/.test(s.textContent) && /noch offen/.test(s.textContent) && !!document.querySelector('#app .gt-bar.draft'); }) && (await popup.evaluate(() => document.querySelector('[data-k="dp-65900002-0010"]').classList.contains('sel'))), `${label} Karte im Fenster antippen: das Hauptfenster zeigt Bearbeiten-Fenster und Entwurf, die Karte ist hervorgehoben`);
+  await page.evaluate(() => document.querySelector('#app .gt-sheet .gt-x').click());
+  await settle(600);
+  report(await popup.evaluate(() => !document.querySelector('[data-k="dp-65900002-0010"]').classList.contains('sel')), `${label} Bearbeiten-Fenster schließen: die Hervorhebung im Fenster verschwindet`);
+
+  // ---- Karte auf eine Teamzeile ziehen (HTML5-Ziehen) ----
+  const geo = await page.evaluate(() => {
+    const sc = document.querySelector('#app .gt-scroll').getBoundingClientRect(), row = document.querySelector('#app .gt-row[data-team="FW-IH02"]').getBoundingClientRect();
+    return { left: sc.left - document.querySelector('#app .gt-scroll').scrollLeft, y: row.top + row.height / 2 };
+  });
+  await popup.evaluate(() => { window.__dt = new DataTransfer(); document.querySelector('[data-k="dp-65900004"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: window.__dt })); });
+  const x14 = geo.left + 14 * 48;
+  await page.evaluate(({ x, y }) => {
+    const row = document.querySelector('#app .gt-row[data-team="FW-IH02"]');
+    row.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: new DataTransfer() }));
+  }, { x: x14, y: geo.y });
+  const during = await page.evaluate(() => ({ tip: (document.querySelector('.gt-tip') || {}).textContent, target: [...document.querySelectorAll('#app .gt-row.tgt')].map(r => r.dataset.team), name: [...document.querySelectorAll('#app .gt-name.tgt')].length }));
+  report(/FW-IH02/.test(during.tip || '') && /14:00/.test(during.tip) && during.target.join() === 'FW-IH02' && during.name === 1, `${label} Ziehen über das Diagramm: Hinweis zeigt Team und Zeit, Zielzeile ist hervorgehoben`, `${during.tip} · ${during.target.join()}`);
+  // während des Ziehens bleibt die Liste im Fenster stehen (sonst bräche das Ziehen ab)
+  report((await cardsOf(popup)).includes('65900004'), `${label} Ziehen: die Karte bleibt im Fenster, bis das Ziehen endet`);
+  await page.evaluate(({ x, y }) => {
+    const row = document.querySelector('#app .gt-row[data-team="FW-IH02"]');
+    row.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: new DataTransfer() }));
+  }, { x: x14, y: geo.y });
+  await popup.evaluate(() => document.querySelector('[data-k="dp-65900004"]').dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: window.__dt })));
+  await settle(1200);
+  const o4 = await orderOf('65900004');
+  report(o4 && o4.dis === 1 && o4.team === 'FW-IH02' && o4.start === todayIso && o4.uhr === '14:00' && o4.uhr2 === '21:30', `${label} Fallenlassen: Auftrag liegt bei FW-IH02 ab 14:00 (Stelle des Zeigers, Dauer aus SAP)`, JSON.stringify(o4 && { team: o4.team, start: o4.start, uhr: o4.uhr, uhr2: o4.uhr2 }));
+  report(!(await cardsOf(popup)).includes('65900004') && (await page.evaluate(() => !document.querySelector('.gt-tip') && !document.querySelector('#app .gt-row.tgt') && !!document.querySelector('#app .gt-bar[data-k="gb-65900004"]'))), `${label} Fallenlassen: Karte weg, Balken im Diagramm, Hinweis und Hervorhebung sind aufgeräumt`);
+  // Loslassen außerhalb einer Zeile ändert nichts
+  await popup.evaluate(() => { window.__dt = new DataTransfer(); document.querySelector('[data-k="dp-65900009"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: window.__dt })); });
+  await popup.evaluate(() => document.querySelector('[data-k="dp-65900009"]').dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: window.__dt })));
+  await settle(400);
+  report((await cardsOf(popup)).includes('65900009') && !(await orderOf('65900009')).dis, `${label} Ziehen ohne Ziel: nichts wird disponiert`);
+
+  // ---- Fenster schließen: von der Seite aus und vom Fenster aus ----
+  report(await page.evaluate(() => [...document.querySelectorAll('#app .gtt button')].map(b => b.textContent.trim()).join() === 'Nach vorn,Liste wieder hier'), `${label} Hauptfenster: Knöpfe „Nach vorn“ und „Liste wieder hier“`);
+  await probe(page, `${label} „Liste wieder hier“ (Fenster schließt, Liste steht wieder in der Seite)`, btn('/^Liste wieder hier$/', '#app .gtt'), { ms: 1000, anim: true });
+  await settle(400);
+  report(popup.isClosed() && (await page.evaluate(() => document.querySelectorAll('#app .gt-pc').length)) === 6 && !(await page.evaluate(() => !!document.querySelector('#app .gtp.solo'))), `${label} „Liste wieder hier“: Extra-Fenster ist zu, die 6 offenen Karten stehen wieder links`);
+  const b2 = await bar();
+  // (die Oberkante liegt tiefer: oben steht noch der Hinweis „Rückgängig“ vom Fallenlassen)
+  report(b2.h === b0.h && b2.gt === b0.gt, `${label} Hauptfenster: Leiste und Diagramm so hoch und breit wie vor dem Öffnen`, JSON.stringify(b2));
+  // erneut öffnen und das Fenster selbst schließen
+  const [popup2] = await Promise.all([page.context().waitForEvent('page', { timeout: 10000 }), page.click('#app .gtt-pop')]);
+  await popup2.waitForSelector('.gt-pool > [data-k]', { timeout: 10000 });
+  await settle(600);
+  report((await cardsOf(popup2)).length === 6 && (await page.evaluate(() => !!document.querySelector('#app .gtp.solo'))), `${label} Erneut geöffnet: 6 offene Karten im Fenster`);
+  await popup2.close();
+  await page.waitForFunction(() => !document.querySelector('#app .gtp.solo') && document.querySelectorAll('#app .gt-pc').length === 6, null, { timeout: 4000 }).then(() => report(true, `${label} Fenster geschlossen (Kreuz): die Liste steht von selbst wieder im Hauptfenster`), e => report(false, `${label} Fenster geschlossen (Kreuz): die Liste steht von selbst wieder im Hauptfenster`, 'nach 4 s noch nicht'));
+  // Abmelden schließt das Fenster mit
+  const [popup3] = await Promise.all([page.context().waitForEvent('page', { timeout: 10000 }), page.click('#app .gtt-pop')]);
+  await popup3.waitForSelector('.gt-pool > [data-k]', { timeout: 10000 });
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Start/.test(b.textContent)).click());
+  await settle(900);
+  report(popup3.isClosed(), `${label} Abmelden („← Start“) schließt das Extra-Fenster mit`);
+  await page.context().close();
+}
+
 // Disposition auf dem schmalsten Handy (320 px): nichts ragt über den Rand, das Bearbeiten-Fenster liegt im Bild, Dunkelmodus lesbar.
 // Endet wie dispositionChecks mit „Alle Vorschläge übernehmen“ (die Monteur-Prüfungen danach rechnen mit diesen Zeiten).
 async function dispositionNarrowChecks(browser, base, errors) {
@@ -1379,6 +1586,13 @@ async function dispositionNarrowChecks(browser, base, errors) {
   report(sheet.l >= 0 && sheet.r <= sheet.w && sheet.b <= sheet.h && sheet.t >= 0 && sheet.fields, '320px Fenster: liegt im Bild, alle Felder innerhalb des Randes', JSON.stringify(sheet));
   w = await wide();
   report(!w.length, '320px Disposition mit Fenster: nichts ragt über den Rand', w.join(', '));
+  await page.evaluate(() => [...document.querySelectorAll('#app .gt-seg button')].find(b => /^Monat$/.test(b.textContent.trim())).click());
+  await pause(page, 600);
+  w = await wide();
+  const seg = await page.evaluate(() => { const r = document.querySelector('#app .gt-seg').getBoundingClientRect(); return { l: r.left, r: r.right, w: innerWidth }; });
+  report(!w.length && seg.l >= 0 && seg.r <= seg.w && (await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)), '320px Monat: Zoom-Schalter (Tag, Woche, Monat) und Diagramm ragen nicht über den Rand', JSON.stringify(seg) + ' ' + w.join(', '));
+  await page.evaluate(() => [...document.querySelectorAll('#app .gt-seg button')].find(b => /^Tag$/.test(b.textContent.trim())).click());
+  await pause(page, 500);
   // Dunkelmodus: Balken, Entwurf, Zeilen und Fenster bleiben lesbar (Text hebt sich vom Grund ab)
   await page.evaluate(() => [...document.querySelectorAll('#app .gt-sheet button')].find(b => /^1 Std$/.test(b.textContent.trim())).click());
   await pause(page, 400);
@@ -1714,14 +1928,23 @@ function summary(t0) {
       // schnell: Upload, dann nur das Gantt-Diagramm (breit und am Handy)
       await kindUploadChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
+      await poolWindowChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
+    if (process.env.TEST_ONLY === 'poolfenster') {
+      // schnell: Upload, dann nur das Extra-Fenster der Disposition
+      await kindUploadChecks(browser, base, errors);
+      await poolWindowChecks(browser, base, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
     if (process.env.TEST_ONLY === 'auftragsarten') {
       await kindUploadChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
+      await poolWindowChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
       await kindChecks(browser, base, { width: 390, height: 844 }, errors);
@@ -1733,6 +1956,7 @@ function summary(t0) {
     console.log(`Adressen mit Koordinaten: ${found} (Mini-Geocoder: ${geocoder.requests()} Anfragen)`);
     await kindUploadChecks(browser, base, errors);
     await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
+    await poolWindowChecks(browser, base, errors);
     await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
     await dispositionNarrowChecks(browser, base, errors);
     await kindChecks(browser, base, { width: 390, height: 844 }, errors);

@@ -1921,6 +1921,93 @@
       .gtb .chips {
         margin-bottom: 8px;
       }
+      /* Zeile unter den Auftragsarten: Suche + „Extra-Fenster“ – oder, wenn die Liste im Extra-Fenster steht, ein Hinweis + zwei Knöpfe.
+         Beide Zustände sind gleich hoch (die Zeile nimmt die Höhe der Knöpfe), darunter springt nichts. */
+      .gtt .gtt-note {
+        flex: 1 1 0;
+        align-self: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .gtt button {
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      /* Liste im Extra-Fenster: das Diagramm hat die ganze Breite */
+      .gtp.solo {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      /* ---- Extra-Fenster (eigenes Dokument, Stile kopiert): Kopf mit Suche klebt oben, darunter die Karten, Hinweis fest unten ---- */
+      body.gtw {
+        padding-bottom: 5.5rem;
+      }
+      .gtw-top {
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        background: var(--bg);
+        border-bottom: 1px solid var(--bd);
+        padding: 12px 14px 10px;
+      }
+      .gtw-top .gt-ph {
+        min-height: 2.25rem; /* mit und ohne „Alle Vorschläge übernehmen“ gleich hoch */
+        margin-bottom: 6px;
+      }
+      .gtw-top .chips {
+        margin-bottom: 8px;
+      }
+      .gtw-top input[type='search'] {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .gtw-body {
+        padding: 12px 14px 0;
+      }
+      body.gtw .gt-pool {
+        max-height: none;
+        overflow: visible;
+        padding: 0;
+        margin: 0;
+      }
+      .gtw-more {
+        margin-top: 10px;
+      }
+      .gtw-toast {
+        position: fixed;
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        z-index: 5;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        border-radius: var(--r);
+        border: 1px solid var(--bd);
+        background: var(--card);
+        box-shadow: var(--sh2);
+        opacity: 0;
+        transform: translateY(12px);
+        pointer-events: none;
+      }
+      .gtw-toast.on {
+        opacity: 1;
+        transform: none;
+        pointer-events: auto;
+      }
+      .gtw-toast.er {
+        color: var(--er);
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        .gtw-toast {
+          transition:
+            opacity 0.2s,
+            transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+      }
       .gtp {
         display: grid;
         gap: 12px;
@@ -2035,9 +2122,11 @@
       .gt-seg button:first-child {
         border-radius: var(--r) 0 0 var(--r);
       }
+      .gt-seg button + button {
+        margin-left: -1px;
+      }
       .gt-seg button:last-child {
         border-radius: 0 var(--r) var(--r) 0;
-        margin-left: -1px;
       }
       .gt-seg button.on {
         background: var(--ac);
@@ -2133,8 +2222,34 @@
         display: inline-block;
         padding: 4px 0 0 6px;
       }
+      /* Monat: ein schmales Feld je Tag über die ganze Kopfhöhe – Wochentag (klein) und Tag des Monats */
+      .gt-day.mo {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1px;
+        font-size: 0.6875rem;
+        line-height: 1.2;
+      }
+      .gt-day.mo i {
+        font-style: normal;
+        font-weight: 500;
+      }
+      .gt-day.mo b {
+        font-size: 0.8125rem;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+      }
       .gt-day.we {
         color: var(--mu);
+      }
+      /* Wochenende: leicht getönt hinter den Zeilen (greift nicht in Bedienung und Layout ein) */
+      .gt-wk {
+        position: absolute;
+        background: color-mix(in srgb, var(--mu) 8%, transparent);
+        pointer-events: none;
       }
       .gt-day.td {
         color: var(--act);
@@ -2687,7 +2802,8 @@
         uploadPinError = false;
       // Disposition (Disponent, Tab „Disposition“): Reparaturen und Entstörungen bekommen erst hier ein Team und einen Zeitraum – vorher
       // sieht sie kein Monteur. Zustand des Gantt-Diagramms (Beschreibung: Abschnitt „Disposition“ weiter unten)
-      // gZoom: 'tag' (3 Tage, Stunden) | 'woche' (7 Tage) · gFrom: erster angezeigter Tag (JJJJ-MM-TT, '' = heute) · gKind: '' beide | 'rep' | 'ent' ·
+      // gZoom: 'tag' (3 Tage, Stunden) | 'woche' (7 Tage) | 'monat' (ein Kalendermonat, ein Tag = 36 px) · gFrom: erster angezeigter Tag
+      // (JJJJ-MM-TT, '' = heute; bei 'monat' zählt der Monat dieses Tages) · gKind: '' beide | 'rep' | 'ent' ·
       // gSearch: Suche in der Offen-Liste · gPoolMax: so viele Karten zeigt die Offen-Liste (wächst mit „Weitere anzeigen“) ·
       // gSel / gDraft: gewählter Auftrag und sein Entwurf { a, team, von, bis } im Bearbeiten-Fenster · gArmAll: „Alle Vorschläge übernehmen“
       // wurde einmal angetippt · gScrollX: Wisch-Stand der Zeitachse · gDrag: laufendes Ziehen · gDragEnd: Zeitpunkt des letzten Ziehens (das
@@ -2710,10 +2826,17 @@
         gSheetStart = 0,
         gFresh = new Map(),
         gGeo = null,
+        // gPoolWin: Extra-Fenster mit der Offen-Liste (siehe openPoolWin), null = Liste steht in der Seite · gPoolUi: dessen Bausteine ·
+        // gPoolTimer: prüft, ob das Fenster noch offen ist · gPoolDirty: das Fenster wartet auf ein Neuzeichnen (während es einen Auftrag
+        // zieht, bleibt seine Liste stehen)
+        gPoolWin = null,
+        gPoolUi = null,
+        gPoolTimer = 0,
+        gPoolDirty = false,
         dispoTeamNames = [];
       try {
         const saved = localStorage.getItem('gz');
-        if (saved === 'tag' || saved === 'woche') gZoom = saved;
+        if (saved === 'tag' || saved === 'woche' || saved === 'monat') gZoom = saved;
       } catch (e) {}
       // ---- Geräteübersicht (Disponent) ----
       // deviceList: Geräte vom Server (null = noch nicht geladen) · deviceListOffset: Serveruhr minus Geräteuhr (für „vor … Min“) ·
@@ -7431,7 +7554,8 @@
       // ---- Disposition (Disponent): Gantt-Diagramm ----
       // Reparaturen und Entstörungen muss der Disponent disponieren: Team + Zeitraum (von bis). Erst dann sehen Monteure den Auftrag (Server:
       // POST /api/dispo). Der Tab „Disposition“ zeigt links die noch offenen Aufträge (mit dem Vorschlag aus SAP) und rechts das Diagramm:
-      // eine Zeile je Team, die Zeitachse läuft seitlich (Tag: 3 Tage à 48 px je Stunde, Woche: 7 Tage à 14 px je Stunde).
+      // eine Zeile je Team, die Zeitachse läuft seitlich (Tag: 3 Tage à 48 px je Stunde, Woche: 7 Tage à 14 px je Stunde, Monat: ein Kalendermonat
+      // à 36 px je Tag). Die Offen-Liste lässt sich in ein Extra-Fenster auslagern (zwei Bildschirme, siehe „Extra-Fenster für die Offen-Liste“).
       // Bedienung:
       //   · Offen-Liste: „Vorschlag übernehmen“ (SAP-Team und -Termin) oder die Karte antippen → Bearbeiten-Fenster (Team, Beginn, Ende);
       //     mit der Maus lässt sich die Karte auch auf eine Teamzeile ziehen. „Alle Vorschläge übernehmen“ (mit Rückfrage) für alle gelisteten.
@@ -7447,10 +7571,18 @@
       const minutesBetween = (a, b) => Math.round((stampMs(b) - stampMs(a)) / 6e4);
       const shiftDay = (iso, n) => msStamp(stampMs(iso + 'T00:00') + n * 864e5).slice(0, 10);
       const mondayOf = iso => shiftDay(iso, -((new Date(iso + 'T12:00:00Z').getUTCDay() + 6) % 7));
-      const G_PXH = { tag: 48, woche: 14 }, // Pixel je Stunde
-        G_DAYS = { tag: 3, woche: 7 },
-        G_SNAP = { tag: 15, woche: 30 }, // Raster beim Ziehen (Minuten)
+      const G_PXH = { tag: 48, woche: 14, monat: 1.5 }, // Pixel je Stunde
+        G_DAYS = { tag: 3, woche: 7 }, // (Monat: so viele Tage, wie der Monat hat)
+        G_SNAP = { tag: 15, woche: 30, monat: 1440 }, // Raster beim Ziehen (Minuten); im Monat nur ganze Tage, die Uhrzeit bleibt
+        G_MIN_BAR = { tag: 6, woche: 6, monat: 14 }, // kleinste Breite eines Balkens (Pixel), damit er sich antippen lässt
         G_DEFAULT_MIN = 120; // Dauer, wenn SAP keine Angabe hat
+      const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+      const monthStart = iso => iso.slice(0, 8) + '01';
+      const daysInMonth = iso => new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7), 0)).getUTCDate();
+      const shiftMonth = (iso, n) => new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1 + n, 1)).toISOString().slice(0, 10);
+      const monthText = iso => MONTHS[+iso.slice(5, 7) - 1] + ' ' + iso.slice(0, 4);
+      // 'HH:MM' -> Minuten seit Mitternacht
+      const minutesOfDay = hm => (+hm.slice(0, 2) || 0) * 60 + (+hm.slice(3, 5) || 0);
       const isDispatchKind = k => k === 'rep' || k === 'ent';
       // Team und Termin laut SAP (bei einem disponierten Auftrag liefert der Server sie als `sap`)
       const sapOf = o => o.sap || { team: o.team, start: o.start, ende: o.ende, uhr: o.uhr || '', uhr2: o.uhr2 || '' };
@@ -7473,8 +7605,10 @@
         return { team: sap.team, von, bis };
       }
       // Entwurf für einen Auftrag: seine Disposition, sonst der Vorschlag aus SAP, sonst 2 Stunden ab 07:00 am ersten angezeigten Tag
+      // erster angezeigter Tag; im Monat der heutige Tag, solange der Monat angezeigt wird, sonst der Monatserste
+      const shownDay = () => (gZoom === 'monat' && monthStart(gFrom || today()) === monthStart(today()) ? today() : gFrom || today());
       const draftFor = o => {
-        const slot = slotOf(o) || suggestSlot(o) || { team: sapOf(o).team, von: (gFrom || today()) + 'T07:00', bis: (gFrom || today()) + 'T09:00' };
+        const slot = slotOf(o) || suggestSlot(o) || { team: sapOf(o).team, von: shownDay() + 'T07:00', bis: shownDay() + 'T09:00' };
         return { a: o.auftrag, team: slot.team, von: slot.von, bis: slot.bis };
       };
       // Auftragsart als Wort für Etiketten: „🛠️ Reparatur“
@@ -7752,10 +7886,11 @@
       function ganttGeometry() {
         const compact = innerWidth < 700,
           pxh = G_PXH[gZoom],
-          days = G_DAYS[gZoom],
-          axis = gZoom === 'woche' ? mondayOf(gFrom || today()) : gFrom || today();
+          axis = gZoom === 'woche' ? mondayOf(gFrom || today()) : gZoom === 'monat' ? monthStart(gFrom || today()) : gFrom || today(),
+          days = gZoom === 'monat' ? daysInMonth(axis) : G_DAYS[gZoom];
         return {
           zoom: gZoom,
+          minBar: G_MIN_BAR[gZoom],
           rowH: compact ? 44 : 52,
           headH: compact ? 48 : 52,
           nameW: compact ? 78 : 104,
@@ -7772,9 +7907,11 @@
       const gX = (g, ms) => ((ms - g.axisMs) / 36e5) * g.pxh;
       /**
        * Verteilt die Balken einer Zeile auf Bahnen: Balken, die sich überschneiden, teilen sich die feste Höhe der Zeile (n Bahnen = je 1/n).
-       * items: [{ s, e }] (ms) – ergänzt um lane, lanes und cf (überschneidet sich mit einem anderen Balken).
+       * items: [{ s, e }] (ms) – ergänzt um lane, lanes und cf (überschneidet sich mit einem anderen Balken). minMs: so lange belegt ein
+       * Balken mindestens (seine kleinste Breite in Zeit): im Monat liegen zwei kurze Aufträge desselben Tages sonst übereinander.
+       * `cf` (gelber Rand) gilt nur für echte Überschneidungen in der Zeit.
        */
-      function layoutLanes(items) {
+      function layoutLanes(items, minMs = 0) {
         items.sort((a, b) => a.s - b.s || a.e - b.e);
         let cluster = [],
           clusterEnd = -Infinity,
@@ -7785,13 +7922,14 @@
           laneEnds = [];
         };
         for (const it of items) {
+          const end = Math.max(it.e, it.s + minMs);
           if (it.s >= clusterEnd) flush();
-          let lane = laneEnds.findIndex(end => end <= it.s);
+          let lane = laneEnds.findIndex(e => e <= it.s);
           if (lane < 0) lane = laneEnds.push(0) - 1;
-          laneEnds[lane] = it.e;
+          laneEnds[lane] = end;
           it.lane = lane;
           cluster.push(it);
-          clusterEnd = Math.max(clusterEnd, it.e);
+          clusterEnd = Math.max(clusterEnd, end);
         }
         flush();
         for (const it of items) it.cf = items.some(o => o !== it && o.s < it.e && o.e > it.s);
@@ -7820,7 +7958,7 @@
               tabindex: '0',
               'aria-label': `${label} ${text}, ${it.slot.team}, ${slotText(it.slot)}${it.cf ? ', Überschneidung' : ''}`,
               title: `${label}${text ? ' · ' + text : ''}\n${it.slot.team} · ${slotText(it.slot)} (${durationText(minutesBetween(it.slot.von, it.slot.bis))})${o.str ? '\n' + [o.plz, o.str].filter(Boolean).join(' ') : ''}${it.cf ? '\n⚠ Überschneidet sich mit einem anderen Auftrag' : ''}${late ? '\n⏰ im Verzug' : ''}`,
-              style: `left:${left}px;width:${Math.max(6, right - left)}px;top:${4 + it.lane * h}px;height:${h - 2}px`,
+              style: `left:${left}px;width:${Math.max(g.minBar, right - left)}px;top:${4 + it.lane * h}px;height:${h - 2}px`,
               onpointerdown: e => startBarDrag(e, o, it.slot, 'move', !!draft),
               onclick: e => {
                 e.stopPropagation();
@@ -7834,8 +7972,9 @@
                 }
               }
             },
-            el('b', {}, label),
-            text && h >= 16 && el('span', {}, text),
+            // (in einem schmalen Balken, im Monat meist, stünde von der Nummer nur ein abgeschnittener Rest)
+            right - left >= 44 && el('b', {}, label),
+            text && h >= 16 && right - left >= 44 && el('span', {}, text),
             (sel || draft) && el('div', { class: 'gt-rz', onpointerdown: e => { e.stopPropagation(); startBarDrag(e, o, it.slot, 'resize', !!draft); } })
           );
         return node;
@@ -7864,21 +8003,31 @@
           sapTeam = sel && !sel.dis ? sapOf(sel).team : '';
         // Kopf: Tage und Stunden
         const head = el('div', { class: 'gt-head' }),
-          hourStep = gZoom === 'tag' ? 1 : 6;
+          hourStep = gZoom === 'tag' ? 1 : 6,
+          weekend = [];
         for (let d = 0; d < g.days; d++) {
           const iso = shiftDay(g.axis, d),
-            wd = new Date(iso + 'T12:00:00Z').getUTCDay();
-          head.append(
-            el('div', { class: 'gt-day' + (iso === today() ? ' td' : '') + (wd === 0 || wd === 6 ? ' we' : ''), style: `left:${d * g.dayPx}px;width:${g.dayPx}px` }, el('span', {}, weekdayShort(iso) + ' ' + formatIsoDate(iso).slice(0, 6))),
-            ...Array.from({ length: 24 / hourStep }, (_, i) =>
-              el('div', { class: 'gt-hr', style: `left:${d * g.dayPx + i * hourStep * g.pxh}px;width:${hourStep * g.pxh}px` }, String(i * hourStep).padStart(2, '0'))
-            )
-          );
+            wd = new Date(iso + 'T12:00:00Z').getUTCDay(),
+            we = wd === 0 || wd === 6;
+          if (we) weekend.push(d);
+          const cls = 'gt-day' + (gZoom === 'monat' ? ' mo' : '') + (iso === today() ? ' td' : '') + (we ? ' we' : ''),
+            pos = `left:${d * g.dayPx}px;width:${g.dayPx}px`;
+          // Monat: ein schmales Feld je Tag (Wochentag und Tag des Monats), sonst Tag mit Datum und darunter die Stunden
+          if (gZoom === 'monat') head.append(el('div', { class: cls, style: pos, title: weekdayShort(iso) + ' ' + formatIsoDate(iso) }, el('i', {}, weekdayShort(iso).slice(0, 2)), el('b', {}, String(d + 1))));
+          else
+            head.append(
+              el('div', { class: cls, style: pos }, el('span', {}, weekdayShort(iso) + ' ' + formatIsoDate(iso).slice(0, 6))),
+              ...Array.from({ length: 24 / hourStep }, (_, i) =>
+                el('div', { class: 'gt-hr', style: `left:${d * g.dayPx + i * hourStep * g.pxh}px;width:${hourStep * g.pxh}px` }, String(i * hourStep).padStart(2, '0'))
+              )
+            );
         }
         inner.append(head);
+        // Wochenenden: leicht getönt hinter den Zeilen
+        for (const d of weekend) inner.append(el('i', { class: 'gt-wk', style: `left:${d * g.dayPx}px;width:${g.dayPx}px;top:${g.headH}px;height:${teams.length * g.rowH}px` }));
         teams.forEach(team => {
           const items = byTeam.get(team);
-          layoutLanes(items);
+          layoutLanes(items, (g.minBar / g.pxh) * 36e5);
           names.append(
             el('div', { class: 'gt-name' + (team === sapTeam ? ' sap' : ''), title: team }, el('span', {}, team), items.some(x => !x.draft) && el('span', { class: 'gt-n' }, String(items.filter(x => !x.draft).length)))
           );
@@ -7889,11 +8038,12 @@
                 class: 'gt-row',
                 'data-k': 'gr-' + team,
                 'data-team': team,
+                ondragover: e => nativeDragOver(e, team),
+                ondrop: e => nativeDrop(e, team),
                 onclick: e => {
                   // Tipp in eine leere Stelle: der Entwurf des gewählten Auftrags zieht dorthin (Beginn auf das Raster gerundet, Dauer bleibt)
                   if (!gDraft || e.target !== e.currentTarget || performance.now() - gDragEnd < 350) return;
-                  const at = laneTime(e.clientX),
-                    von = msStamp(Math.round(at / (g.snap * 6e4)) * g.snap * 6e4);
+                  const von = snapStart(g, laneTime(e.clientX), gDraft.von.slice(11));
                   gDraft = { ...gDraft, team, von, bis: addMinutes(von, Math.max(15, minutesBetween(gDraft.von, gDraft.bis))) };
                   render();
                 }
@@ -7912,7 +8062,11 @@
           {
             class: 'card gt',
             'data-k': 'gt',
-            style: `--grh:${g.rowH}px;--gth:${g.headH}px;--gnw:${g.nameW}px;--giw:${g.days * g.dayPx}px;--gdp:${g.dayPx}px;--ghp:${(gZoom === 'tag' ? 1 : 6) * g.pxh}px`
+            // (verlässt das Ziehen aus dem Extra-Fenster das Diagramm, verschwinden Hinweis und Hervorhebung)
+            ondragleave: e => {
+              if (!e.currentTarget.contains(e.relatedTarget)) nativeDropClear();
+            },
+            style: `--grh:${g.rowH}px;--gth:${g.headH}px;--gnw:${g.nameW}px;--giw:${g.days * g.dayPx}px;--gdp:${g.dayPx}px;--ghp:${gZoom === 'monat' ? g.dayPx : (gZoom === 'tag' ? 1 : 6) * g.pxh}px`
           },
           el(
             'div',
@@ -7920,11 +8074,11 @@
             el('button', { 'aria-label': 'Zurück', onclick: () => gtShift(-1) }, '‹'),
             el('button', { onclick: () => { gFrom = ''; gScrollX = null; render(); } }, 'Heute'),
             el('button', { 'aria-label': 'Weiter', onclick: () => gtShift(1) }, '›'),
-            el('span', { class: 'gt-range' }, formatIsoDate(g.axis).slice(0, 6) + ' – ' + formatIsoDate(shiftDay(g.axis, g.days - 1))),
+            el('span', { class: 'gt-range' }, gZoom === 'monat' ? monthText(g.axis) : formatIsoDate(g.axis).slice(0, 6) + ' – ' + formatIsoDate(shiftDay(g.axis, g.days - 1))),
             el(
               'div',
               { class: 'gt-seg' },
-              [['tag', 'Tag'], ['woche', 'Woche']].map(([z, l]) =>
+              [['tag', 'Tag'], ['woche', 'Woche'], ['monat', 'Monat']].map(([z, l]) =>
                 el('button', { class: gZoom === z ? 'on' : null, 'aria-pressed': gZoom === z ? 'true' : 'false', onclick: () => gtZoom(z) }, l)
               )
             )
@@ -7933,6 +8087,13 @@
           el('div', { class: 'gt-leg' }, el('span', {}, el('i', {}), 'Reparatur'), el('span', {}, el('i', { class: 'ent' }), 'Entstörung'), el('span', {}, el('i', { class: 'dr' }), 'Entwurf'), el('span', {}, '⚠ gelber Rand = Überschneidung im Team'))
         );
         return card;
+      }
+      // Beginn für eine Stelle der Zeitachse (ms): aufs Raster gerundet. Im Monat (Raster = ein Tag) gilt der Tag unter der Stelle,
+      // die Uhrzeit `keep` ('HH:MM') bleibt
+      function snapStart(g, ms, keep) {
+        if (g.snap >= 1440) return msStamp(Math.floor(ms / 864e5) * 864e5 + minutesOfDay(keep || '07:00') * 6e4);
+        const step = g.snap * 6e4;
+        return msStamp(Math.round(ms / step) * step);
       }
       // Zeit (ms, Ortszeit als UTC) unter der Mausstelle x in der Zeitachse
       function laneTime(clientX) {
@@ -7949,8 +8110,12 @@
         return clientY >= top && i < gGeo.teams.length ? i : -1;
       }
       function gtShift(dir) {
-        const step = gZoom === 'woche' ? 7 : 1;
-        gFrom = shiftDay(gGeo ? gGeo.axis : gFrom || today(), dir * step);
+        const from = gGeo ? gGeo.axis : gFrom || today();
+        if (gZoom === 'monat') {
+          // ein Monat weiter; der laufende Monat wird mit dem heutigen Tag gemerkt (dann zeigt auch „Tag“ wieder heute)
+          const next = shiftMonth(from, dir);
+          gFrom = monthStart(next) === monthStart(today()) ? today() : next;
+        } else gFrom = shiftDay(from, dir * (gZoom === 'woche' ? 7 : 1));
         gScrollX = null;
         render();
       }
@@ -8029,8 +8194,9 @@
         let next;
         if (d.mode === 'resize') {
           next = { ...d.slot, bis: addMinutes(d.slot.bis, dMin) };
-          if (minutesBetween(d.slot.von, next.bis) < g.snap) next.bis = addMinutes(d.slot.von, g.snap);
-          d.node.style.width = Math.max(6, d.w0 + ((minutesBetween(d.slot.bis, next.bis)) / 60) * g.pxh) + 'px';
+          const minLen = Math.min(g.snap, 30);
+          if (minutesBetween(d.slot.von, next.bis) < minLen) next.bis = addMinutes(d.slot.von, minLen);
+          d.node.style.width = Math.max(g.minBar, d.w0 + ((minutesBetween(d.slot.bis, next.bis)) / 60) * g.pxh) + 'px';
         } else {
           const row = Math.max(0, laneRow(ev.clientY) < 0 ? d.row0 : laneRow(ev.clientY)),
             team = g.teams[row] || d.slot.team;
@@ -8086,8 +8252,7 @@
             d.drop = null;
             document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
             if (inside) {
-              const snap = gGeo.snap * 6e4,
-                von = msStamp(Math.round(laneTime(ev.clientX) / snap) * snap);
+              const von = snapStart(gGeo, laneTime(ev.clientX), sug ? sug.von.slice(11) : '07:00');
               d.drop = { team: gGeo.teams[row], von, bis: addMinutes(von, minutes) };
               app.querySelectorAll('.gt-row')[row].classList.add('tgt');
               app.querySelectorAll('.gt-name')[row].classList.add('tgt');
@@ -8123,8 +8288,9 @@
       });
 
       // ---- Tab „Disposition“ ----
-      // Karte „noch offen“ in der Liste links
-      function poolCard(o) {
+      // Karte „noch offen“ in der Liste links. native: Karte im Extra-Fenster – sie lässt sich mit dem Ziehen des Browsers (HTML5) in das
+      // Diagramm des Hauptfensters ziehen, auch auf einen anderen Bildschirm (das Ziehen mit Zeigerereignissen endet an der Fenstergrenze)
+      function poolCard(o, native = false) {
         const sap = sapOf(o),
           sug = suggestSlot(o),
           melds = bySeverity(meldungenOf(o)),
@@ -8138,7 +8304,7 @@
             'data-k': 'dp-' + o.auftrag,
             role: 'button',
             tabindex: '0',
-            onpointerdown: e => startPoolDrag(e, o),
+            ...(native ? { draggable: 'true', ondragstart: e => startNativeDrag(e, o), ondragend: endNativeDrag } : { onpointerdown: e => startPoolDrag(e, o) }),
             onclick: () => {
               if (performance.now() - gDragEnd < 350) return;
               selectOrder(o.auftrag);
@@ -8182,28 +8348,34 @@
           )
         );
       }
+      // Überschrift der Offen-Liste mit „Alle Vorschläge übernehmen“ (erst Rückfrage)
+      const poolHead = (all, withSuggestion) =>
+        el(
+          'div',
+          { class: 'gt-ph' },
+          el('b', {}, `Noch nicht disponiert (${all.length})`),
+          withSuggestion.length > 0 &&
+            (gArmAll
+              ? el('button', { class: 'pri', onclick: () => disposeAll(withSuggestion) }, `Wirklich ${withSuggestion.length} Aufträge disponieren?`)
+              : el('button', { onclick: () => { gArmAll = true; render(); } }, `Alle Vorschläge übernehmen (${withSuggestion.length})`))
+        );
+      // Text statt Liste: alles disponiert, nichts gefunden oder noch nichts hochgeladen
+      const poolEmpty = () => el('div', { class: 'gt-empty mu' }, dispatchOrders().length ? (gSearch.trim() ? 'Nichts gefunden.' : '✓ Alles disponiert.') : 'Noch keine Reparaturen oder Entstörungen – im Tab „Upload“ hochladen.');
+      const poolMore = (all, shown) => shown.length < all.length && el('button', { class: 'dl', onclick: () => { gPoolMax += 20; render(); } }, `Weitere anzeigen (${all.length - shown.length})`);
       function ganttPool() {
         const all = poolOrders(),
           shown = all.slice(0, gPoolMax),
           withSuggestion = all.filter(suggestSlot),
           box = el('div', {});
-        box.append(
-          el(
-            'div',
-            { class: 'gt-ph' },
-            el('b', {}, `Noch nicht disponiert (${all.length})`),
-            withSuggestion.length > 0 &&
-              (gArmAll
-                ? el('button', { class: 'pri', onclick: () => disposeAll(withSuggestion) }, `Wirklich ${withSuggestion.length} Aufträge disponieren?`)
-                : el('button', { onclick: () => { gArmAll = true; render(); } }, `Alle Vorschläge übernehmen (${withSuggestion.length})`))
-          )
-        );
-        if (!all.length)
-          box.append(el('div', { class: 'gt-empty mu' }, dispatchOrders().length ? (gSearch.trim() ? 'Nichts gefunden.' : '✓ Alles disponiert.') : 'Noch keine Reparaturen oder Entstörungen – im Tab „Upload“ hochladen.'));
+        box.append(poolHead(all, withSuggestion));
+        if (!all.length) box.append(poolEmpty());
         else {
-          box.append(el('div', { class: 'gt-pool', 'data-list': '1' }, shown.map(poolCard)));
-          if (shown.length < all.length)
-            box.append(el('button', { class: 'dl', style: 'margin-top:10px', onclick: () => { gPoolMax += 20; render(); } }, `Weitere anzeigen (${all.length - shown.length})`));
+          box.append(el('div', { class: 'gt-pool', 'data-list': '1' }, shown.map(o => poolCard(o))));
+          const more = poolMore(all, shown);
+          if (more) {
+            more.style.marginTop = '10px';
+            box.append(more);
+          }
         }
         return box;
       }
@@ -8219,54 +8391,281 @@
           `${list.length} ${list.length === 1 ? 'Auftrag' : 'Aufträge'} disponiert (Vorschlag aus SAP)`
         );
       }
+      // ---- Extra-Fenster für die Offen-Liste (zwei Bildschirme: links die Aufträge, rechts das Diagramm) ----
+      // Der Knopf „⧉ Extra-Fenster“ öffnet ein zweites Browserfenster mit der Liste der noch nicht disponierten Aufträge (Auftragsart,
+      // Suche, „Vorschlag übernehmen“, „Alle Vorschläge übernehmen“, Antippen öffnet das Bearbeiten-Fenster im Hauptfenster). Das Hauptfenster
+      // zeigt dann das Diagramm über die ganze Breite. Das Extra-Fenster ist kein zweites Programm: seinen Inhalt baut das Hauptfenster
+      // in dessen Dokument (poolWinSync am Ende von render()), alle Knöpfe laufen in der Seite des Hauptfensters – beide zeigen darum immer
+      // denselben Stand, ohne Abgleich. Schließt man das Hauptfenster oder meldet sich ab, schließt das Extra-Fenster mit; schließt man das
+      // Extra-Fenster, steht die Liste wieder im Hauptfenster („Liste wieder hier“ tut dasselbe).
+      // Karten lassen sich mit dem Ziehen des Browsers (HTML5: dragstart/dragover/drop) auf eine Teamzeile ziehen – das geht über Fenster-
+      // und Bildschirmgrenzen hinweg, anders als das Ziehen mit Zeigerereignissen, das an der Fenstergrenze endet.
+      // Nur am Rechner: ab 1000 px Breite und mit Maus (am Handy und Tablet gibt es keine zwei Fenster nebeneinander).
+      const poolWinSupported = () => typeof window.open === 'function' && innerWidth >= 1000 && matchMedia('(hover: hover)').matches;
+      function poolWinReset() {
+        clearInterval(gPoolTimer);
+        gPoolWin = null;
+        gPoolUi = null;
+        gPoolDirty = false;
+      }
+      // Ist das Extra-Fenster noch da (nicht geschlossen und nicht auf eine andere Seite gewechselt)? Sonst wird es vergessen.
+      function poolWinAlive() {
+        if (gPoolWin) {
+          let gone = true;
+          try {
+            gone = gPoolWin.closed || !gPoolUi || gPoolWin.document !== gPoolUi.doc;
+          } catch (e) {}
+          if (gone) poolWinReset();
+        }
+        return !!gPoolWin;
+      }
+      function openPoolWin() {
+        if (poolWinAlive()) return focusPoolWin();
+        let w = null;
+        try {
+          w = window.open('', 'dispo-pool', 'popup=yes,width=520,height=860');
+        } catch (e) {}
+        if (!w) {
+          errorMsg = 'Das Extra-Fenster wurde vom Browser blockiert – bitte Pop-ups für diese Seite erlauben.';
+          render();
+          return;
+        }
+        try {
+          poolWinBuild(w);
+        } catch (e) {
+          try {
+            w.close();
+          } catch (x) {}
+          poolWinReset();
+          errorMsg = 'Das Extra-Fenster lässt sich nicht öffnen.';
+          render();
+          return;
+        }
+        // (schließt jemand das Fenster, steht die Liste gleich wieder im Hauptfenster)
+        w.addEventListener('pagehide', () =>
+          setTimeout(() => {
+            if (gPoolWin === w && !poolWinAlive()) render();
+          }, 120)
+        );
+        gPoolTimer = setInterval(() => {
+          if (!poolWinAlive()) render();
+        }, 1000);
+        render();
+      }
+      function focusPoolWin() {
+        try {
+          gPoolWin.focus();
+        } catch (e) {}
+      }
+      function closePoolWin(redraw = true) {
+        const w = gPoolWin;
+        poolWinReset();
+        try {
+          if (w) w.close();
+        } catch (e) {}
+        if (redraw) render();
+      }
+      addEventListener('pagehide', () => closePoolWin(false));
+      // Baut das leere Gerüst im neuen Fenster: Dokument mit Doctype (sonst Quirks-Modus), die Stile der Seite, Kopf mit Suche, Liste
+      function poolWinBuild(w) {
+        const d = w.document;
+        d.open();
+        d.write(`<!doctype html><html lang="de"><head><meta charset="utf-8"><base href="${location.origin}/"><title>Offene Aufträge – Disposition</title></head><body class="gtw"></body></html>`);
+        d.close();
+        for (const st of document.querySelectorAll('head style')) d.head.append(d.importNode(st, true));
+        d.head.append(el('link', { rel: 'icon', href: '/icon-192.png' }));
+        const ui = {
+          doc: d,
+          ph: el('div', { class: 'gtw-ph' }),
+          chips: el('div', {}),
+          search: poolSearch(),
+          list: el('div', { class: 'gt-pool', 'data-list': '1' }),
+          more: el('div', { class: 'gtw-more' }),
+          toast: el('div', { class: 'gtw-toast', role: 'status' })
+        };
+        d.body.append(el('div', { class: 'gtw-top' }, ui.ph, ui.chips, ui.search), el('div', { class: 'gtw-body' }, ui.list, ui.more), ui.toast);
+        gPoolUi = ui;
+        gPoolWin = w;
+        poolWinSync();
+      }
+      // Gleicht das Extra-Fenster mit dem Stand ab (am Ende von render()). Karten, die sich nicht geändert haben, bleiben als Element
+      // stehen (laufende Animationen, Fokus); Suchfeld und Kopf bleiben, nur ihr Inhalt wird ersetzt; verschwundene Karten gleiten aus,
+      // die übrigen rücken weich nach (wie in der Seite, siehe animateRemoved).
+      function poolWinSync() {
+        if (!gPoolWin || !poolWinAlive()) return;
+        if (session.role !== 'dispo' || !dispoUnlocked) return closePoolWin(false);
+        // Zieht gerade jemand eine Karte aus dem Fenster, darf die Karte nicht ersetzt werden (das Ziehen bräche ab): erst danach
+        if (gDrag && gDrag.native) {
+          gPoolDirty = true;
+          return;
+        }
+        gPoolDirty = false;
+        const ui = gPoolUi,
+          d = ui.doc,
+          root = document.documentElement,
+          all = poolOrders(),
+          shown = all.slice(0, gPoolMax),
+          withSuggestion = all.filter(suggestSlot),
+          snap = snapshotList(d.body);
+        d.documentElement.className = root.className;
+        if (root.dataset.theme) d.documentElement.dataset.theme = root.dataset.theme;
+        else delete d.documentElement.dataset.theme;
+        d.title = (all.length ? `(${all.length}) ` : '') + 'Offene Aufträge – Disposition';
+        ui.ph.replaceChildren(poolHead(all, withSuggestion));
+        ui.chips.replaceChildren(dispatchKindChips());
+        if (ui.search.value !== gSearch) ui.search.value = gSearch;
+        const old = new Map([...ui.list.children].filter(n => n.dataset.k).map(n => [n.dataset.k, n]));
+        const cards = shown.map(o => {
+          const card = poolCard(o, true),
+            prev = old.get(card.dataset.k);
+          return prev && prev.outerHTML === card.outerHTML ? prev : card;
+        });
+        ui.list.replaceChildren(...(all.length ? cards : [poolEmpty()]));
+        ui.more.replaceChildren(...[poolMore(all, shown)].filter(Boolean));
+        animateRemoved(snap, true, d.body);
+        // Hinweis unten (fest, ohne Einfluss auf die Liste): Fehler oder „Rückgängig“ der letzten Disposition
+        const note = errorMsg ? { t: errorMsg, er: true } : gUndo ? { t: gUndo.txt } : null;
+        if (note && ui.toast.dataset.t !== note.t) {
+          ui.toast.dataset.t = note.t;
+          ui.toast.replaceChildren(el('span', {}, note.t), !note.er && el('button', { onclick: undoDispo }, 'Rückgängig'));
+        }
+        ui.toast.className = 'gtw-toast' + (note ? ' on' : '') + (note && note.er ? ' er' : '');
+        if (!note) delete ui.toast.dataset.t;
+      }
+
+      // ---- Karte aus dem Extra-Fenster in das Diagramm ziehen (HTML5-Ziehen, auch auf einen anderen Bildschirm) ----
+      // Während des Ziehens ist gDrag = { a, native: true }: Live-Änderungen warten, das Extra-Fenster zeichnet nicht neu.
+      function startNativeDrag(e, o) {
+        gDrag = { a: o.auftrag, native: true };
+        e.dataTransfer.setData('text/plain', o.auftrag);
+        e.dataTransfer.effectAllowed = 'move';
+      }
+      function endNativeDrag() {
+        if (!gDrag || !gDrag.native) return;
+        gDrag = null;
+        gDragEnd = performance.now();
+        nativeDropClear();
+        poolWinSync();
+        if (liveDirty) renderLive();
+      }
+      // Zeitraum, den die gezogene Karte an dieser Stelle bekäme (Beginn = Stelle des Zeigers, Dauer aus SAP), samt Auftrag; sonst null
+      function nativeSlot(team, clientX) {
+        const o = gDrag && gDrag.native && ordersMap.get(gDrag.a);
+        if (!o || o.dis || !gGeo) return null;
+        const sug = suggestSlot(o),
+          von = snapStart(gGeo, laneTime(clientX), sug ? sug.von.slice(11) : '07:00');
+        return { o, slot: { team, von, bis: addMinutes(von, sug ? minutesBetween(sug.von, sug.bis) : G_DEFAULT_MIN) } };
+      }
+      function nativeDropClear() {
+        document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
+        if (gTip) gTip.remove();
+        gTip = null;
+      }
+      function nativeDragOver(e, team) {
+        const hit = nativeSlot(team, e.clientX);
+        if (!hit) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const i = gGeo.teams.indexOf(team);
+        document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
+        const rows = app.querySelectorAll('.gt-row'),
+          names = app.querySelectorAll('.gt-name');
+        if (rows[i]) rows[i].classList.add('tgt');
+        if (names[i]) names[i].classList.add('tgt');
+        if (!gTip) {
+          gTip = el('div', { class: 'gt-tip' });
+          document.body.append(gTip);
+        }
+        gTip.textContent = `${hit.slot.team} · ${slotText(hit.slot)} (${durationText(minutesBetween(hit.slot.von, hit.slot.bis))})`;
+        gTip.style.transform = `translate(${Math.min(e.clientX + 14, innerWidth - gTip.offsetWidth - 8)}px, ${Math.max(8, e.clientY - 38)}px)`;
+        // am Rand scrollt die Zeitachse weiter (das Ereignis kommt etwa alle 50 ms, auch wenn die Maus stillsteht)
+        const scroller = app.querySelector('.gt-scroll'),
+          r = scroller.getBoundingClientRect();
+        if (e.clientX < r.left + 40) scroller.scrollLeft -= 14;
+        else if (e.clientX > r.right - 40) scroller.scrollLeft += 14;
+      }
+      function nativeDrop(e, team) {
+        const hit = nativeSlot(team, e.clientX);
+        nativeDropClear();
+        if (!hit) return;
+        e.preventDefault();
+        if (gSel === hit.o.auftrag) {
+          gSel = '';
+          gDraft = null;
+        }
+        dispoSave([{ a: hit.o.auftrag, ...hit.slot }], `${hit.o.auftrag} → ${hit.slot.team}, ${slotText(hit.slot)}`);
+        // (das Ende des Ziehens meldet die Karte selbst; fehlt es aus irgendeinem Grund, wird hier aufgeräumt)
+        setTimeout(endNativeDrag, 800);
+      }
+
+      // Auswahl der Auftragsart (Alle / Reparaturen / Entstörungen) mit Zahlen – im Hauptfenster und im Extra-Fenster
+      function dispatchKindChips() {
+        const all = allOrders().filter(o => isDispatchKind(orderKind(o))),
+          count = k => all.filter(o => orderKind(o) === k).length;
+        return el(
+          'div',
+          { class: 'chips ksw' },
+          [['', 'Alle', all.length], ...['rep', 'ent'].map(k => [k, `${kindInfo(k).icon} ${kindInfo(k).plural}`, count(k)])].map(([k, l, n]) =>
+            el(
+              'button',
+              {
+                class: 'chip' + (gKind === k ? ' on' : ''),
+                onclick: () => {
+                  gKind = k;
+                  gArmAll = false;
+                  gPoolMax = 20;
+                  render();
+                }
+              },
+              `${l} (${n})`
+            )
+          )
+        );
+      }
+      // Suchfeld der Offen-Liste
+      const poolSearch = () =>
+        el('input', {
+          type: 'search',
+          'data-keep': 'gs',
+          placeholder: 'Offene suchen (Auftrag, Kurztext, Straße …)',
+          value: gSearch,
+          oninput: e => {
+            gSearch = e.target.value;
+            gArmAll = false;
+            gPoolMax = 20;
+            render();
+          }
+        });
       function drawDispoPlan() {
         if (!dataReady) {
           app.append(skeletonPage());
           return;
         }
-        const all = allOrders().filter(o => isDispatchKind(orderKind(o))),
-          count = k => all.filter(o => orderKind(o) === k).length;
+        // Liste im Extra-Fenster? Dann nimmt das Diagramm die ganze Breite, und Suche und Knöpfe der Liste stehen im Extra-Fenster
+        const solo = poolWinAlive();
         app.append(
           el(
             'div',
             { class: 'gtb', 'data-k': 'gtb' },
+            dispatchKindChips(),
+            // (die Zeile ist mit und ohne Extra-Fenster gleich hoch: nichts darunter springt)
             el(
               'div',
-              { class: 'chips ksw' },
-              [['', 'Alle', all.length], ...['rep', 'ent'].map(k => [k, `${kindInfo(k).icon} ${kindInfo(k).plural}`, count(k)])].map(([k, l, n]) =>
-                el(
-                  'button',
-                  {
-                    class: 'chip' + (gKind === k ? ' on' : ''),
-                    onclick: () => {
-                      gKind = k;
-                      gArmAll = false;
-                      gPoolMax = 20;
-                      render();
-                    }
-                  },
-                  `${l} (${n})`
-                )
-              )
-            ),
-            el(
-              'div',
-              { class: 'tools' },
-              el('input', {
-                type: 'search',
-                'data-keep': 'gs',
-                placeholder: 'Offene suchen (Auftrag, Kurztext, Straße …)',
-                value: gSearch,
-                oninput: e => {
-                  gSearch = e.target.value;
-                  gArmAll = false;
-                  gPoolMax = 20;
-                  render();
-                }
-              })
+              { class: 'tools gtt' },
+              solo
+                ? [
+                    el('span', { class: 'gtt-note mu' }, '⧉ Die Offen-Liste steht im Extra-Fenster'),
+                    el('button', { onclick: focusPoolWin }, 'Nach vorn'),
+                    el('button', { onclick: closePoolWin }, 'Liste wieder hier')
+                  ]
+                : [
+                    poolSearch(),
+                    poolWinSupported() &&
+                      el('button', { class: 'gtt-pop', title: 'Die Liste der offenen Aufträge in einem eigenen Fenster öffnen – z. B. auf einem zweiten Bildschirm neben dem Diagramm', onclick: openPoolWin }, '⧉ Extra-Fenster')
+                  ]
             )
           ),
-          el('div', { class: 'gtp' }, ganttPool(), ganttChart())
+          el('div', { class: 'gtp' + (solo ? ' solo' : '') }, solo ? null : ganttPool(), ganttChart())
         );
         const sheet = gtSheet();
         if (sheet) app.append(sheet);
@@ -8276,7 +8675,9 @@
           const scroller = card.querySelector('.gt-scroll');
           if (gScrollX === null) {
             const dayIndex = Math.round((stampMs(today() + 'T00:00') - gGeo.axisMs) / 864e5);
-            gScrollX = gZoom === 'tag' ? 6 * gGeo.pxh : dayIndex >= 0 && dayIndex < gGeo.days ? dayIndex * gGeo.dayPx : 0;
+            const inRange = dayIndex >= 0 && dayIndex < gGeo.days;
+            // Tag: 06:00 links · Woche: heute links · Monat: heute mit zwei Tagen davor
+            gScrollX = gZoom === 'tag' ? 6 * gGeo.pxh : !inRange ? 0 : (gZoom === 'monat' ? Math.max(0, dayIndex - 2) : dayIndex) * gGeo.dayPx;
           }
           scroller.scrollLeft = gScrollX;
         }
@@ -8456,6 +8857,7 @@
         animateOkPops(okBefore);
         if (!quietRender) animateBanners(bannersBefore, scrollBefore < 1);
         if (aokRun) aokRun();
+        if (gPoolWin) poolWinSync();
         // frisch gespeicherte Zeit: Zeitkarte leuchtet kurz grün auf
         if (timeFlash) {
           timeFlash = false;
@@ -8511,7 +8913,12 @@
           key =
             openOrder
               ? 'o'
-              : shell + '|' + (session.role === 'dispo' ? dispoTab + '|' + (dispoTab === 'ue' ? viewKind : '') : ''),
+              : shell +
+                '|' +
+                (session.role === 'dispo'
+                  ? // (Disposition: steht die Offen-Liste im Extra-Fenster, hat das Diagramm eine andere Breite – das ist eine eigene Ansicht)
+                    dispoTab + '|' + (dispoTab === 'ue' ? viewKind : '') + (dispoTab === 'di' && poolWinAlive() ? 'solo' : '')
+                  : ''),
           filters = [
             teamFilter,
             statusFilter,
@@ -8543,7 +8950,7 @@
         viewAnim = [
           ...(viewFrom
             ? fadeIn(
-                [...app.children].filter(n => !(viewStatic && n.matches('.bar, .tabs, .ksw'))).slice(0, 10),
+                [...app.children].filter(n => !(viewStatic && n.matches('.bar, .tabs, .ksw, .gtb'))).slice(0, 10),
                 viewFrom,
                 viewStart,
                 VIEW_MS,
@@ -8747,11 +9154,13 @@
        * Je Änderung höchstens 12 Karten, der Rest wechselt ohne Animation.
        * snapshotList() merkt sich vor dem Neuzeichnen die sichtbaren Karten samt Position, animateRemoved() vergleicht danach.
        */
-      function snapshotList() {
-        const snap = new Map();
-        for (const n of app.querySelectorAll('[data-list] > [data-k]')) {
+      // root: Wurzel der Liste (Standard: die Seite; das Extra-Fenster der Disposition hat ein eigenes Dokument)
+      function snapshotList(root = app) {
+        const snap = new Map(),
+          height = root.ownerDocument.defaultView.innerHeight;
+        for (const n of root.querySelectorAll('[data-list] > [data-k]')) {
           const r = n.getBoundingClientRect();
-          if (r.bottom > 0 && r.top < innerHeight && snap.size < 40) snap.set(n.dataset.k, { node: n, rect: r });
+          if (r.bottom > 0 && r.top < height && snap.size < 40) snap.set(n.dataset.k, { node: n, rect: r });
         }
         return snap.size ? snap : null;
       }
@@ -8766,16 +9175,18 @@
         keepScrollRoom(scrollBefore);
         animateRemoved(snap, true);
       }
-      function animateRemoved(snap, force = false) {
-        if (!snap || !(force || listStable) || !app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-        const now = new Map();
-        for (const n of app.querySelectorAll('[data-list] > [data-k]')) now.set(n.dataset.k, n);
-        if (!now.size && !app.querySelector('[data-list]')) return;
+      function animateRemoved(snap, force = false, root = app) {
+        if (!snap || !(force || listStable) || !root.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        const doc = root.ownerDocument,
+          height = doc.defaultView.innerHeight,
+          now = new Map();
+        for (const n of root.querySelectorAll('[data-list] > [data-k]')) now.set(n.dataset.k, n);
+        if (!now.size && !root.querySelector('[data-list]')) return;
         const gone = [...snap].filter(([k]) => !now.has(k)).slice(0, 12),
           fresh = [...now]
             .filter(([k, n]) => {
               const r = n.getBoundingClientRect();
-              return !snap.has(k) && r.bottom > 0 && r.top < innerHeight;
+              return !snap.has(k) && r.bottom > 0 && r.top < height;
             })
             .slice(0, 12);
         // (auch ohne verschwundene/neue Karten: wächst eine Karte, gleiten die darunter an ihren neuen Platz, statt zu springen)
@@ -8795,7 +9206,7 @@
             zIndex: '4'
           });
           node.setAttribute('aria-hidden', 'true');
-          document.body.append(node);
+          doc.body.append(node);
           node
             .animate(
               [
@@ -8826,7 +9237,7 @@
         // Die Gleit-Animationen (oben) werden nicht in viewAnim gemerkt und bei einem weiteren Neuzeichnen nicht abgebrochen:
         // gemessen wird die sichtbare Position (samt laufender Verschiebung), von dort gleitet die nächste Animation weiter –
         // ein Abbruch ließe die Karten an ihr Ziel springen
-        viewAnim = [...(viewAnim || []), ...appear];
+        if (root === app) viewAnim = [...(viewAnim || []), ...appear];
       }
       /**
        * Hinweise oben auf der Seite (.msg direkt unter #app: Meldungen, Benachrichtigungs-Hinweis, Offline-Hinweis, Rückgängig …)
