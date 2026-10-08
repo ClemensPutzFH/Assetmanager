@@ -4062,8 +4062,9 @@
           melMeta = cached.mmeta || null;
           // Zwischenspeicher aus einer Version ohne Gaswarngerät (oder, beim Monteur, ohne Haken des Disponenten): komplett neu
           // laden, damit die Bestätigungen bzw. die gesperrten (abgehakten) Aufträge kommen
-          // (ebenso aus einer Version ohne Auftragsarten und Meldungen: `kv`)
-          syncSeq = cached.gas && cached.kv && (cached.mk || key === 'dispo') ? cached.since || 0 : 0;
+          // (ebenso aus einer Version ohne Auftragsarten und Meldungen: `kv`, und ohne Disposition: `kd` – Reparaturen und Entstörungen
+          // sieht der Monteur erst nach der Disposition, ein alter Stand enthielte sie noch)
+          syncSeq = cached.gas && cached.kv && cached.kd && (cached.mk || key === 'dispo') ? cached.since || 0 : 0;
           for (const m of cached.mel || []) meldungen.set(m.nr, m);
           rebuildMeldungen();
           for (const g of cached.gas || []) gasRows.set(g.d + '|' + g.t, g);
@@ -4092,6 +4093,7 @@
             marks: Object.fromEntries(marks),
             mk: 1, // Haken sind enthalten (auch beim Monteur)
             kv: 1, // Auftragsarten und Meldungen sind enthalten
+            kd: 1, // Stand mit Disposition
             mel: [...meldungen.values()],
             msgs: messages,
             devs: devices,

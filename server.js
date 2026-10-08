@@ -10,7 +10,9 @@
  *
  * TABELLEN
  *   orders    Aufträge (del = 1: gelöscht/verschoben, bleibt als Markierung, damit Geräte es erfahren). kind = Auftragsart der App:
- *             war Wartung (3NAW/FWS) · dau Dauerauftrag (3NAW/FWD) · rep Reparatur (3NAR) · ent Entstörung (3NAE). Bei Reparaturen ist
+ *             war Wartung (3NAW/FWS) · dau Dauerauftrag (3NAW/FWD) · rep Reparatur (3NAR) · ent Entstörung (3NAE). Reparaturen und
+ *             Entstörungen muss der Disponent erst disponieren (dteam, dvon, dbis: Team und Zeitraum, POST /api/dispo) – vorher sieht sie
+ *             kein Monteur; eteam/mteam (berechnete Spalten) sagen, unter welchem Team ein Auftrag geführt bzw. von Monteuren gesehen wird. Bei Reparaturen ist
  *             jeder Vorgang ein eigener Eintrag: auftrag = „Nummer-Vorgang“ (z. B. 65046778-0010), nr = die echte Auftragsnummer;
  *             ext = Vorgänge externer Firmen (FW-IHEXT) zum Auftrag (JSON, nur zur Anzeige); geplante Teams („…P“) werden gar nicht geladen
  *             Die Aufträge werden aus den Rohdaten der SAP-Dateien zusammengesetzt (rebuildOrders):
@@ -163,6 +165,22 @@ const addColumn = (table, column, type) => {
 for (const [column, type] of [['kind', 'TEXT'], ['nr', 'TEXT'], ['vg', 'TEXT'], ['vtxt', 'TEXT'], ['lart', 'TEXT'], ['uhr', 'TEXT'], ['uhr2', 'TEXT'], ['arb', 'TEXT'], ['mel', 'TEXT'], ['ext', 'TEXT']])
   addColumn('orders', column, type);
 db.exec("UPDATE orders SET kind='war' WHERE kind IS NULL; UPDATE orders SET nr=auftrag WHERE nr IS NULL; CREATE INDEX IF NOT EXISTS orders_nr ON orders(nr)");
+// Disposition (nur Reparatur und Entstörung): Der Disponent legt Team (dteam) und Zeitraum (dvon bis dbis, Ortszeit „JJJJ-MM-TTTHH:MM“)
+// fest, dat = Zeitpunkt der Disposition. Erst damit sehen Monteure den Auftrag. Beim Upload bleibt die Disposition erhalten (upOrder
+// fasst diese Spalten nicht an). Zwei berechnete Spalten sagen, wo ein Auftrag erscheint:
+//   eteam  das Team, unter dem der Auftrag geführt wird: die Disposition, sonst das Team aus SAP (Disponent, Teamliste)
+//   mteam  das Team, dessen Monteure ihn sehen: Wartung/Dauerauftrag wie bisher das Team aus SAP, Reparatur/Entstörung erst nach der
+//          Disposition (vorher NULL = kein Monteur sieht den Auftrag)
+const firstDispoStart = !db.prepare('PRAGMA table_info(orders)').all().some(c => c.name === 'dteam'); // erster Start mit Disposition
+for (const [column, type] of [['dteam', 'TEXT'], ['dvon', 'TEXT'], ['dbis', 'TEXT'], ['dat', 'INTEGER']]) addColumn('orders', column, type);
+for (const [column, expr] of [
+  ['eteam', 'COALESCE(dteam, team)'],
+  ['mteam', "CASE WHEN kind IN ('rep','ent') THEN dteam ELSE team END"]
+])
+  // (berechnete Spalten fehlen in table_info, darum table_xinfo)
+  if (!db.prepare('PRAGMA table_xinfo(orders)').all().some(c => c.name === column))
+    db.exec(`ALTER TABLE orders ADD COLUMN ${column} TEXT GENERATED ALWAYS AS (${expr}) VIRTUAL`);
+db.exec('CREATE INDEX IF NOT EXISTS orders_mteam ON orders(mteam, del); CREATE INDEX IF NOT EXISTS orders_eteam ON orders(eteam, del)');
 // Ältere Datenbank (Aufträge aus der Zeit vor den getrennten Uploads): die vorhandenen Aufträge sind die Rohdaten der Aufträge-Excel,
 // sonst würde der erste Upload einer anderen Datei sie als „nicht mehr vorhanden“ löschen. (Reparatur-Vorgänge gehen nicht: neu hochladen.)
 if (!db.prepare('SELECT 1 FROM src_auftrag LIMIT 1').get())
@@ -205,14 +223,15 @@ const sql = {
   getMeta: db.prepare('SELECT v FROM meta WHERE k=?'),
   setMeta: db.prepare('INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v'),
   delMeta: db.prepare('DELETE FROM meta WHERE k=?'),
-  teamCounts: db.prepare('SELECT team, COUNT(*) n FROM orders WHERE del=0 GROUP BY team ORDER BY team'),
+  // Teams mit Aufträgen (eteam: nach der Disposition das disponierte Team, sonst das aus SAP)
+  teamCounts: db.prepare('SELECT eteam team, COUNT(*) n FROM orders WHERE del=0 GROUP BY eteam ORDER BY eteam'),
   // Meldungen: Monteure bekommen die ihres Teams (ohne Auftrag) und die zu Aufträgen ihres Teams
   meldungFullTeam: db.prepare(
-    'SELECT * FROM meldung WHERE del=0 AND (team=?1 OR auftrag IN (SELECT nr FROM orders WHERE team=?1 AND del=0 AND nr<>\'\'))'
+    'SELECT * FROM meldung WHERE del=0 AND (team=?1 OR auftrag IN (SELECT nr FROM orders WHERE mteam=?1 AND del=0 AND nr<>\'\'))'
   ),
   // mine = 0: gelöscht oder nicht mehr (zu) diesem Team – das Gerät soll sie vergessen
   meldungSinceTeam: db.prepare(
-    'SELECT *, (del=0 AND (team=?2 OR auftrag IN (SELECT nr FROM orders WHERE team=?2 AND del=0 AND nr<>\'\'))) AS mine FROM meldung WHERE seq>?1'
+    'SELECT *, (del=0 AND (team=?2 OR auftrag IN (SELECT nr FROM orders WHERE mteam=?2 AND del=0 AND nr<>\'\'))) AS mine FROM meldung WHERE seq>?1'
   ),
   meldungSince: db.prepare('SELECT * FROM meldung WHERE seq>?'),
   meldungSinceLive: db.prepare('SELECT * FROM meldung WHERE seq>? AND del=0'),
@@ -232,7 +251,8 @@ const sql = {
     'UPDATE meldung SET seq=? WHERE del=0 AND auftrag<>\'\' AND auftrag IN (SELECT nr FROM orders WHERE seq=?)'
   ),
   meldungMax: db.prepare('SELECT MAX(seq) m FROM meldung'),
-  ordersFullTeam: db.prepare('SELECT * FROM orders WHERE del=0 AND team=?'),
+  // Monteure bekommen nur, was ihr Team sieht (mteam): Reparaturen/Entstörungen erst nach der Disposition
+  ordersFullTeam: db.prepare('SELECT * FROM orders WHERE del=0 AND mteam=?'),
   ergebnisTeam: db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>? AND team=?'),
   ergebnisAll: db.prepare('SELECT auftrag,doc,seq FROM ergebnis WHERE seq>?'),
   ordersSince: db.prepare('SELECT * FROM orders WHERE seq>?'),
@@ -250,16 +270,23 @@ const sql = {
   marksSinceLive: db.prepare('SELECT auftrag,v,at,seq FROM dmark WHERE seq>? AND v=1'),
   // Haken der Aufträge eines Teams (Monteure sehen sie, damit abgehakte Aufträge gesperrt sind)
   marksSinceTeam: db.prepare(
-    'SELECT d.auftrag,d.v,d.at,d.seq FROM dmark d JOIN orders o ON o.auftrag=d.auftrag WHERE d.seq>? AND o.team=?'
+    'SELECT d.auftrag,d.v,d.at,d.seq FROM dmark d JOIN orders o ON o.auftrag=d.auftrag WHERE d.seq>? AND o.mteam=?'
   ),
   marksSinceLiveTeam: db.prepare(
-    'SELECT d.auftrag,d.v,d.at,d.seq FROM dmark d JOIN orders o ON o.auftrag=d.auftrag WHERE d.seq>? AND d.v=1 AND o.del=0 AND o.team=?'
+    'SELECT d.auftrag,d.v,d.at,d.seq FROM dmark d JOIN orders o ON o.auftrag=d.auftrag WHERE d.seq>? AND d.v=1 AND o.del=0 AND o.mteam=?'
   ),
   getMark: db.prepare('SELECT v,at,seq FROM dmark WHERE auftrag=?'),
   // Tageseinträge eines Dauerauftrags (Schlüssel „Auftrag#Kennung“)
   getOrderKind: db.prepare('SELECT kind FROM orders WHERE auftrag=? AND del=0'),
+  // Disposition (siehe /api/dispo): Zustand eines Auftrags, setzen, aufheben, Teams zur Auswahl
+  getOrderDispo: db.prepare('SELECT * FROM orders WHERE auftrag=?'),
+  setDispo: db.prepare('UPDATE orders SET dteam=?, dvon=?, dbis=?, dat=?, seq=? WHERE auftrag=?'),
+  clearDispo: db.prepare('UPDATE orders SET dteam=NULL, dvon=NULL, dbis=NULL, dat=NULL, seq=? WHERE auftrag=?'),
+  dispoTeams: db.prepare(
+    "SELECT eteam t FROM orders WHERE del=0 AND eteam IS NOT NULL UNION SELECT team FROM usr WHERE active=1 AND COALESCE(team,'')<>''"
+  ),
   countEntries: db.prepare('SELECT COUNT(*) n FROM ergebnis WHERE auftrag LIKE ?'),
-  ordersOfIds: db.prepare('SELECT auftrag,team FROM orders WHERE auftrag IN (SELECT value FROM json_each(?))'),
+  ordersOfIds: db.prepare('SELECT auftrag, mteam team FROM orders WHERE auftrag IN (SELECT value FROM json_each(?))'),
   pruefOne: db.prepare('SELECT items FROM pruef WHERE auftrag=?'),
   maxSeq: db.prepare(
     'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM meldung UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas)'
@@ -344,7 +371,7 @@ const sql = {
   nagDevs: db.prepare(
     'SELECT did, sub FROM dev WHERE team=? AND sub IS NOT NULL AND did NOT IN (SELECT did FROM mack WHERE id=?)'
   ),
-  hasTeam: db.prepare('SELECT 1 FROM orders WHERE team=? LIMIT 1'),
+  hasTeam: db.prepare('SELECT 1 FROM orders WHERE eteam=? LIMIT 1'),
   getGas: db.prepare('SELECT day, team, at, rec, seq FROM gas WHERE day=? AND team=?'),
   addGas: db.prepare('INSERT OR IGNORE INTO gas(day,team,at,rec,did,seq,usr) VALUES(?,?,?,?,?,?,?)'),
   // Bestätigungen seit Änderungsnummer ab (mit Spitzname des Geräts und Benutzer); für Monteure nur die des eigenen Teams
@@ -420,6 +447,20 @@ const teamsList = () => {
   if (teamsCache.v !== catalogVer) teamsCache = { v: catalogVer, list: sql.teamCounts.all().map(r => [r.team, r.n]) };
   return teamsCache.list;
 };
+// Teams, auf die der Disponent Aufträge disponieren kann: alle Teams mit Aufträgen und alle Teams der aktiven Benutzer (auch „Springer“
+// ohne Aufträge); keine externen Firmen und keine geplanten Teams („…P“). Wird nur neu berechnet, wenn sich Aufträge oder Benutzer ändern.
+let dispoTeamsCache = { v: '', list: [] };
+const dispoTeamList = () => {
+  const v = catalogVer + ':' + usersVer;
+  if (dispoTeamsCache.v !== v)
+    dispoTeamsCache = {
+      v,
+      list: [...new Set(sql.dispoTeams.all().map(r => String(r.t || '').trim()))]
+        .filter(t => t && !isPlanned(t) && !isExternal(t))
+        .sort((a, b) => a.localeCompare(b, 'de', { numeric: true }))
+    };
+  return dispoTeamsCache.list;
+};
 // vorbereitete Anweisung merken (SQL-Text -> Statement), damit dynamische Abfragen nicht bei jedem Aufruf neu übersetzt werden
 const prepCache = new Map();
 const prep = text => prepCache.get(text) || (prepCache.set(text, db.prepare(text)), prepCache.get(text));
@@ -427,6 +468,13 @@ const prep = text => prepCache.get(text) || (prepCache.set(text, db.prepare(text
 // (beim Start: die größte Nummer, die in der Datenbank vorkommt)
 let changeSeq = Math.max(+getMeta('seq') || 0, sql.maxSeq.get().m || 0); // fortlaufende Änderungsnummer
 let minSeq = +getMeta('minseq') || 0; // davor sind Änderungen nicht mehr vollständig nachvollziehbar
+// Erster Start mit Disposition: vorhandene Reparaturen und Entstörungen sind nun für Monteure unsichtbar, bis der Disponent sie disponiert.
+// Geräte, die sie noch kennen, müssen davon erfahren: neue Änderungsnummer, dann bekommen sie den Auftrag als „gelöscht“ geliefert.
+if (firstDispoStart && db.prepare("SELECT 1 FROM orders WHERE kind IN ('rep','ent') LIMIT 1").get()) {
+  changeSeq++;
+  db.prepare("UPDATE orders SET seq=? WHERE kind IN ('rep','ent')").run(changeSeq);
+  setMeta('seq', changeSeq);
+}
 // Führt fn in einer Transaktion aus und sichert dabei die Änderungsnummer mit (alles oder nichts)
 const transaction = fn => {
   db.exec('BEGIN IMMEDIATE');
@@ -1067,26 +1115,39 @@ function rebuildOrders() {
   catalogVer++;
   return { counts, planned, steps: !!db.prepare('SELECT 1 FROM src_vorgang LIMIT 1').get() };
 }
-const orderFields = r => ({
-  auftrag: r.auftrag,
-  team: r.team,
-  tp: r.tp,
-  art: r.art,
-  plz: r.plz,
-  str: r.str,
-  kurz: r.kurz,
-  start: r.start,
-  ende: r.ende,
-  kind: r.kind || 'war',
-  nr: r.nr || r.auftrag,
-  ...(r.vg ? { vg: r.vg, vtxt: r.vtxt } : r.vtxt ? { vtxt: r.vtxt } : {}),
-  ...(r.lart ? { lart: r.lart } : {}),
-  ...(r.uhr ? { uhr: r.uhr } : {}),
-  ...(r.uhr2 ? { uhr2: r.uhr2 } : {}),
-  ...(r.arb ? { arb: r.arb } : {}),
-  ...(r.mel ? { mel: r.mel } : {}),
-  ...(r.ext ? { ext: JSON.parse(r.ext) } : {})
-});
+/**
+ * Auftrag, wie ihn die Geräte bekommen. Ist er disponiert (dteam), gelten Team und Termin der Disposition: team, start/uhr (Beginn) und
+ * ende/uhr2 (Ende) sind die disponierten Werte und `dis` ist 1. Der Disponent (forDispo) bekommt zusätzlich `sap` mit den Angaben aus
+ * SAP (Team und Termin), damit er sie als Vorschlag sieht und die Disposition aufheben kann.
+ */
+const orderFields = (r, forDispo = false) => {
+  const dispatched = !!r.dteam && (r.kind === 'rep' || r.kind === 'ent'),
+    sap = { team: r.team, start: r.start, ende: r.ende, uhr: r.uhr || '', uhr2: r.uhr2 || '' },
+    here = dispatched
+      ? { team: r.dteam, start: r.dvon.slice(0, 10), uhr: r.dvon.slice(11, 16), ende: r.dbis.slice(0, 10), uhr2: r.dbis.slice(11, 16) }
+      : sap;
+  return {
+    auftrag: r.auftrag,
+    team: here.team,
+    tp: r.tp,
+    art: r.art,
+    plz: r.plz,
+    str: r.str,
+    kurz: r.kurz,
+    start: here.start,
+    ende: here.ende,
+    kind: r.kind || 'war',
+    nr: r.nr || r.auftrag,
+    ...(r.vg ? { vg: r.vg, vtxt: r.vtxt } : r.vtxt ? { vtxt: r.vtxt } : {}),
+    ...(r.lart ? { lart: r.lart } : {}),
+    ...(here.uhr ? { uhr: here.uhr } : {}),
+    ...(here.uhr2 ? { uhr2: here.uhr2 } : {}),
+    ...(r.arb ? { arb: r.arb } : {}),
+    ...(r.mel ? { mel: r.mel } : {}),
+    ...(r.ext ? { ext: JSON.parse(r.ext) } : {}),
+    ...(dispatched ? { dis: 1, ...(forDispo ? { sap } : {}) } : {})
+  };
+};
 // nur die bekannten Felder einer Meldung an die Geräte schicken (leere Felder weglassen)
 const meldungFields = r => ({
   nr: r.nr,
@@ -1480,8 +1541,9 @@ async function handleApi(req, res, url) {
       const orderRows =
         full && team ? sql.ordersFullTeam.all(team) : (full ? sql.ordersSinceLive : sql.ordersSince).all(from);
       for (const r of orderRows) {
-        if (!r.del && (!team || r.team === team)) out.orders.push(orderFields(r));
-        else if (!full) out.orders.push({ auftrag: r.auftrag, del: 1 }); // gelöscht oder in anderes Team verschoben
+        // Monteur: nur, was sein Team sieht (Reparaturen/Entstörungen erst nach der Disposition); Disponent: alles
+        if (!r.del && (!team || r.mteam === team)) out.orders.push(orderFields(r, !team));
+        else if (!full) out.orders.push({ auftrag: r.auftrag, del: 1 }); // gelöscht, in anderes Team verschoben oder nicht (mehr) disponiert
       }
       const rows = team ? sql.ergebnisTeam.all(from, team) : sql.ergebnisAll.all(from);
       out.ergebnis = rows.map(r => ({ a: r.auftrag, doc: JSON.parse(r.doc), sq: r.seq }));
@@ -1512,6 +1574,7 @@ async function handleApi(req, res, url) {
           sql.devsByTeam.all(Date.now() - 30 * 864e5).map(r => [r.team, [r.n, r.p]])
         );
         out.cfg = { nag: NAG_INTERVAL_MIN, hours: MESSAGE_HOURS };
+        out.dteams = dispoTeamList();
         // SAP-User -> Name (für „bewertet von“): nur wenn sich die Liste geändert hat (uv = Stand des Geräts)
         if (params.get('uv') !== String(usersVer)) {
           out.users = sql.usrNames.all().map(r => [r.sap, r.name]);
@@ -1581,7 +1644,7 @@ async function handleApi(req, res, url) {
         map = {};
       for (const r of db
         .prepare(
-          'SELECT p.auftrag,p.items FROM pruef p JOIN orders o ON o.auftrag=p.auftrag WHERE o.team=? AND o.del=0 AND p.seq>?'
+          'SELECT p.auftrag,p.items FROM pruef p JOIN orders o ON o.auftrag=p.auftrag WHERE o.mteam=? AND o.del=0 AND p.seq>?'
         )
         .all(team, from))
         map[r.auftrag] = JSON.parse(r.items);
@@ -2046,6 +2109,70 @@ async function handleApi(req, res, url) {
         : null
     );
     return sendJson(req, res, 200, { ok: true, sq, at: now });
+  }
+  /**
+   * Disposition: Reparaturen und Entstörungen sehen Monteure erst, wenn der Disponent ihnen ein Team und einen Zeitraum gegeben hat.
+   * Body: { items: [{ a: Auftrag, team, von: "JJJJ-MM-TTTHH:MM", bis: "JJJJ-MM-TTTHH:MM" } | { a: Auftrag, off: true }] } – disponieren bzw.
+   * die Disposition aufheben (Ortszeit; höchstens 1000 Aufträge je Aufruf, Zeitraum höchstens 31 Tage). Antwort { ok, sq, changed, skipped }:
+   * skipped = Aufträge, die es nicht (mehr) gibt oder keine Reparatur/Entstörung sind. Die Geräte der beteiligten Teams gleichen danach ab
+   * (der Auftrag erscheint beim neuen Team und verschwindet beim alten), Disponenten bekommen die geänderten Aufträge gleich mit.
+   */
+  if (pathname === '/api/dispo' && method === 'POST') {
+    const body = await readBody(req, 2e6),
+      list = Array.isArray(body.items) ? body.items.slice(0, 1000) : [],
+      teams = new Set(dispoTeamList()),
+      stamp = v => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(v || ''));
+        if (!m) return null;
+        const t = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+        return new Date(t).toISOString().slice(0, 16) === v && +m[4] < 24 ? t : null;
+      },
+      items = [];
+    for (const x of list) {
+      const a = String((x && x.a) ?? '');
+      if (!/^\d{1,20}(-\d{1,4})?$/.test(a)) return sendJson(req, res, 400, { error: 'Ungültige Auftragsnummer' });
+      if (x.off) {
+        items.push({ a, off: true });
+        continue;
+      }
+      const team = clipString(x.team, 100),
+        von = stamp(x.von),
+        bis = stamp(x.bis);
+      if (!teams.has(team)) return sendJson(req, res, 400, { error: `Unbekanntes Team: ${team || '(leer)'}` });
+      if (von == null || bis == null || bis <= von)
+        return sendJson(req, res, 400, { error: `Ungültiger Zeitraum bei Auftrag ${a} (Beginn und Ende als JJJJ-MM-TTTHH:MM, Ende nach Beginn)` });
+      if (bis - von > 31 * 864e5) return sendJson(req, res, 400, { error: `Zeitraum bei Auftrag ${a} ist länger als 31 Tage` });
+      items.push({ a, team, von: x.von, bis: x.bis });
+    }
+    if (!items.length) return sendJson(req, res, 400, { error: 'Keine Aufträge angegeben' });
+    const skipped = [],
+      changed = [],
+      now = Date.now();
+    const sq = transaction(() => {
+      // erst prüfen, was sich überhaupt ändert (ohne Änderung keine neue Nummer)
+      const todo = [];
+      for (const x of items) {
+        const cur = sql.getOrderDispo.get(x.a);
+        if (!cur || cur.del || (cur.kind !== 'rep' && cur.kind !== 'ent')) skipped.push(x.a);
+        else if (x.off ? cur.dteam : cur.dteam !== x.team || cur.dvon !== x.von || cur.dbis !== x.bis) todo.push([x, cur]);
+      }
+      if (!todo.length) return null;
+      changeSeq++;
+      for (const [x, cur] of todo) {
+        if (x.off) sql.clearDispo.run(changeSeq, x.a);
+        else sql.setDispo.run(x.team, x.von, x.bis, now, changeSeq, x.a);
+        changed.push({ a: x.a, from: cur.mteam, to: x.off ? null : x.team });
+      }
+      catalogVer++; // Teamliste (Anzahl Aufträge je Team) neu berechnen
+      return changeSeq;
+    });
+    if (sq != null) {
+      const involved = new Set(changed.flatMap(c => [c.from, c.to]).filter(Boolean));
+      // Disponenten bekommen die geänderten Aufträge direkt, Monteure der beteiligten Teams gleichen ab
+      const rows = changed.length <= 100 ? changed.map(c => orderFields(sql.getOrderDispo.get(c.a), true)) : null;
+      announce(sq, { teams: involved }, rows && (c => (c.kind === 'dispo' ? { k: 'o', rows, teams: teamsList() } : null)));
+    }
+    return sendJson(req, res, 200, { ok: true, sq: sq ?? changeSeq, changed: changed.length, skipped });
   }
   // Die vier SAP-Dateien werden einzeln hochgeladen (Aufträge, Vorgänge, Meldungen, Prüflose) – in beliebiger Reihenfolge und zu
   // verschiedenen Zeiten. Aufträge und Vorgänge landen als Rohdaten in src_auftrag/src_vorgang; `orders` wird daraus neu berechnet.

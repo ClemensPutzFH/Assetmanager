@@ -902,6 +902,40 @@ async function monteurChecks(browser, base, viewport, errors) {
 
 
 // ---------- Auftragsarten: Reparatur, Entstörung, Dauerauftrag, Meldungen ----------
+// ---------- Disposition per API ----------
+// Reparaturen und Entstörungen sehen Monteure erst, wenn der Disponent sie disponiert hat (Tab „Disposition“). Für die Prüfungen der
+// Monteur-Ansicht übernimmt dispatchSuggestions() die Vorschläge aus SAP wie „Alle Vorschläge übernehmen“: SAP-Team, Beginn und Ende
+// laut SAP; fehlt das Ende, gilt die geplante Arbeit (Stunden), sonst 2 Stunden.
+const apiJson = async (base, method, url, body, headers = {}) =>
+  (await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined })).json();
+const dispoHeaders = async base => ({ Authorization: 'Bearer ' + (await apiJson(base, 'POST', '/api/login', { pin: DISPO_PIN })).token });
+const isoDay = t => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(t || '')) || /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(String(t || '')); return m ? (m[1].length === 4 ? `${m[1]}-${m[2]}-${m[3]}` : `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`) : ''; };
+const plusMinutes = (stamp, min) => new Date(Date.parse(stamp + ':00Z') + min * 6e4).toISOString().slice(0, 16);
+function suggestionOf(o) {
+  const sap = o.sap || o,
+    day = isoDay(sap.start);
+  if (!day) return null;
+  const von = day + 'T' + (sap.uhr || '07:00'),
+    endDay = isoDay(sap.ende) || day;
+  let bis = sap.uhr2 ? endDay + 'T' + sap.uhr2 : '';
+  if (!bis || bis <= von) bis = plusMinutes(von, Math.round(((+o.arb > 0 ? +o.arb : 2) * 60) / 15) * 15);
+  return { a: o.auftrag, team: sap.team, von, bis };
+}
+async function dispatchSuggestions(base) {
+  const H = await dispoHeaders(base),
+    state = await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H),
+    items = state.orders.filter(o => (o.kind === 'rep' || o.kind === 'ent') && !o.dis).map(suggestionOf).filter(Boolean);
+  return { items, result: await apiJson(base, 'POST', '/api/dispo', { items }, H) };
+}
+// Aufträge, die ein Monteur des Teams (Test-Monteur) vom Server bekommt, nach Auftragsart
+async function monteurKinds(base) {
+  const login = await apiJson(base, 'POST', '/api/user/login', { user: MONTEUR.user, password: MONTEUR.password }),
+    sync = await apiJson(base, 'GET', '/api/sync?since=0&team=FW-IH01', null, { 'X-User-Token': login.token }),
+    n = {};
+  for (const o of sync.orders) n[o.kind || 'war'] = (n[o.kind || 'war'] || 0) + 1;
+  return n;
+}
+
 // Erzeugt kleine Excel-Dateien wie die aus SAP (Aufträge, Vorgänge, Meldungen) für das Team des Test-Monteurs (FW-IH01) und lädt sie
 // über die Upload-Seite hoch – das prüft zugleich das Lesen der drei Dateiarten. Wartungsaufträge sind absichtlich NICHT in der Datei:
 // sie müssen den Upload unversehrt überstehen.
@@ -1083,6 +1117,13 @@ async function kindUploadChecks(browser, base, errors) {
   await page.waitForFunction(() => /Das ist keine Meldungen-Excel/.test((document.querySelector('#app .msg.er') || {}).textContent || ''), null, { timeout: 15000 });
   report(true, 'Upload: Vorgänge-Datei im Feld „Meldungen“ wird mit einem klaren Hinweis abgelehnt', await msgText());
   await page.context().close();
+  // Disposition: Monteure sehen Reparaturen und Entstörungen erst, wenn der Disponent sie disponiert hat
+  const undispatched = await monteurKinds(base);
+  report(!undispatched.rep && !undispatched.ent && undispatched.war > 0 && undispatched.dau === 1, 'Disposition: Monteure sehen Reparaturen und Entstörungen erst nach der Disposition (Wartung und Dauerauftrag wie bisher)', JSON.stringify(undispatched));
+  const done = await dispatchSuggestions(base);
+  report(done.result.ok && done.result.changed === 7 && !done.result.skipped.length, 'Disposition: Vorschläge aus SAP übernommen (5 Reparaturen, 2 Entstörungen)', JSON.stringify(done.result));
+  const dispatched = await monteurKinds(base);
+  report(dispatched.rep === 4 && dispatched.ent === 2, 'Disposition: danach sieht der Monteur seine disponierten Aufträge (Team FW-IH01)', JSON.stringify(dispatched));
 }
 // Monteur: Startseite mit der Auswahl der Auftragsart, die Listen (Termin & Uhrzeit), Detail ohne Prüfobjekte, Meldungen
 async function kindChecks(browser, base, viewport, errors) {
@@ -1132,7 +1173,7 @@ async function kindChecks(browser, base, viewport, errors) {
   report(await page.evaluate(() => /im Verzug · 3 Tage/.test((document.querySelector('#app [data-k="oc"] .tag.st-nok') || {}).textContent || '') && /\bdue\b/.test(document.querySelector('#app [data-k="oc"]').className)), `${label} Reparatur im Verzug: auch in der Auftragsansicht hervorgehoben`);
   await probe(page, `${label} Reparatur im Verzug schließen`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
   const trm = await page.evaluate(() => (document.querySelector('#app [data-k="o65900002-0010"] .trm') || {}).textContent);
-  report(/13:30 Uhr/.test(trm || ''), `${label} Reparaturen: Karte zeigt Datum und Uhrzeit`, trm);
+  report(/13:30–17:30 Uhr/.test(trm || ''), `${label} Reparaturen: Karte zeigt Datum und disponierte Uhrzeit von–bis`, trm);
   const sortBtns = await page.evaluate(() => [...document.querySelectorAll('#app .chips.ab button')].map(b => b.textContent.trim()).join(','));
   report(sortBtns === 'Termin & Uhrzeit,Auftragsnummer,Entfernung', `${label} Reparaturen: Sortierung`, sortBtns);
   await probe(page, `${label} Reparaturen: Sortierung Auftragsnummer`, btn('/^Auftragsnummer$/'), { at: 300 });
