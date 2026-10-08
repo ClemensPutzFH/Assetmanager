@@ -65,7 +65,8 @@ const freePort = () =>
 // Der Server fragt ihn nach den Adressen der Aufträge; „Unbekannt“ und U-Bahn/Haltestellen findet er nicht (dann gilt die Bezirksmitte).
 const TEST_POS = { latitude: 48.283, longitude: 16.4, accuracy: 25 }; // Standort des Test-Geräts: Mitte von Floridsdorf (1210)
 const CENTERS = { 1010: [48.2082, 16.373], 1020: [48.217, 16.4], 1030: [48.198, 16.4], 1040: [48.192, 16.369], 1050: [48.188, 16.356], 1060: [48.196, 16.348], 1070: [48.203, 16.348], 1080: [48.211, 16.343], 1090: [48.226, 16.356], 1100: [48.162, 16.378], 1110: [48.169, 16.44], 1120: [48.174, 16.332], 1130: [48.185, 16.29], 1140: [48.201, 16.276], 1150: [48.196, 16.327], 1160: [48.214, 16.307], 1170: [48.233, 16.3], 1180: [48.233, 16.331], 1190: [48.253, 16.345], 1200: [48.24, 16.378], 1210: [48.28, 16.4], 1220: [48.235, 16.475], 1230: [48.138, 16.29] };
-async function startGeocoder() {
+// delay: Antwortzeit je Anfrage in ms (langsamer Dienst) · coarse: Straßen (RegExp), für die der Dienst nur ein PLZ-Gebiet liefert (place_rank 21)
+async function startGeocoder({ delay = 0, coarse = null } = {}) {
   const http = require('http'),
     crypto = require('crypto');
   let requests = 0;
@@ -76,20 +77,24 @@ async function startGeocoder() {
       c = CENTERS[plz] || [48.2, 16.37],
       h = crypto.createHash('md5').update(street).digest();
     requests++;
-    const found = !/Haltestelle|U-Bahn/.test(street);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(found ? [{ lat: String(c[0] + (h[0] / 255 - 0.5) * 0.02), lon: String(c[1] + (h[1] / 255 - 0.5) * 0.03) }] : []));
+    const found = !/Haltestelle|U-Bahn/.test(street),
+      answer = () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(found ? [{ lat: String(c[0] + (h[0] / 255 - 0.5) * 0.02), lon: String(c[1] + (h[1] / 255 - 0.5) * 0.03), place_rank: coarse && coarse.test(street) ? 21 : 30 }] : []));
+      };
+    delay ? setTimeout(answer, delay) : answer();
   });
   await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve));
   return { url: 'http://127.0.0.1:' + srv.address().port, requests: () => requests, stop: () => srv.close() };
 }
 
 // ---------- Server mit Kopie der Daten ----------
-async function startServer(geocoderUrl) {
+async function startServer(geocoderUrl, prepareData = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-test-')),
     port = await freePort();
   for (const f of ['data.db', 'data.db-wal', 'data.db-shm'])
     if (fs.existsSync(path.join(ROOT, 'data', f))) fs.copyFileSync(path.join(ROOT, 'data', f), path.join(dir, f));
+  if (prepareData) prepareData(dir); // Daten vor dem Start verändern (nur in der Kopie)
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: dir, DISPO_PIN, UPLOAD_PIN: '1025', MONTEUR_PASSWORD: MONTEUR.password, GEOCODER_URL: geocoderUrl, GEOCODER_DELAY_MS: '1' },
@@ -273,14 +278,14 @@ const nthBtn = (re, n) => `() => { const b = [...document.querySelectorAll('#app
 const pause = (page, ms = 500) => page.waitForTimeout(ms);
 
 // ---------- Anmeldung ----------
-async function newPage(browser, base, viewport, errorsOut, { geolocation = true, denyLocation = false } = {}) {
+async function newPage(browser, base, viewport, errorsOut, { geolocation = true, denyLocation = false, accuracy = TEST_POS.accuracy } = {}) {
   const mobile = viewport.width < 700,
     ctx = await browser.newContext({
       viewport,
       hasTouch: mobile,
       isMobile: mobile,
       deviceScaleFactor: 2,
-      ...(geolocation ? { permissions: ['geolocation'], geolocation: TEST_POS } : {})
+      ...(geolocation ? { permissions: ['geolocation'], geolocation: { ...TEST_POS, accuracy } } : {})
     }),
     page = await ctx.newPage();
   page.on('pageerror', e => errorsOut.push(e.message));
@@ -358,6 +363,136 @@ async function distanceChecks(page, label) {
   const back = await readDistances(page);
   report(back.every(c => c.km == null) && back.map(c => c.k).join() === nrOrder.join(), `${label} Entfernung: zurück zur Auftragsnummer stellt Reihenfolge und Karten wieder her`);
 }
+// Koordinaten der Adressen unter schwierigen Bedingungen: (1) das Team des Geräts kommt beim Umwandeln zuerst dran und zu grobe
+// Treffer (nur PLZ-Gebiet) werden verworfen, (2) der Geocoder ist nicht erreichbar, (3) der Geocoder ist langsam: bis dahin „ca.“-Werte
+// und der Hinweis, danach genaue Werte von selbst. Die Zeile über der Liste bleibt dabei immer gleich hoch (kein Springen).
+async function geoScenarioChecks(browser, errors) {
+  console.log('\n=== Koordinaten der Adressen: Reihenfolge, grobe Treffer, Störungen ===');
+  const vp = { width: 390, height: 844 },
+    json = async (base, url, headers) => (await fetch(base + url, { headers })).json(),
+    monteurToken = async base => ({ 'X-User-Token': (await (await fetch(base + '/api/user/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: MONTEUR.user, password: MONTEUR.password }) })).json()).token }),
+    dispoToken = async base => ({ Authorization: 'Bearer ' + (await (await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: DISPO_PIN, did: 'ui-test-geo' }) })).json()).token }),
+    sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    // Zeile über der Liste und Entfernungen der Karten, wie der Monteur sie sieht
+    sample = async page => ({ ...(await page.evaluate(() => { const n = document.querySelector('#app .cnt'); return n ? { h: Math.round(n.getBoundingClientRect().height), text: n.textContent } : { h: 0, text: '' }; })), cards: await readDistances(page) });
+
+  const scenario1 = async () => {
+    const geocoder = await startGeocoder({ delay: 20, coarse: /Autokaderstraße/ }),
+      server = await startServer(geocoder.url),
+      base = 'http://127.0.0.1:' + server.port;
+    try {
+      const token = await monteurToken(base),
+        dispo = await dispoToken(base),
+        wanted = new Set((await json(base, '/api/sync?since=0&team=', dispo)).orders.filter(o => o.team === 'FW-IH12' && o.str).map(o => (o.plz || '') + '|' + o.str));
+      await json(base, '/api/geo?since=0&team=FW-IH12', token); // „dieses Team braucht Entfernungen“ – noch bevor der Server mit dem Umwandeln beginnt
+      let done = 0,
+        open = 0;
+      for (let i = 0; i < 120 && done < wanted.size * 0.95; i++) {
+        await sleep(250);
+        const geo = await json(base, '/api/geo?since=0', token);
+        done = geo.items.filter(i => wanted.has(i[0])).length;
+        open = geo.open;
+      }
+      report(done >= wanted.size * 0.95 && open > 300, 'Koordinaten: Adressen des Teams kommen zuerst an die Reihe', `${done} von ${wanted.size} Adressen des Teams fertig, insgesamt noch ${open} offen`);
+      let geo;
+      for (let i = 0; i < 240; i++) {
+        geo = await json(base, '/api/geo?since=0', token);
+        if (!geo.open) break;
+        await sleep(500);
+      }
+      const coarse = geo.items.filter(i => /Autokaderstraße/.test(i[0]));
+      report(!geo.open && geo.items.length > 900, 'Koordinaten: alle Adressen werden schließlich umgewandelt', `${geo.items.length} Adressen`);
+      report(coarse.length === 0, 'Koordinaten: Treffer, die nur ein PLZ-Gebiet nennen, werden verworfen', `${coarse.length} grobe Treffer übernommen`);
+    } finally {
+      server.stop();
+      geocoder.stop();
+    }
+  };
+
+  const scenario2 = async () => {
+    const server = await startServer('http://127.0.0.1:1'), // dort lauscht nichts
+      base = 'http://127.0.0.1:' + server.port;
+    try {
+      const token = await monteurToken(base);
+      let geo = {};
+      for (let i = 0; i < 40 && !geo.err; i++) {
+        geo = await json(base, '/api/geo?since=0&team=FW-IH01', token);
+        await sleep(500);
+      }
+      report(!!geo.err && geo.open > 0, 'Koordinaten: Störung des Geocoders wird gemeldet', geo.err || 'keine Meldung');
+      const page = await newPage(browser, base, vp, errors);
+      await loginMonteur(page);
+      await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => b.textContent === 'Entfernung').click());
+      await page.waitForTimeout(2500);
+      const r = await sample(page);
+      report(/Entfernung nur ungefähr/.test(r.text), 'Koordinaten: Störung zeigt „Entfernung nur ungefähr“ über der Liste', r.text);
+      report(r.cards.length > 0 && r.cards.every(c => c.km == null || c.rough), 'Koordinaten: bei Störung stehen die Werte als „ca.“ da', `${r.cards.filter(c => c.rough).length} von ${r.cards.length} Karten`);
+      await page.context().close();
+    } finally {
+      server.stop();
+    }
+  };
+
+  const scenario3 = async () => {
+    const geocoder = await startGeocoder({ delay: 200 }),
+      server = await startServer(geocoder.url),
+      base = 'http://127.0.0.1:' + server.port;
+    try {
+      const page = await newPage(browser, base, vp, errors);
+      await loginMonteur(page);
+      await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => b.textContent === 'Entfernung').click());
+      await page.waitForTimeout(1500);
+      const first = await sample(page);
+      report(/Adressen werden ermittelt/.test(first.text) && first.cards.some(c => c.rough), 'Koordinaten: solange sie fehlen, steht „Adressen werden ermittelt“ und die Werte sind „ca.“', first.text);
+      const heights = new Set([first.h]);
+      let last = first;
+      for (let t = 0; t < 70 && !(/Standort von/.test(last.text) && last.cards.every(c => !c.rough)); t++) {
+        await page.waitForTimeout(1000);
+        last = await sample(page);
+        heights.add(last.h);
+      }
+      report(/Standort von/.test(last.text) && last.cards.length > 0 && last.cards.every(c => !c.rough), 'Koordinaten: danach werden die Entfernungen von selbst genau', last.text);
+      report(heights.size === 1, 'Koordinaten: Zeile über der Liste bleibt dabei gleich hoch', [...heights].join(' / ') + ' px');
+      const km = last.cards.filter(c => !c.rough && c.km != null).map(c => c.km);
+      report(km.every((v, i) => i === 0 || v >= km[i - 1]), 'Koordinaten: nach dem Genauwerden stehen die nächsten Aufträge oben', km.slice(0, 5).join(' · ') + ' km');
+      await page.context().close();
+    } finally {
+      server.stop();
+      geocoder.stop();
+    }
+  };
+  // (4) Koordinaten aus einer älteren Version (ohne Prüfung auf zu grobe Treffer) werden einmal verworfen und neu ermittelt;
+  // ein Gerät mit altem Zwischenspeicher bekommt dann den kompletten neuen Stand
+  const scenario4 = async () => {
+    const { DatabaseSync } = require('node:sqlite'),
+      OLD = '1210|Brünner Straße 52',
+      geocoder = await startGeocoder(),
+      server = await startServer(geocoder.url, dir => {
+        const db = new DatabaseSync(path.join(dir, 'data.db'));
+        db.exec('CREATE TABLE IF NOT EXISTS geo(id INTEGER PRIMARY KEY AUTOINCREMENT, k TEXT NOT NULL UNIQUE, lat REAL, lon REAL, q TEXT, at INTEGER NOT NULL)');
+        db.prepare('INSERT OR REPLACE INTO geo(k,lat,lon,q,at) VALUES(?,?,?,?,?)').run(OLD, 48.28, 16.4, 'h', Date.now()); // „PLZ-Mitte“ als falscher Treffer
+        db.exec("DELETE FROM meta WHERE k='geoq'");
+        db.close();
+      }),
+      base = 'http://127.0.0.1:' + server.port;
+    try {
+      const token = await monteurToken(base);
+      let geo = {};
+      for (let i = 0; i < 240; i++) {
+        geo = await json(base, '/api/geo?since=1&e=1&team=FW-IH01', token); // Gerät mit altem Stand (Epoche 1)
+        if (geo.full && !geo.open) break;
+        await sleep(250);
+      }
+      const hit = (geo.items || []).find(i => i[0] === OLD);
+      report(geo.full === true && geo.e === 2, 'Koordinaten: Gerät mit altem Zwischenspeicher bekommt den ganzen neuen Stand', `full=${geo.full}, Epoche ${geo.e}`);
+      report(!!hit && !(hit[1] === 48.28 && hit[2] === 16.4), 'Koordinaten: früher gespeicherte (evtl. zu grobe) Koordinaten wurden neu ermittelt', hit ? hit.slice(1, 3).join(', ') : 'Adresse fehlt');
+    } finally {
+      server.stop();
+      geocoder.stop();
+    }
+  };
+  await Promise.all([scenario1(), scenario2(), scenario3(), scenario4()]);
+}
 // Ortung durch den Disponenten (Tab „Geräte“): Monteur-Geräte antworten auf die Abfrage, die Karte zeigt den Standort bzw. den Grund,
 // warum es keinen gibt; „Ausloggen“ bringt das Gerät zum Startbildschirm, und die erneute Anmeldung bleibt bestehen.
 async function deviceChecks(browser, base, errors) {
@@ -407,6 +542,19 @@ async function deviceChecks(browser, base, errors) {
   const afterLogin = await monteur.evaluate(() => ({ list: !![...document.querySelectorAll('#app button')].find(b => /^Entfernung$/.test(b.textContent.trim())), msg: ((document.querySelector('#app .msg') || {}).textContent || '') }));
   report(afterLogin.list && !/abgemeldet/.test(afterLogin.msg), 'Geräte: erneute Anmeldung nach dem Ausloggen bleibt bestehen', afterLogin.msg.slice(0, 60));
   for (const page of [monteur, denied, dispo]) await page.context().close();
+}
+// Ungenauer Standort (z. B. PC ohne GPS: Ortung nur auf Kilometer genau): Hinweis über der Liste und Kurzmeldung
+async function poorAccuracyChecks(browser, base, errors) {
+  console.log('\n=== Entfernung mit ungenauem Standort ===');
+  const page = await newPage(browser, base, { width: 390, height: 844 }, errors, { accuracy: 14000 });
+  await loginMonteur(page);
+  const h0 = await page.evaluate(() => Math.round(document.querySelector('#app .cnt').getBoundingClientRect().height));
+  await probe(page, 'Entfernung mit ungenauem Standort: Knopf bleibt stehen', btn('/^Entfernung$/'), { at: 300, ms: 1800 });
+  const info = await page.evaluate(() => ({ cnt: document.querySelector('#app .cnt').textContent, h: Math.round(document.querySelector('#app .cnt').getBoundingClientRect().height), toast: document.querySelector('.toast').textContent }));
+  report(/Standort ungenau \(±14 km\)/.test(info.cnt), 'Entfernung mit ungenauem Standort: Zeile nennt „Standort ungenau (±14 km)“', info.cnt);
+  report(/nur auf ±14 km genau/.test(info.toast), 'Entfernung mit ungenauem Standort: Kurzmeldung erklärt es', info.toast.slice(0, 60));
+  report(info.h === h0, 'Entfernung mit ungenauem Standort: Zeile über der Liste bleibt gleich hoch', `${h0} → ${info.h} px`);
+  await page.context().close();
 }
 // Standort nicht erlaubt: Hinweis statt Absturz, Liste bleibt nach Auftragsnummer, nichts springt
 async function noLocationChecks(browser, base, errors) {
@@ -643,7 +791,9 @@ async function overflowChecks(browser, base, errors) {
     console.log(`Adressen mit Koordinaten: ${found} (Mini-Geocoder: ${geocoder.requests()} Anfragen)`);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);
+    await poorAccuracyChecks(browser, base, errors);
     await deviceChecks(browser, base, errors);
+    await geoScenarioChecks(browser, errors);
     await dispoChecks(browser, base, { width: 390, height: 844 }, errors);
     await overflowChecks(browser, base, errors);
     // Desktop (breit): dieselben Grundabläufe

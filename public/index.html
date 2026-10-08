@@ -4113,20 +4113,30 @@
       };
       // ---- Entfernung: Koordinaten der Adressen (vom Server) + Standort des Geräts ----
       // geoMap: "PLZ|Straße" -> [Breite, Länge, 'h' Hausnummer gefunden | 's' nur die Straße] · geoSince: Stand beim Server (?since=) ·
-      // geoPos: letzter Standort { lat, lon, at } oder null (bleibt nur im Gerät, wird nie an den Server gesendet) ·
+      // geoPending: so viele Adressen hat der Server noch nicht aufgelöst (dafür gilt vorerst die Bezirksmitte) · geoErr: letzter Fehler
+      // des Geocoders am Server · geoOff: Server fragt keinen Geocoder ab · geoFailed: der Abruf der Koordinaten ist gescheitert ·
+      // geoPos: letzter Standort { lat, lon, at, acc (Genauigkeit in m) } oder null (bleibt nur im Gerät, wird nie an den Server gesendet) ·
       // geoStatus: '' | 'wait' (Abfrage läuft) | 'denied' (nicht erlaubt) | 'unavailable' (nicht möglich) · geoAsked: in dieser
-      // Sitzung schon angefragt · geoVer: zählt jede Änderung von Standort/Koordinaten (die Liste beginnt dann wieder oben)
+      // Sitzung schon angefragt · geoVer: zählt jede Änderung von Standort/Koordinaten (die Liste beginnt dann wieder oben) ·
+      // geoTimer: Wiederholung des Abrufs, solange Adressen fehlen
       let geoMap = new Map(),
         geoSince = 0,
+        geoEpoch = 0, // Stand der Koordinaten beim Server; weicht er ab, ersetzt der Server den Zwischenspeicher dieses Geräts
+        geoPending = 0,
+        geoErr = '',
+        geoOff = false,
+        geoFailed = false,
         geoPos = null,
         geoStatus = '',
         geoAsked = false,
-        geoVer = 0;
+        geoVer = 0,
+        geoTimer = 0;
       try {
         const saved = JSON.parse(localStorage.getItem('geo') || 'null');
         if (saved && Array.isArray(saved.items)) {
           geoMap = new Map(saved.items.map(i => [i[0], i.slice(1)]));
           geoSince = +saved.n || 0;
+          geoEpoch = +saved.e || 0;
         }
       } catch (e) {}
       // Notfall, falls der Server eine Adresse (noch) nicht auflösen konnte: ungefähre Mitte des Wiener Bezirks nach PLZ
@@ -4184,21 +4194,44 @@
                 : Math.max(1, Math.round(km)) + ' km';
         return (rough ? 'ca. ' : '') + text;
       };
-      // Koordinaten der Adressen beim Server abholen (nur Neues); offline reicht der gemerkte Stand
+      // Aufträge (mit Straße) des eigenen Teams, deren Adresse noch keine genauen Koordinaten hat (dort gilt die Bezirksmitte)
+      const geoKey = r => (r.plz || '') + '|' + (r.str || ''),
+        roughCount = rows => rows.reduce((n, r) => n + (r.str && !geoMap.has(geoKey(r)) ? 1 : 0), 0);
+      // nächster Abruf, solange beim Server Adressen offen sind und im eigenen Team welche fehlen (nicht im Hintergrund)
+      function geoSchedule() {
+        clearTimeout(geoTimer);
+        if (session.role === 'monteur' && sortMode() === 'nah' && geoPending > 0 && roughCount(allOrders().filter(r => r.team === session.team)))
+          geoTimer = setTimeout(() => (document.hidden ? geoSchedule() : loadGeo()), geoErr ? 60000 : 15000);
+      }
+      // Koordinaten der Adressen beim Server abholen (nur Neues); offline reicht der gemerkte Stand. Das Team wird mitgeschickt: der
+      // Server wandelt dessen Adressen zuerst um. Fehlen noch welche, wird alle 15 s (bei Fehlern am Server 60 s) nachgefragt.
       async function loadGeo() {
+        const before = [geoPending > 0, geoErr, geoOff, geoFailed].join();
+        let changed = false;
         try {
-          const r = await api('GET', '/api/geo?since=' + geoSince);
+          const r = await api('GET', `/api/geo?since=${geoSince}&e=${geoEpoch}&team=${urlEncode(session.team || '')}`);
           if (r.full) geoMap = new Map();
           for (const [k, lat, lon, q] of r.items) geoMap.set(k, [lat, lon, q]);
           geoSince = r.n;
-          if (r.items.length || r.full) {
+          geoEpoch = r.e;
+          geoPending = r.open || 0;
+          geoErr = r.err || '';
+          geoOff = !!r.off;
+          geoFailed = false;
+          changed = r.items.length > 0 || !!r.full;
+          if (changed) {
             geoVer++;
             try {
-              localStorage.setItem('geo', JSON.stringify({ n: geoSince, items: [...geoMap].map(([k, v]) => [k, ...v]) }));
+              localStorage.setItem('geo', JSON.stringify({ n: geoSince, e: geoEpoch, items: [...geoMap].map(([k, v]) => [k, ...v]) }));
             } catch (e) {}
-            if (sortMode() === 'nah' && geoStatus !== 'wait') render(); // kam erst nach dem Standort an
           }
-        } catch (e) {}
+        } catch (e) {
+          geoFailed = true;
+        }
+        geoSchedule();
+        // kam erst nach dem Standort an (oder die Zeile über der Liste ändert sich): neu zeichnen
+        if ((changed || before !== [geoPending > 0, geoErr, geoOff, geoFailed].join()) && sortMode() === 'nah' && geoStatus !== 'wait')
+          render();
       }
       // Standort des Geräts: erst genau (GPS), bei Zeitüberschreitung oder Fehler ungefähr (WLAN/Mobilfunk); nur wenn der Monteur
       // „Entfernung“ wählt. Fehlt die Erlaubnis, fragt der Browser beim ersten Mal selbst.
@@ -4231,8 +4264,15 @@
             currentPosition(),
             new Promise((resolve, reject) => setTimeout(() => reject({ code: 3 }), 25000))
           ]);
-          geoPos = { lat: position.coords.latitude, lon: position.coords.longitude, at: Date.now() };
+          geoPos = {
+            lat: position.coords.latitude,
+            lon: position.coords.longitude,
+            at: position.timestamp || Date.now(), // Zeitpunkt der Messung (kann bei zwischengespeichertem Standort älter sein)
+            acc: position.coords.accuracy || 0
+          };
           geoStatus = '';
+          if (!quiet && geoPos.acc > 1000)
+            toast(`📍 Standort nur auf ±${Math.round(geoPos.acc / 1000)} km genau – die Reihenfolge ist ungenau. Am Handy GPS bzw. Standort „genau“ einschalten.`);
         } catch (error) {
           geoStatus = error && error.code === 1 ? 'denied' : 'unavailable';
           if (!quiet)
@@ -4247,17 +4287,25 @@
         geoVer++;
         render();
       }
-      // Zusatz hinter der Anzahl über der Liste (steht nur bei „Entfernung“)
-      const geoLine = () =>
+      // Zusatz hinter der Anzahl über der Liste (steht nur bei „Entfernung“): Standort und – wichtiger – was die Entfernungen ungenau macht
+      const geoLine = rows =>
         sortMode() !== 'nah'
           ? ''
-          : geoPos
-            ? ` · 📍 Standort von ${timeText(geoPos.at)} Uhr${geoStatus === 'wait' ? ' …' : ''}`
-            : geoStatus === 'wait'
+          : !geoPos
+            ? geoStatus === 'wait'
               ? ' · 📍 Standort wird ermittelt …'
               : geoStatus
                 ? ' · 📍 kein Standort'
-                : '';
+                : ''
+            : geoStatus === 'wait'
+              ? ` · 📍 Standort von ${timeText(geoPos.at)} Uhr …`
+              : geoPos.acc > 1000
+                ? ` · 📍 Standort ungenau (±${Math.round(geoPos.acc / 1000)} km)`
+                : roughCount(rows) * 5 > rows.filter(r => r.str).length // mehr als jeder fünfte Auftrag nur grob (einzelne nie auffindbare Adressen stören nicht)
+                  ? geoPending > 0 && !geoErr && !geoFailed
+                    ? ' · 📍 Adressen werden ermittelt …'
+                    : ' · 📍 Entfernung nur ungefähr'
+                  : ` · 📍 Standort von ${timeText(geoPos.at)} Uhr`;
       const sortChips = () =>
         el(
           'div',
@@ -4509,7 +4557,7 @@
         moreObserver = null;
         const container = el('div', {});
         container.append(
-          el('p', { class: 'mu cnt' }, (filtered.length === 1 ? '1 Auftrag' : `${filtered.length} Aufträge`) + geoLine()),
+          el('p', { class: 'mu cnt' }, (filtered.length === 1 ? '1 Auftrag' : `${filtered.length} Aufträge`) + geoLine(filtered)),
           el(
             'div',
             { class: 'grid', 'data-list': '1' },

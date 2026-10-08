@@ -295,10 +295,11 @@ const sql = {
     'SELECT closed, at, (SELECT 1 FROM mack a WHERE a.id=msg.id AND a.did=?) ack FROM msg WHERE id=?'
   ),
   // Adressen der Aufträge, für die noch keine Koordinaten da sind (und kein Fehlversuch jünger als `?` ist)
+  // (zuerst die Adressen der Teams, deren Geräte gerade Entfernungen brauchen: 2. Parameter = JSON-Liste dieser Teams)
   geoNext: db.prepare(
     `SELECT o.plz, o.str FROM orders o WHERE o.del=0 AND COALESCE(o.str,'')<>''
      AND NOT EXISTS (SELECT 1 FROM geo g WHERE g.k=COALESCE(o.plz,'') || '|' || o.str AND (g.lat IS NOT NULL OR g.at>?))
-     GROUP BY o.plz, o.str LIMIT 1`
+     GROUP BY o.plz, o.str ORDER BY MAX(o.team IN (SELECT value FROM json_each(?))) DESC LIMIT 1`
   ),
   geoOpen: db.prepare(
     `SELECT COUNT(*) n FROM (SELECT 1 FROM orders o WHERE o.del=0 AND COALESCE(o.str,'')<>''
@@ -876,12 +877,35 @@ const orderFields = r => ({
  * Tabelle über GET /api/geo und rechnen die Entfernung zum eigenen Standort selbst; der Standort verlässt das Gerät nie.
  * GEOCODER_URL = eigene Nominatim-Adresse, "off" = nichts abfragen (dann gilt nur die Bezirksmitte aus der PLZ);
  * GEOCODER_DELAY_MS = Pause zwischen zwei Anfragen. Gesendet werden nur Straße und PLZ, keine Namen.
+ * Reihenfolge: Die Adressen der Teams, deren Geräte gerade „Entfernung“ nutzen (GET /api/geo?team=…), kommen zuerst an die Reihe –
+ * sonst müsste ein Team in 1210/1220 warten, bis alle Bezirke davor fertig sind (rund 1000 Adressen brauchen etwa 20 Minuten).
+ * Bis die Koordinaten da sind, rechnen die Geräte mit der Bezirksmitte (dann haben fast alle Aufträge eines Teams dieselbe Entfernung).
  */
 const GEOCODER = String(process.env.GEOCODER_URL ?? 'https://nominatim.openstreetmap.org').replace(/\/+$/, ''),
   GEOCODER_ON = !!GEOCODER && GEOCODER.toLowerCase() !== 'off',
   GEOCODER_DELAY_MS = process.env.GEOCODER_DELAY_MS === undefined ? 1100 : Math.max(0, +process.env.GEOCODER_DELAY_MS || 0),
   GEO_RETRY_MS = 7 * 864e5, // nicht gefundene Adressen nach so langer Zeit erneut versuchen
   GEO_OFFLINE_RETRY_MS = 10 * 60e3; // Dienst nicht erreichbar / gesperrt: nach so langer Zeit weiter
+// GEO_EPOCH: Stand der Koordinaten-Tabelle. Koordinaten, die vor der Prüfung auf zu grobe Treffer gespeichert wurden (Epoche 1), können
+// ein ganzes PLZ-Gebiet statt der Straße sein (dann hätten alle Aufträge der PLZ dieselbe Entfernung): sie werden einmal verworfen und
+// neu ermittelt. Geräte mit einer anderen Epoche ersetzen ihren Zwischenspeicher (GET /api/geo liefert dann `full`).
+const GEO_EPOCH = 2;
+if (getMeta('geoq') !== GEO_EPOCH) {
+  const n = db.prepare('DELETE FROM geo').run().changes;
+  setMeta('geoq', GEO_EPOCH);
+  if (n) console.log(`Koordinaten der Adressen: ${n} früher gespeicherte werden neu ermittelt (strengere Prüfung).`);
+}
+// geoWanted: Team -> Zeitpunkt, zu dem ein Gerät zuletzt Entfernungen dieses Teams brauchte (eine Stunde lang bevorzugt) ·
+// geoError: letzter Fehler des Dienstes ('' = in Ordnung) · geoTriedAt: Zeitpunkt der letzten Abfrage
+const geoWanted = new Map();
+let geoError = '',
+  geoTriedAt = 0;
+const geoWantedJson = () => {
+  for (const [team, at] of geoWanted) if (at < Date.now() - 3600e3) geoWanted.delete(team);
+  return JSON.stringify([...geoWanted.keys()]);
+};
+// „fetch failed (ENOTFOUND)“ statt nur „fetch failed“: Node versteckt die eigentliche Ursache in `cause`
+const geoReason = e => (e && e.cause ? `${e.message} (${e.cause.code || e.cause.message})` : (e && e.message) || String(e));
 // „Autokaderstraße 5, 25“ -> { name: 'Autokaderstraße', num: '5' } (nach dem Komma folgen Stiege/Tür, bei „12-14“ zählt die erste Nummer)
 const splitStreet = text => {
   const first = String(text || '').split(',')[0].trim(),
@@ -912,8 +936,12 @@ async function geocodeQuery(plz, street) {
   if (!response.ok) return null;
   const hit = (await response.json())[0],
     lat = hit && Number(hit.lat),
-    lon = hit && Number(hit.lon);
-  return hit && geoPlausible(plz, lat, lon) ? { lat: Math.round(lat * 1e5) / 1e5, lon: Math.round(lon * 1e5) / 1e5 } : null;
+    lon = hit && Number(hit.lon),
+    rank = hit ? Number(hit.place_rank) : NaN; // 30 Haus, 26–27 Straße, darunter Ort/Bezirk/PLZ-Gebiet
+  // Ein Treffer, der nur den Ort, Bezirk oder das PLZ-Gebiet bezeichnet, ist zu grob (alle Aufträge der PLZ bekämen dieselbe
+  // Entfernung): dann lieber „nicht gefunden“. Dienste ohne place_rank werden nicht beanstandet.
+  if (!hit || !geoPlausible(plz, lat, lon) || rank < 26) return null;
+  return { lat: Math.round(lat * 1e5) / 1e5, lon: Math.round(lon * 1e5) / 1e5, rank: rank || 0 };
 }
 // Koordinaten einer Adresse: zuerst mit Hausnummer (q = 'h'), sonst nur die Straße (q = 's'); { lat, lon, q } oder null
 async function geocodeAddress(plz, str) {
@@ -924,15 +952,18 @@ async function geocodeAddress(plz, str) {
   for (const [i, [street, q]] of tries.entries()) {
     if (i) await new Promise(resolve => setTimeout(resolve, GEOCODER_DELAY_MS)); // zwischen zwei Anfragen die Pause einhalten
     const hit = await geocodeQuery(plz, street);
-    if (hit) return { ...hit, q };
+    if (hit) return { lat: hit.lat, lon: hit.lon, q: hit.rank ? (hit.rank >= 28 ? 'h' : 's') : q }; // q nach dem, was der Dienst wirklich fand
   }
   return null;
 }
 let geoBusy = false,
   geoTimer = null;
-// Startet (nach `delay` ms) das Abarbeiten der offenen Adressen – ruft man es mehrfach auf, läuft immer nur eines
-function geocodeKick(delay = 0) {
-  if (!GEOCODER_ON || geoBusy || geoTimer) return;
+// Startet (nach `delay` ms) das Abarbeiten der offenen Adressen – ruft man es mehrfach auf, läuft immer nur eines.
+// now = true: eine wartende Wiederholung (nach einem Fehler) vorziehen
+function geocodeKick(delay = 0, now = false) {
+  if (!GEOCODER_ON || geoBusy) return;
+  if (geoTimer && !now) return;
+  clearTimeout(geoTimer);
   geoTimer = setTimeout(() => {
     geoTimer = null;
     geocodeRun();
@@ -945,23 +976,30 @@ async function geocodeRun() {
   let retryIn = 0,
     done = 0;
   try {
+    const open = sql.geoOpen.get(Date.now() - GEO_RETRY_MS).n;
+    if (open) console.log(`Koordinaten der Adressen: ${open} offen, Dienst ${GEOCODER}`);
     for (;;) {
-      const row = sql.geoNext.get(Date.now() - GEO_RETRY_MS);
+      const row = sql.geoNext.get(Date.now() - GEO_RETRY_MS, geoWantedJson());
       if (!row) break;
       let found;
+      geoTriedAt = Date.now();
       try {
         found = await geocodeAddress(row.plz || '', row.str);
+        geoError = '';
       } catch (e) {
-        console.error('Koordinaten der Adressen: Dienst nicht erreichbar –', e.message, '(neuer Versuch in 10 Minuten)');
+        geoError = geoReason(e).slice(0, 120);
+        console.error(`Koordinaten der Adressen: Dienst nicht erreichbar – ${geoError} (neuer Versuch in 10 Minuten; bis dahin gilt die Bezirksmitte)`);
         retryIn = GEO_OFFLINE_RETRY_MS;
         break;
       }
       sql.geoSet.run((row.plz || '') + '|' + row.str, found ? found.lat : null, found ? found.lon : null, found ? found.q : null, Date.now());
       done++;
+      if (done % 100 === 0) console.log(`Koordinaten der Adressen: ${done} neu ermittelt, ${sql.geoOpen.get(Date.now() - GEO_RETRY_MS).n} offen`);
       await new Promise(resolve => setTimeout(resolve, GEOCODER_DELAY_MS));
     }
   } catch (e) {
-    console.error('Koordinaten der Adressen:', e.message);
+    geoError = geoReason(e).slice(0, 120);
+    console.error('Koordinaten der Adressen:', geoError);
     retryIn = GEO_OFFLINE_RETRY_MS;
   } finally {
     geoBusy = false;
@@ -1145,17 +1183,27 @@ async function handleApi(req, res, url) {
   }
   // Koordinaten der Auftragsadressen für die Entfernungs-Sortierung: ?since=<n> liefert nur Neueres. Antwort: n = größte Nummer
   // (beim nächsten Aufruf als since), full = Gerät muss seine Liste ersetzen (Datenbank wurde ersetzt), items = [[PLZ|Straße, lat, lon, q]],
-  // open = Adressen, die noch auf ihre Koordinaten warten (die Geräte rechnen dafür vorerst mit der Bezirksmitte)
+  // open = Adressen, die noch auf ihre Koordinaten warten (die Geräte rechnen dafür vorerst mit der Bezirksmitte), err = letzter Fehler
+  // des Dienstes, off = Dienst abgeschaltet (GEOCODER_URL=off); ?team=<Team> bevorzugt dessen Adressen
   if (pathname === '/api/geo' && method === 'GET') {
     if (!isDispo(req) && !userFromRequest(req)) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
     const max = sql.geoMax.get().m || 0,
-      full = (+params.get('since') || 0) > max,
-      since = full ? 0 : +params.get('since') || 0;
+      full = (+params.get('since') || 0) > max || +params.get('e') !== GEO_EPOCH,
+      since = full ? 0 : +params.get('since') || 0,
+      team = clipString(params.get('team'), 100);
+    // Das Team dieses Geräts kommt bei den offenen Adressen zuerst dran; war der Dienst gestört, wird es gleich wieder versucht
+    if (team && GEOCODER_ON) {
+      geoWanted.set(team, Date.now());
+      geocodeKick(0, !!geoError && Date.now() - geoTriedAt > 60e3);
+    }
     return sendJson(req, res, 200, {
       n: max,
+      e: GEO_EPOCH,
       ...(full ? { full: true } : {}),
       items: sql.geoSince.all(since).map(r => [r.k, r.lat, r.lon, r.q]),
-      open: GEOCODER_ON ? sql.geoOpen.get(Date.now() - GEO_RETRY_MS).n : 0
+      open: GEOCODER_ON ? sql.geoOpen.get(Date.now() - GEO_RETRY_MS).n : 0,
+      ...(geoError ? { err: geoError } : {}),
+      ...(GEOCODER_ON ? {} : { off: true })
     });
   }
   // Prüfobjekte lesen: ?a=<Auftrag> liefert eine Liste, ?team=<Team>&since=<Nr> alle geänderten Listen des Teams
