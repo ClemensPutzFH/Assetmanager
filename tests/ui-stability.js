@@ -18,7 +18,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -990,7 +990,15 @@ function kindFiles() {
     [excelDay(-2), '1290000004', 'Fremdes Team Gebrechen', 'Andere Gasse 1', '1020', '', 'Gebrechen leicht', 'TP-9', 'prag', T2, 'WN: FW Störmeldung'],
     [excelDay(-9), '1290000005', 'Graffiti am Schachtdeckel', 'Teststraße    7', '1210', '', 'Schaden', 'TP-7', 'prag', T, 'Mängelkategorien']
   ];
+  // Prüflos-Excel (Spalten wie in SAP, mit Spalte „Kurztext des Prüfobjektes“); die Aufträge gibt es nicht – das stört den Upload nicht
+  const pruef = [
+    ['Auftrag', 'Prüflos', 'Kurztext des Prüfobjektes'],
+    ['65999999', '1', 'VL 1210 Teststraße DN125 RL'],
+    ['65999999', '1', 'KH RL AL 1210 Teststraße 1 SHM911'],
+    ['65999998', '2', 'AL UHM001 1210 Testgasse 8 VL']
+  ];
   return {
+    pruef: { name: 'Prüflose_neu.xlsx', mimeType: xlsx, buffer: book(pruef) },
     auftraege: { name: 'Aufträge_neu.xlsx', mimeType: xlsx, buffer: book(orders) },
     vorgaenge: { name: 'Vorgänge_neu.xlsx', mimeType: xlsx, buffer: book(steps) },
     meldungen: { name: 'Meldungen_neu.xlsx', mimeType: xlsx, buffer: book(meldungen) }
@@ -1019,7 +1027,7 @@ async function kindUploadChecks(browser, base, errors) {
   // der Knopf wandert über mehrere Bilder, nie mehr als 12 px in einem Bild. (probe() verfolgt den Knopf über die Beschriftung und würde den
   // Wechsel „Hochladen“ → „Speichere …“ als Sprung sehen – darum hier die Messung von Hand.)
   const upload = async (part, file) => {
-    const slot = { auftraege: 'orders', vorgaenge: 'vorg', meldungen: 'mel' }[part],
+    const slot = { auftraege: 'orders', vorgaenge: 'vorg', meldungen: 'mel', pruef: 'pruef' }[part],
       prev = await msgText();
     await page.setInputFiles(`#app input[data-up="${slot}"]`, file);
     await page.evaluate(() => scrollTo(0, 0));
@@ -1048,8 +1056,30 @@ async function kindUploadChecks(browser, base, errors) {
   await openUpload();
   const cards = await page.evaluate(() => [...document.querySelectorAll('#app .ugrid > .card > b')].map(n => n.textContent));
   report(cards.join() === 'Aufträge,Vorgänge,Meldungen,Prüfobjekte', 'Upload: vier Felder – Aufträge, Vorgänge, Meldungen, Prüfobjekte', cards.join(', '));
+  // Gewählte Datei und Haken „Nur ergänzen“ stehen im Zustand: ein Neuzeichnen (Live-Update eines anderen Geräts, Hinweis …) verliert sie nicht.
+  // „Hochladen“ geht erst mit einer Datei; die Auswahl macht die Karte nicht höher und schiebt sie nicht (der Dateiname hat eine feste Zeile).
+  const cardState = slot =>
+    page.evaluate(slot => {
+      const c = document.querySelector(`#app [data-k="up-${slot}"]`),
+        cb = c.querySelector('input[type=checkbox]'),
+        r = c.getBoundingClientRect();
+      return { name: c.querySelector('.fnm').textContent, checked: cb ? cb.checked : null, disabled: c.querySelector('button.pri').disabled, top: Math.round(r.top), h: Math.round(r.height) };
+    }, slot);
+  const c0 = await cardState('orders');
+  report(c0.disabled && /Keine Datei gewählt/.test(c0.name), 'Upload: ohne gewählte Datei ist „Hochladen & speichern“ gesperrt', JSON.stringify(c0));
+  await page.setInputFiles('#app input[data-up="orders"]', files.auftraege);
+  await page.check('#app [data-k="up-orders"] input[type=checkbox]');
+  const c1 = await cardState('orders');
+  report(!c1.disabled && c1.name === '✓ Aufträge_neu.xlsx' && c1.checked && c1.top === c0.top && c1.h === c0.h, 'Upload: gewählte Datei wird angezeigt, die Karte bleibt gleich hoch und an ihrer Stelle', `${JSON.stringify(c0)} → ${JSON.stringify(c1)}`);
+  await page.evaluate(() => { render(); render(); }); // wie ein Live-Update
+  await pause(page, 300);
+  const c2 = await cardState('orders');
+  report(!c2.disabled && c2.name === c1.name && c2.checked === true && c2.top === c1.top && c2.h === c1.h, 'Upload: Dateiauswahl und Haken „Nur ergänzen“ überstehen das Neuzeichnen', JSON.stringify(c2));
+  await page.uncheck('#app [data-k="up-orders"] input[type=checkbox]'); // (die folgenden Prüfungen rechnen mit „ersetzen“)
   // 1. nur die Aufträge: Reparaturen sind noch ein Auftrag je Auftragsnummer, die App weist auf die fehlenden Vorgänge hin
   let r = await upload('auftraege', files.auftraege);
+  const c3 = await cardState('orders');
+  report(/Keine Datei gewählt/.test(c3.name) && c3.disabled && c3.checked === false, 'Upload: nach dem Speichern ist die Auswahl der Karte leer', JSON.stringify(c3));
   report(r.step <= 12 && r.moved > 20, 'Upload Aufträge: Hinweise schieben den Inhalt weich nach unten', `${r.moved.toFixed(0)} px, größter Schritt ${r.step.toFixed(0)} px`);
   report(/Aufträge gespeichert/.test(r.text) && /5 Reparaturen/.test(r.text) && /2 Entstörungen/.test(r.text) && /1 Dauerauftrag/.test(r.text), 'Upload Aufträge: Meldung nennt die Anzahl je Auftragsart', r.text.slice(0, 260));
   report(/1 Auftrag anderer Auftragsarten übergangen \(1× 3NAV\)/.test(r.text), 'Upload Aufträge: fremde Auftragsart (3NAV) wird übergangen und gemeldet');
@@ -1119,6 +1149,24 @@ async function kindUploadChecks(browser, base, errors) {
   await page.evaluate(() => document.querySelector('#app [data-k="up-mel"] button.pri').click());
   await page.waitForFunction(() => /Das ist keine Meldungen-Excel/.test((document.querySelector('#app .msg.er') || {}).textContent || ''), null, { timeout: 15000 });
   report(true, 'Upload: Vorgänge-Datei im Feld „Meldungen“ wird mit einem klaren Hinweis abgelehnt', await msgText());
+  // Jede Datei im falschen Feld wird erkannt – auch die Aufträge-Excel im Feld „Prüfobjekte“ (sie hat ebenfalls eine Spalte „Kurztext“ und
+  // wurde früher als Prüflos gelesen: die Kurztexte der Aufträge ersetzten die Prüfobjekte). Die Auswahl bleibt für einen neuen Versuch.
+  const wrongFile = async (slot, file, re, name) => {
+    await page.setInputFiles(`#app input[data-up="${slot}"]`, file);
+    await page.evaluate(slot => document.querySelector(`#app [data-k="up-${slot}"] button.pri`).click(), slot);
+    await page.waitForFunction(re => new RegExp(re).test((document.querySelector('#app .msg.er') || {}).textContent || ''), re.source, { timeout: 20000 }).catch(() => {});
+    const text = await page.evaluate(() => (document.querySelector('#app .msg.er') || {}).textContent || '');
+    const st = await cardState(slot);
+    report(re.test(text) && !/konnte nicht verarbeitet/.test(text) && !st.disabled && /^✓ /.test(st.name), name, text);
+  };
+  await wrongFile('pruef', files.auftraege, /Das ist keine Prüfobjekte-Excel, sondern die Aufträge-Excel – bitte im Feld „Aufträge“ hochladen/, 'Upload: Aufträge-Excel im Feld „Prüfobjekte“ wird abgelehnt (Hinweis nennt das richtige Feld, Auswahl bleibt)');
+  await wrongFile('orders', files.pruef, /Das ist keine Aufträge-Excel, sondern die Prüfobjekte-Excel – bitte im Feld „Prüfobjekte“ hochladen/, 'Upload: Prüflos-Excel im Feld „Aufträge“ wird abgelehnt (Hinweis nennt das richtige Feld)');
+  await wrongFile('vorg', files.pruef, /Das ist keine Vorgänge-Excel, sondern die Prüfobjekte-Excel/, 'Upload: Prüflos-Excel im Feld „Vorgänge“ wird abgelehnt');
+  // eine neue Auswahl räumt den alten Fehler weg; die richtige Datei im Feld „Prüfobjekte“ wird gespeichert
+  await page.setInputFiles('#app input[data-up="pruef"]', files.pruef);
+  report(await page.evaluate(() => !document.querySelector('#app .msg.er')), 'Upload: eine neue Dateiwahl räumt die alte Fehlermeldung weg');
+  r = await upload('pruef', files.pruef);
+  report(/3 Prüfobjekte zu 2 Aufträgen gespeichert/.test(r.text) && /Keine Datei gewählt/.test((await cardState('pruef')).name), 'Upload Prüfobjekte: Prüflos-Excel wird gelesen und gespeichert', r.text);
   await page.context().close();
   // Disposition: Monteure sehen Reparaturen und Entstörungen erst, wenn der Disponent sie disponiert hat
   const undispatched = await monteurKinds(base);
@@ -1775,7 +1823,7 @@ async function dispositionNarrowChecks(browser, base, errors) {
   await page.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
   await pause(page, 800);
   const wide = () =>
-    page.evaluate(() => [...document.querySelectorAll('#app *')].filter(n => n.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && !n.closest('.tabs, .gt-scroll') && getComputedStyle(n).position !== 'fixed').map(n => n.tagName + '.' + n.className + '"' + n.textContent.trim().slice(0, 20) + '"').slice(0, 3));
+    page.evaluate(() => [...document.querySelectorAll('#app *')].filter(n => n.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && !n.closest('.gt-scroll') && getComputedStyle(n).position !== 'fixed').map(n => n.tagName + '.' + n.className + '"' + n.textContent.trim().slice(0, 20) + '"').slice(0, 3));
   let w = await wide();
   report(!w.length && (await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)), '320px Disposition: Liste und Diagramm ragen nicht über den Rand', w.join(', '));
   await page.evaluate(() => document.querySelector('#app [data-k="dp-65900003"]').click());
@@ -2015,6 +2063,63 @@ async function kindChecksWide(browser, base, viewport, errors) {
   await page.context().close();
 }
 
+// Tab-Leiste des Disponenten (Übersicht, Disposition, Fortschritt, Upload, Vergleich, Geräte, Benutzer): füllt die ganze Breite, nichts ist
+// abgeschnitten oder wischbar (früher: eine Zeile zum Seitwärtswischen, am PC nur 36 rem breit), am Handy zwei Zeilen (3 + 4), ab 720 px eine.
+// Ein Tabwechsel (aktiver Tab wird fett) und eine andere Zahl am Tab „Disposition“ verschieben die Nachbarn nicht merklich.
+async function dispoTabBarChecks(browser, base, errors) {
+  console.log('\n=== Disponent: Tab-Leiste füllt die Breite, nichts abgeschnitten ===');
+  const measure = page =>
+    page.evaluate(() => {
+      const bar = document.querySelector('#app .tabs'),
+        br = bar.getBoundingClientRect(),
+        bs = [...bar.querySelectorAll('button')],
+        rects = bs.map(b => b.getBoundingClientRect()),
+        rows = [...new Set(rects.map(r => Math.round(r.top)))].sort((a, b) => a - b).map(top => rects.filter(r => Math.round(r.top) === top)),
+        cs = getComputedStyle(bar);
+      return {
+        n: bs.length,
+        rows: rows.map(r => r.length),
+        // jede Zeile reicht von der linken bis zur rechten Kante der Leiste (nichts bleibt leer)
+        filled: rows.every(r => Math.abs(Math.min(...r.map(x => x.left)) - br.left) <= 1 && Math.abs(Math.max(...r.map(x => x.right)) - br.right) <= 1),
+        clipped: bs.filter(b => b.scrollWidth > b.clientWidth + 0.5).map(b => b.textContent),
+        outside: bs.filter((b, i) => rects[i].left < br.left - 1 || rects[i].right > br.right + 1 || rects[i].right > innerWidth).map(b => b.textContent),
+        scrolls: bar.scrollWidth > bar.clientWidth + 1 || /auto|scroll/.test(cs.overflowX),
+        heights: [...new Set(rects.map(r => Math.round(r.height)))],
+        barLeft: Math.round(br.left),
+        barRight: Math.round(innerWidth - br.right),
+        barH: Math.round(br.height),
+        pageW: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        boxes: rects.map(r => [r.left, r.width])
+      };
+    });
+  for (const { width, rows } of [{ width: 320, rows: [3, 4] }, { width: 390, rows: [3, 4] }, { width: 700, rows: [3, 4] }, { width: 720, rows: [7] }, { width: 1024, rows: [7] }, { width: 1280, rows: [7] }]) {
+    const label = `${width}px`,
+      page = await newPage(browser, base, { width, height: 700 }, errors);
+    await loginDispo(page);
+    const m = await measure(page);
+    report(m.n === 7 && m.rows.join() === rows.join(), `${label} Tab-Leiste: ${rows.length === 1 ? 'eine Zeile mit 7 Tabs' : 'zwei Zeilen mit 3 und 4 Tabs'}`, m.rows.join('+'));
+    report(m.filled && m.barLeft === 16 && m.barRight === 16, `${label} Tab-Leiste: nutzt die ganze Breite (Rand 16 px links und rechts)`, `links ${m.barLeft}, rechts ${m.barRight}, gefüllt: ${m.filled}`);
+    report(!m.clipped.length && !m.outside.length && !m.scrolls && m.pageW, `${label} Tab-Leiste: nichts abgeschnitten, nichts wischbar, Seite nicht breiter als der Bildschirm`, [...m.clipped, ...m.outside].join(', '));
+    report(m.heights.length === 1, `${label} Tab-Leiste: alle Tabs gleich hoch`, m.heights.join(', '));
+    // längster Text: dreistellige Zahl am Tab „Disposition“ (Text von Hand gesetzt) – passt ebenfalls, nichts abgeschnitten
+    await page.evaluate(() => { document.querySelectorAll('#app .tabs button')[1].textContent = 'Disposition (123)'; });
+    const long = await measure(page);
+    report(!long.clipped.length && !long.outside.length && long.rows.join() === rows.join() && long.barH === m.barH, `${label} Tab-Leiste: auch „Disposition (123)“ passt in seine Zeile`, [...long.clipped, ...long.outside, long.rows.join('+')].join(', '));
+    await page.evaluate(() => render()); // zeichnet die echte Beschriftung neu
+    await pause(page, 200);
+    // Tabwechsel: Leiste bleibt Pixel für Pixel stehen (der aktive Tab wird fett, mehr ändert sich nicht)
+    const before = await measure(page);
+    for (const n of ['Fortschritt', 'Geräte', 'Übersicht']) {
+      await page.evaluate(n => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === n).click(), n);
+      await pause(page, 700);
+      const after = await measure(page);
+      const shift = Math.max(...after.boxes.map((b, i) => Math.max(Math.abs(b[0] - before.boxes[i][0]), Math.abs(b[1] - before.boxes[i][1]))));
+      report(shift <= 1 && after.barH === before.barH && !after.clipped.length, `${label} Tab-Leiste: Wechsel zu „${n}“ verschiebt keinen Tab`, `größter Versatz ${shift.toFixed(1)} px, Höhe ${before.barH} → ${after.barH}`);
+    }
+    await page.context().close();
+  }
+}
+
 async function dispoChecks(browser, base, viewport, errors) {
   const label = `${viewport.width}px`,
     page = await newPage(browser, base, viewport, errors);
@@ -2068,7 +2173,7 @@ async function overflowChecks(browser, base, errors) {
   for (let i = 0; i < 3; i++) await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => b.textContent === 'A+').click());
   await pause(page, 500);
   const wide = () =>
-    page.evaluate(() => [...document.querySelectorAll('#app *')].filter(n => n.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && !n.closest('.tabs') && getComputedStyle(n).position !== 'fixed').map(n => n.tagName + '.' + n.className + '"' + n.textContent.trim().slice(0, 20) + '"').slice(0, 3));
+    page.evaluate(() => [...document.querySelectorAll('#app *')].filter(n => n.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && getComputedStyle(n).position !== 'fixed').map(n => n.tagName + '.' + n.className + '"' + n.textContent.trim().slice(0, 20) + '"').slice(0, 3));
   let w = await wide();
   report(!w.length, 'Liste ragt nicht über den Rand', w.join(', '));
   await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => b.textContent === 'Entfernung').click());
@@ -2118,6 +2223,11 @@ function summary(t0) {
   const browser = await pw.chromium.launch({ executablePath: findChrome() });
   const t0 = Date.now();
   try {
+    if (process.env.TEST_ONLY === 'tabs') {
+      await dispoTabBarChecks(browser, base, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
     if (process.env.TEST_ONLY === 'geraete') {
       await deviceChecks(browser, base, errors);
       return summary(t0);
@@ -2165,6 +2275,7 @@ function summary(t0) {
     await deviceChecks(browser, base, errors);
     await geoScenarioChecks(browser, errors);
     await dispoChecks(browser, base, { width: 390, height: 844 }, errors);
+    await dispoTabBarChecks(browser, base, errors);
     await overflowChecks(browser, base, errors);
     // Desktop (breit): dieselben Grundabläufe
     await monteurChecks(browser, base, { width: 1280, height: 800 }, errors);

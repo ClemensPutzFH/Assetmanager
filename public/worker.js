@@ -121,19 +121,27 @@ const readRows = (rows, headerRow, spec, dates = [], times = []) => {
  *   ent  Entstörung  3NAE
  * Alle anderen (z. B. 3NAV, 3NIN, 3NBT, 3NAW mit anderer Leistungsart) gehören nicht dazu: '' .
  */
-const SOURCE_NAMES = { auftraege: 'Aufträge', vorgaenge: 'Vorgänge', meldungen: 'Meldungen' };
+const SOURCE_NAMES = { auftraege: 'Aufträge', vorgaenge: 'Vorgänge', meldungen: 'Meldungen', pruef: 'Prüfobjekte' };
+// Spalte „Kurztext des Prüfobjektes“ der Prüflos-Excel (auch „Kurztext Prüfobjekt …“). „Kurztext“ allein gibt es in jeder SAP-Datei
+// (Aufträge, Vorgänge …) und genügt nicht: sonst würde eine Aufträge-Excel im Feld „Prüfobjekte“ als Prüflos gelesen
+const isCheckText = h => /^kurztext(des)?prüf/.test(normalizeHeader(h));
+// Fehler mit fertigem Text für die Anwenderin/den Anwender (z. B. „falsche Datei im Feld“): kommt ohne den Zusatz „Excel-Datei konnte nicht
+// verarbeitet werden“ bei der Oberfläche an
+const userError = message => Object.assign(new Error(message), { user: true });
 /**
  * Art eines Blattes an seinen Spalten erkennen:
  *   vorgaenge   Spalten „Auftrag“ + „Vorgang“
  *   meldungen   Spalten „Meldung“ + „Beschreibung“
  *   auftraege   Spalten „Auftrag“ + „Verantw.ArbPl.“
+ *   pruef       Spalten „Auftrag“ + „Kurztext des Prüfobjektes“ (zuletzt geprüft)
  * Ergebnis { type, header (Zeile der Kopfzeile) } oder null (keines davon).
  */
 function detectSheet(rows) {
   for (const [type, ok] of [
     ['vorgaenge', s => s.has('auftrag') && s.has('vorgang')],
     ['meldungen', s => s.has('meldung') && s.has('beschreibung')],
-    ['auftraege', s => s.has('auftrag') && s.has('verantwarbpl')]
+    ['auftraege', s => s.has('auftrag') && s.has('verantwarbpl')],
+    ['pruef', s => s.has('auftrag') && [...s].some(isCheckText)]
   ]) {
     const header = findHeader(rows, ok);
     if (header >= 0) return { type, header };
@@ -184,7 +192,7 @@ function parseSource(bufs, wanted) {
     }
   if (!found[wanted]) {
     const other = Object.keys(found).find(k => k !== wanted);
-    throw new Error(
+    throw userError(
       other
         ? `Das ist keine ${SOURCE_NAMES[wanted]}-Excel, sondern die ${SOURCE_NAMES[other]}-Excel – bitte im Feld „${SOURCE_NAMES[other]}“ hochladen.`
         : `Keine ${SOURCE_NAMES[wanted]} gefunden (nötige Spalten: ${{ auftraege: 'Auftrag + Verantw.ArbPl.', vorgaenge: 'Auftrag + Vorgang', meldungen: 'Meldung + Beschreibung' }[wanted]}).`
@@ -197,18 +205,19 @@ function parseSource(bufs, wanted) {
  * Ergebnis: je Auftrag die Liste der Kurztexte in Dateireihenfolge.
  */
 function parseChecklists(buf) {
-  const by = {};
+  const by = {},
+    found = {};
+  let matched = false;
   for (const rows of readSheets(buf)) {
-    const headerRow = rows
-      .slice(0, 10)
-      .findIndex(
-        r =>
-          r.some(c => normalizeHeader(c) === 'auftrag') &&
-          r.some(c => normalizeHeader(c).startsWith('kurztext'))
-      );
-    if (headerRow < 0) continue;
+    const headerRow = rows.slice(0, 10).findIndex(r => r.some(c => normalizeHeader(c) === 'auftrag') && r.some(isCheckText));
+    if (headerRow < 0) {
+      const d = detectSheet(rows); // eine andere SAP-Datei? (für die Fehlermeldung unten)
+      if (d) found[d.type] = true;
+      continue;
+    }
+    matched = true;
     const orderCol = rows[headerRow].findIndex(c => normalizeHeader(c) === 'auftrag'),
-      textCol = rows[headerRow].findIndex(c => normalizeHeader(c).startsWith('kurztext'));
+      textCol = rows[headerRow].findIndex(isCheckText);
     for (const r of rows.slice(headerRow + 1)) {
       const a = normalizeOrderNo(r[orderCol]),
         t = String(r[textCol] ?? '')
@@ -216,6 +225,14 @@ function parseChecklists(buf) {
           .trim();
       if (a && t) (by[a] = by[a] || []).push(t);
     }
+  }
+  if (!matched) {
+    const other = Object.keys(found)[0];
+    throw userError(
+      other
+        ? `Das ist keine Prüfobjekte-Excel, sondern die ${SOURCE_NAMES[other]}-Excel – bitte im Feld „${SOURCE_NAMES[other]}“ hochladen.`
+        : 'Keine Prüfobjekte gefunden (Spalten „Auftrag“ und „Kurztext des Prüfobjektes“ nötig).'
+    );
   }
   return { by };
 }
@@ -309,6 +326,6 @@ onmessage = e => {
       res instanceof ArrayBuffer ? [res] : res && res.buffer instanceof ArrayBuffer ? [res.buffer] : [];
     postMessage({ res }, tr);
   } catch (err) {
-    postMessage({ error: 'Excel-Datei konnte nicht verarbeitet werden: ' + (err.message || err) });
+    postMessage({ error: err.user ? err.message : 'Excel-Datei konnte nicht verarbeitet werden: ' + (err.message || err) });
   }
 };

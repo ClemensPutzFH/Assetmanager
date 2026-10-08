@@ -501,24 +501,29 @@
         width: 1.4em;
       }
       /* ---- Tabs der Disponentenansicht, Texteingaben ---- */
-      /* Tabs: nebeneinander, am Handy seitlich wischbar (nichts wird abgeschnitten), der aktive Tab wird in die Mitte gerückt */
+      /* Tabs: füllen immer die ganze Breite, nichts wird abgeschnitten und nichts muss gewischt werden. Am Handy zwei Zeilen (3 + 4 Tabs,
+         jede Zeile in gleich breite Tabs geteilt), ab Tablet-Breite eine Zeile mit sieben gleich breiten Tabs (siehe @media unten).
+         Die Breite hängt nicht vom Text ab (flex-basis 0): wird der aktive Tab fett oder ändert sich die Zahl am Tab „Disposition“,
+         bleiben die Nachbarn stehen. Nur wenn ein Text sonst nicht hineinpasste, wird sein Tab breiter (min-width: auto) statt ihn zu kappen.
+         Die Schrift schrumpft auf sehr schmalen Handys (320 px) von 14 auf 12 px, damit auch „Disposition (123)“ in seine Zeile passt. */
       .tabs {
-        display: flex;
+        display: grid;
         gap: 6px;
         margin-bottom: 12px;
-        overflow-x: auto;
-        scrollbar-width: none;
-        overscroll-behavior-x: contain;
-        -webkit-overflow-scrolling: touch;
       }
-      .tabs::-webkit-scrollbar {
-        display: none;
+      .tabs .trow {
+        display: flex;
+        gap: 6px;
       }
       .tabs button {
-        flex: 1 0 auto;
+        flex: 1 1 0;
         white-space: nowrap;
-        padding: 10px 14px;
-        font-size: 0.875rem;
+        padding: 10px 6px;
+        font-size: clamp(0.75rem, 3.7vw, 0.875rem);
+      }
+      /* erste Zeile (Übersicht, Disposition, Fortschritt): „Disposition (n)“ ist der längste Text und bekommt etwas mehr Platz */
+      .tabs .trow:first-child button:nth-child(2) {
+        flex-grow: 1.35;
       }
       .tabs button.on {
         background: var(--ac);
@@ -526,6 +531,20 @@
         color: #fff;
         font-weight: 600;
         box-shadow: 0 1px 2px color-mix(in srgb, var(--ac) 45%, transparent);
+      }
+      /* ab Tablet-Breite alle sieben Tabs in einer Zeile (die Zeilen lösen sich auf: display: contents) */
+      @media (min-width: 45em) {
+        .tabs {
+          display: flex;
+        }
+        .tabs .trow {
+          display: contents;
+        }
+        .tabs button,
+        .tabs .trow:first-child button:nth-child(2) {
+          flex: 1 1 0;
+          padding: 10px;
+        }
       }
       .tools select {
         flex: 1;
@@ -1183,9 +1202,6 @@
         }
       }
       @media (min-width: 700px) {
-        .tabs {
-          max-width: 36rem;
-        }
         .flt {
           display: flex;
           flex-wrap: wrap;
@@ -1717,6 +1733,25 @@
       .fnm {
         margin: 8px 0 0;
         word-break: break-all;
+      }
+      /* Upload: der Dateiname steht immer in einer Zeile (gekürzt) – die Auswahl einer Datei ändert die Höhe der Karte nicht */
+      .fnm.one {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        word-break: normal;
+      }
+      .fpick.off {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .fpick.off:active {
+        transform: none;
+        filter: none;
+      }
+      .ugrid button.pri:disabled {
+        opacity: 0.5;
+        cursor: default;
       }
       .vgbtn {
         display: block;
@@ -2944,9 +2979,14 @@
         undoTimer = null;
       // Upload-PIN: das Token gilt nur, solange der Tab „Upload“ offen ist
       // uploadToken / uploadPinInput / uploadPinError
+      // uploadPick: gewählte Dateien je Feld ('orders' | 'vorg' | 'mel' | 'pruef' -> [File]) · uploadKeep: Haken „Nur ergänzen“ je Feld.
+      // Beides steht im Zustand und nicht im Eingabefeld: render() baut die Felder bei jedem Neuzeichnen (Live-Update, Hinweis …) neu auf –
+      // die Auswahl ginge sonst unbemerkt verloren, der Haken „Nur ergänzen“ ebenfalls (dann würde ersetzt statt ergänzt).
       let uploadToken = '',
         uploadPinInput = '',
-        uploadPinError = false;
+        uploadPinError = false,
+        uploadPick = {},
+        uploadKeep = {};
       // Disposition (Disponent, Tab „Disposition“): Reparaturen und Entstörungen bekommen erst hier ein Team und einen Zeitraum – vorher
       // sieht sie kein Monteur. Zustand des Gantt-Diagramms (Beschreibung: Abschnitt „Disposition“ weiter unten)
       // gZoom: 'tag' (3 Tage, Stunden) | 'woche' (7 Tage) | 'monat' (ein Kalendermonat, ein Tag = 36 px) · gFrom: erster angezeigter Tag
@@ -3307,7 +3347,7 @@
        * sonst ersetzt die Datei die Einträge der enthaltenen Teams (Aufträge, Meldungen) bzw. Aufträge (Vorgänge) – siehe server.js.
        */
       async function uploadSource(part, files, keep) {
-        const { name, url } = UPLOAD_PARTS[part];
+        const { url, wipe } = UPLOAD_PARTS[part];
         busy = true;
         errorMsg = '';
         infoMsg = 'Lese Datei …';
@@ -3319,6 +3359,8 @@
           infoMsg = 'Speichere …';
           render();
           const answer = await api('POST', url, { rows: r.rows, keep, hasLart: r.hasLart, files: files.map(f => f.name).join(', ') }, 120000);
+          delete uploadPick[wipe]; // gespeichert: die Karte zeigt wieder „Keine Datei gewählt“ (bei einem Fehler bleibt die Auswahl für einen neuen Versuch)
+          delete uploadKeep[wipe];
           await poll();
           const total = o => Object.values(o || {}).reduce((a, n) => a + n, 0),
             kinds = KINDS.filter(x => answer.counts && answer.counts[x.k]).map(x => kindCount(x.k, answer.counts[x.k]));
@@ -3399,6 +3441,7 @@
             { by, files: files.map(f => f.name).join(', '), count: n, orders: cnt },
             120000
           );
+          delete uploadPick.pruef;
           checklistsByOrder.clear();
           await poll();
           infoMsg = `${n} Prüfobjekte zu ${cnt} Aufträgen gespeichert`;
@@ -7627,6 +7670,8 @@
         uploadToken = '';
         uploadPinInput = '';
         uploadPinError = false;
+        uploadPick = {};
+        uploadKeep = {};
         deviceList = null;
         deviceRenameId = null;
         deviceLogoutArmed = null;
@@ -8875,11 +8920,6 @@
       }
 
       // ---- Zeichnen ----
-      // tabsLeft: Wisch-Stand der Tab-Leiste des Disponenten vor dem Neuzeichnen (null = es gab keine) · tabsShown: zuletzt
-      // zentrierter Tab · tabsSince: seit wann (ms), damit ein zweites Neuzeichnen das Gleiten fortsetzt
-      let tabsLeft = null,
-        tabsShown = null,
-        tabsSince = 0;
       // Ansicht beim Neuzeichnen festhalten: Elemente mit data-k bleiben an derselben Bildschirmstelle – zuerst der angetippte
       // Bereich, sonst der nächstgelegene sichtbare. Das Scroll-Anchoring des Browsers ist aus (overflow-anchor:none): es springt,
       // wenn der gerade angetippte (fokussierte) Button beim Neuzeichnen ersetzt wird.
@@ -8997,8 +9037,6 @@
         syncLoginFields(); // Autofill-Werte der Anmeldeseite retten, bevor draw() die Felder neu aufbaut
         if (viewAnim) viewAnim.forEach(a => a.cancel()); // laufende Einblendung beenden, bevor die Positionen gemessen werden
         viewAnim = null;
-        const oldTabs = app.querySelector('.tabs');
-        tabsLeft = oldTabs ? oldTabs.scrollLeft : null;
         const focused = document.activeElement,
           keepKey = focused && focused.dataset && focused.dataset.keep,
           caret = keepKey ? focused.selectionStart : 0,
@@ -10395,10 +10433,12 @@
 
       // Dispo-Tab „Upload“: Aufträge und Prüflose hochladen, alles löschen
       function drawUploadTab() {
-        // eine Karte je SAP-Datei: Beschreibung, Dateiwahl, (Nur ergänzen), Hochladen, letzter Upload, Alle löschen
+        // eine Karte je SAP-Datei: Beschreibung, Dateiwahl, (Nur ergänzen), Hochladen, letzter Upload, Alle löschen.
+        // Gewählte Datei und Haken stehen im Zustand (uploadPick, uploadKeep) – das Neuzeichnen verliert sie nicht. Die Zeile mit dem Dateinamen
+        // ist immer da (einzeilig, gekürzt): die Auswahl ändert die Höhe der Karte nicht.
         const card = ({ title, text, columns, onUpload, keepOption, meta, metaText, wipe }) => {
-          const input = el('input', { type: 'file', accept: '.xlsx,.xls', multiple: 'multiple', 'data-up': wipe }),
-            keep = keepOption ? el('input', { type: 'checkbox' }) : null;
+          const files = uploadPick[wipe] || [],
+            names = files.map(f => f.name).join(', ');
           return el(
             'div',
             { class: 'card', 'data-k': 'up-' + wipe },
@@ -10409,20 +10449,44 @@
               ? el(
                   'div',
                   {},
-                  input,
-                  keep && el('label', { class: 'ck' }, keep, ' Nur ergänzen/aktualisieren (bestehende behalten)'),
+                  el(
+                    'label',
+                    { class: 'fpick' + (busy ? ' off' : '') },
+                    files.length ? 'Andere Datei wählen' : 'Datei wählen',
+                    el('input', {
+                      type: 'file',
+                      accept: '.xlsx,.xls',
+                      multiple: 'multiple',
+                      'data-up': wipe,
+                      disabled: busy ? 'disabled' : null,
+                      onchange: e => {
+                        uploadPick[wipe] = [...e.target.files];
+                        errorMsg = '';
+                        render();
+                      }
+                    })
+                  ),
+                  el('p', { class: 'mu fnm one', title: names }, files.length ? '✓ ' + names : 'Keine Datei gewählt'),
+                  keepOption &&
+                    el(
+                      'label',
+                      { class: 'ck' },
+                      el('input', {
+                        type: 'checkbox',
+                        checked: uploadKeep[wipe] ? 'checked' : null,
+                        disabled: busy ? 'disabled' : null,
+                        onchange: e => {
+                          uploadKeep[wipe] = e.target.checked;
+                        }
+                      }),
+                      ' Nur ergänzen/aktualisieren (bestehende behalten)'
+                    ),
                   el(
                     'button',
                     {
                       class: 'pri',
-                      disabled: busy ? 'disabled' : null,
-                      onclick: () => {
-                        if (input.files.length) onUpload([...input.files], !!(keep && keep.checked));
-                        else {
-                          errorMsg = 'Bitte erst eine Datei wählen.';
-                          render();
-                        }
-                      }
+                      disabled: busy || !files.length ? 'disabled' : null,
+                      onclick: () => onUpload(files, !!(keepOption && uploadKeep[wipe]))
                     },
                     busy ? 'Speichere …' : 'Hochladen & speichern'
                   )
@@ -11748,137 +11812,94 @@
           )
         );
       }
-      // Disponent: Kopfzeile + Tabs (Übersicht, Fortschritt, Upload, Vergleich, Geräte, Benutzer) und je nach Tab die passende Ansicht
+      // Disponent: Kopfzeile + Tabs (Übersicht, Disposition, Fortschritt | Upload, Vergleich, Geräte, Benutzer) und je nach Tab die passende Ansicht.
+      // Die Tabs füllen die ganze Breite: am Handy zwei Zeilen (3 + 4), breit eine (siehe CSS .tabs) – nichts wird abgeschnitten oder gewischt
       function drawDispo(back) {
+        // tab(Schlüssel, Beschriftung, Zustand setzen, nach dem Neuzeichnen)
+        const tab = (key, label, setState, afterDraw) =>
+          el(
+            'button',
+            {
+              class: dispoTab === key ? 'on' : null,
+              onclick: () => {
+                setState();
+                render();
+                if (afterDraw) afterDraw();
+              }
+            },
+            label
+          );
+        const tabs = [
+          tab('ue', 'Übersicht', () => {
+            dispoTab = 'ue';
+            uploadToken = '';
+          }),
+          tab('di', 'Disposition' + (openDispatchCount() ? ` (${openDispatchCount()})` : ''), () => {
+            if (dispoTab !== 'di') {
+              gSel = '';
+              gDraft = null;
+              gArmAll = false;
+            }
+            dispoTab = 'di';
+            uploadToken = '';
+          }),
+          tab('st', 'Fortschritt', () => {
+            dispoTab = 'st';
+            uploadToken = '';
+          }),
+          tab(
+            'up',
+            'Upload',
+            () => {
+              if (dispoTab !== 'up') {
+                dispoTab = 'up';
+                uploadToken = '';
+                uploadPinInput = '';
+                uploadPinError = false;
+                uploadPick = {};
+                uploadKeep = {};
+              }
+            },
+            () => {
+              const n = app.querySelector('[data-keep="u"]');
+              if (n) n.focus();
+            }
+          ),
+          tab('vg', 'Vergleich', () => {
+            dispoTab = 'vg';
+            uploadToken = '';
+          }),
+          tab(
+            'dv',
+            'Geräte',
+            () => {
+              dispoTab = 'dv';
+              uploadToken = '';
+              deviceRenameId = null;
+              deviceLogoutArmed = null;
+            },
+            () => {
+              loadDevices();
+              reloadDevicesSoon();
+            }
+          ),
+          tab(
+            'us',
+            'Benutzer',
+            () => {
+              dispoTab = 'us';
+              uploadToken = '';
+              userEdit = null;
+              userArmed = null;
+              userLogFor = null;
+            },
+            loadUsers
+          )
+        ];
         app.append(
           el('div', { class: 'bar' }, el('h1', {}, 'Disponent'), back),
-          el(
-            'div',
-            { class: 'tabs' },
-            el(
-              'button',
-              {
-                class: dispoTab === 'ue' ? 'on' : null,
-                onclick: () => {
-                  dispoTab = 'ue';
-                  uploadToken = '';
-                  render();
-                }
-              },
-              'Übersicht'
-            ),
-            el(
-              'button',
-              {
-                class: dispoTab === 'di' ? 'on' : null,
-                onclick: () => {
-                  if (dispoTab !== 'di') {
-                    gSel = '';
-                    gDraft = null;
-                    gArmAll = false;
-                  }
-                  dispoTab = 'di';
-                  uploadToken = '';
-                  render();
-                }
-              },
-              'Disposition' + (openDispatchCount() ? ` (${openDispatchCount()})` : '')
-            ),
-            el(
-              'button',
-              {
-                class: dispoTab === 'st' ? 'on' : null,
-                onclick: () => {
-                  dispoTab = 'st';
-                  uploadToken = '';
-                  render();
-                }
-              },
-              'Fortschritt'
-            ),
-            el(
-              'button',
-              {
-                class: dispoTab === 'up' ? 'on' : null,
-                onclick: () => {
-                  if (dispoTab !== 'up') {
-                    dispoTab = 'up';
-                    uploadToken = '';
-                    uploadPinInput = '';
-                    uploadPinError = false;
-                  }
-                  render();
-                  const n = app.querySelector('[data-keep="u"]');
-                  if (n) n.focus();
-                }
-              },
-              'Upload'
-            ),
-            el(
-              'button',
-              {
-                class: dispoTab === 'vg' ? 'on' : null,
-                onclick: () => {
-                  dispoTab = 'vg';
-                  uploadToken = '';
-                  render();
-                }
-              },
-              'Vergleich'
-            ),
-            el(
-              'button',
-              {
-                class: dispoTab === 'dv' ? 'on' : null,
-                onclick: () => {
-                  dispoTab = 'dv';
-                  uploadToken = '';
-                  deviceRenameId = null;
-                  deviceLogoutArmed = null;
-                  render();
-                  loadDevices();
-                  reloadDevicesSoon();
-                }
-              },
-              'Geräte'
-            ),
-            el(
-              'button',
-              {
-                class: dispoTab === 'us' ? 'on' : null,
-                onclick: () => {
-                  dispoTab = 'us';
-                  uploadToken = '';
-                  userEdit = null;
-                  userArmed = null;
-                  userLogFor = null;
-                  render();
-                  loadUsers();
-                }
-              },
-              'Benutzer'
-            )
-          )
+          el('div', { class: 'tabs' }, el('div', { class: 'trow' }, ...tabs.slice(0, 3)), el('div', { class: 'trow' }, ...tabs.slice(3)))
         );
-        // aktiven Tab in die Mitte der wischbaren Leiste rücken (die Leiste wird bei jedem Zeichnen neu gebaut): sie gleitet dorthin
-        // und startet dabei am alten Stand statt zu springen; bleibt der Tab gleich, bleibt auch der Stand (man wischt vielleicht gerade)
-        const tabBar = app.querySelector('.tabs'),
-          activeTab = tabBar && tabBar.querySelector('button.on');
-        if (activeTab) {
-          const target = activeTab.offsetLeft - (tabBar.clientWidth - activeTab.offsetWidth) / 2;
-          if (tabsLeft === null) tabBar.scrollLeft = target;
-          else {
-            tabBar.scrollLeft = tabsLeft;
-            // gleitet zum neuen Tab; zeichnet die App währenddessen nochmal (Daten kommen), gleitet sie weiter statt stehenzubleiben
-            if (tabsShown !== dispoTab || performance.now() - tabsSince < 500)
-              tabBar.scrollTo({
-                left: target,
-                behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-              });
-          }
-          if (tabsShown !== dispoTab) tabsSince = performance.now();
-          tabsShown = dispoTab;
-        }
         if (dispoTab === 'us') {
           drawUsers();
           return;
