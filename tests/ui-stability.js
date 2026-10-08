@@ -1161,7 +1161,11 @@ async function dispositionChecks(browser, base, viewport, errors) {
   const rows = await page.evaluate(() => [...document.querySelectorAll('#app .gt-name')].map(n => n.firstChild.textContent));
   report(rows.includes('FW-IH01') && rows.includes('FW-IH02') && rows.join() === [...rows].sort((a, b) => a.localeCompare(b, 'de', { numeric: true })).join(), `${label} Diagramm: eine Zeile je Team, sortiert`, `${rows.length} Teams`);
   const card = await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900002-0010"]'); return c && c.textContent.replace(/\s+/g, ' '); });
-  report(/Reparatur/.test(card || '') && /FW-IH01/.test(card) && /SAP: .*13:30 Uhr/.test(card) && /4 Std geplant/.test(card) && /Vorschlag übernehmen/.test(card), `${label} Offen-Karte: Auftragsart, SAP-Team, SAP-Termin, geplante Stunden`, card);
+  report(/Reparatur/.test(card || '') && /FW-IH01/.test(card) && /SAP: .*13:30 Uhr/.test(card) && /4 Std geplant/.test(card) && /Übernehmen/.test(card), `${label} Offen-Karte: Auftragsart, SAP-Team, SAP-Termin, geplante Stunden`, card);
+  // Karten sind flach (früher 170–220 px hoch), die Kopfzeile (Nummer, Art, Team, Knopf) bleibt am PC einzeilig, nichts ragt aus der Karte
+  const tiles = await page.evaluate(() => [...document.querySelectorAll('#app .gt-pc')].map(c => ({ k: c.dataset.k.slice(3), h: Math.round(c.getBoundingClientRect().height), head: Math.round(c.querySelector('.row').getBoundingClientRect().height), over: c.scrollWidth > c.clientWidth + 1 || c.scrollHeight > c.clientHeight + 1 })));
+  const maxH = wide ? 130 : 150;
+  report(tiles.length === 7 && tiles.every(t => t.h <= maxH && !t.over) && (!wide || tiles.every(t => t.head <= 30)), `${label} Offen-Karten sind flach (höchstens ${maxH} px, nichts ragt heraus${wide ? ', Kopfzeile einzeilig' : ''})`, tiles.map(t => `${t.h}/${t.head}`).join(' '));
   const nodate = await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900009"] .gt-go'); return c && !c.disabled; });
   report(nodate === true, `${label} Offen-Karte: auch ohne Uhrzeit gibt es einen Vorschlag (07:00)`);
 
@@ -1598,6 +1602,31 @@ async function poolWindowChecks(browser, base, errors) {
   const wanted = ['65900008-0010', '65900004', '65900003', '65900002-0010', '65900001-0010', '65900001-0020', '65900009'];
   const info = await popup.evaluate(() => ({ mode: document.compatMode, title: document.title, head: document.querySelector('.gt-ph b').textContent, chips: [...document.querySelectorAll('.chips button')].map(b => b.textContent.trim()), font: getComputedStyle(document.body).fontFamily.split(',')[0], bg: getComputedStyle(document.body).backgroundColor, wide: document.documentElement.scrollWidth <= document.documentElement.clientWidth }));
   report((await cardsOf(popup)).join() === wanted.join() && info.mode === 'CSS1Compat' && /^\(7\) Offene/.test(info.title) && /\(7\)/.test(info.head) && info.chips.join() === 'Alle (7),🛠️ Reparaturen (5),🚨 Entstörungen (2)' && /Inter/.test(info.font) && info.wide, `${label} Fenster: 7 Karten, das Älteste zuerst, Zahl im Titel, Auftragsarten, Schrift und Stile übernommen, nichts zu breit`, JSON.stringify(info));
+  // ---- Größe des Fensters: Spalten, Kopf und Karten richten sich nach der Fensterbreite (auch beim Verändern der Größe) ----
+  const vp0 = popup.viewportSize() || { width: 1280, height: 900 };
+  const layout = () =>
+    popup.evaluate(() => {
+      const cs = [...document.querySelectorAll('.gt-pool > [data-k]')].map(c => c.getBoundingClientRect()),
+        kids = [...document.querySelectorAll('.gtw-top > *')].map(n => { const r = n.getBoundingClientRect(); return Math.round((r.top + r.bottom) / 2 / 4); }), // (Mittellinie: die Teile sind mittig ausgerichtet und verschieden hoch)
+        byTop = new Map();
+      for (const r of cs) byTop.set(Math.round(r.top), [...(byTop.get(Math.round(r.top)) || []), Math.round(r.height)]);
+      return {
+        cols: new Set(cs.map(r => Math.round(r.left))).size,
+        maxH: Math.max(...cs.map(r => Math.round(r.height))),
+        evenRows: [...byTop.values()].every(hs => hs.every(h => h === hs[0])),
+        headRows: new Set(kids).size,
+        over: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        cut: [...document.querySelectorAll('.gt-pool > [data-k]')].some(c => c.scrollWidth > c.clientWidth + 1 || c.scrollHeight > c.clientHeight + 1)
+      };
+    });
+  for (const [w, h, cols, headRows] of [[520, 860, 1, 3], [900, 800, 2, 2], [1400, 900, 3, 1], [360, 700, 1, 0]]) {
+    await popup.setViewportSize({ width: w, height: h });
+    await settle(400);
+    const l = await layout();
+    report(l.cols === cols && (!headRows || l.headRows === headRows) && l.maxH <= 150 && l.evenRows && !l.over && !l.cut, `${label} Fenster ${w} px breit: ${cols} ${cols === 1 ? 'Spalte' : 'Spalten'} Karten${headRows ? `, Kopf in ${headRows} ${headRows === 1 ? 'Zeile' : 'Zeilen'}` : ''}, Karten einer Reihe gleich hoch (höchstens 150 px), nichts ragt über den Rand`, JSON.stringify(l));
+  }
+  await popup.setViewportSize(vp0);
+  await settle(400);
   const gantt0 = await page.evaluate(() => document.querySelectorAll('#app .gt-row').length);
   report(gantt0 > 5, `${label} Hauptfenster: Diagramm mit ${gantt0} Teamzeilen`);
 
@@ -1643,6 +1672,21 @@ async function poolWindowChecks(browser, base, errors) {
   await settle(900);
   report((await cardsOf(popup)).length === 7 && !(await orderOf('65900003')).dis, `${label} Fenster: „Rückgängig“ bringt die Karte zurück (auch am Server)`);
 
+  // Ausgleiten: die alte Karte schwebt mit demselben Aufbau (Raster) in derselben Größe aus, sie wird nicht zusammengestaucht
+  const ghost = await popup.evaluate(() => new Promise(resolve => {
+    const card = document.querySelector('.gt-pool > [data-k="dp-65900009"]'),
+      r0 = card.getBoundingClientRect();
+    card.querySelector('.gt-go').click();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const g = document.querySelector('body > [data-k="dp-65900009"]'),
+        r = g && g.getBoundingClientRect();
+      resolve({ h0: r0.height, w0: r0.width, g: g && { h: r.height, w: r.width, grid: getComputedStyle(g.querySelector('.gt-pcb')).display, cut: g.scrollHeight - g.clientHeight } });
+    }));
+  }));
+  report(ghost.g && Math.abs(ghost.g.h - ghost.h0) <= 1 && Math.abs(ghost.g.w - ghost.w0) <= 1 && ghost.g.grid === 'grid' && ghost.g.cut <= 1, `${label} Fenster: die ausgleitende Karte behält Aufbau und Größe`, JSON.stringify(ghost));
+  await settle(500);
+  await popup.evaluate(() => [...document.querySelectorAll('.gtw-toast button')].find(b => /Rückgängig/.test(b.textContent)).click());
+  await settle(900);
   // ---- Suche und Auftragsart im Fenster ----
   const input = popup.locator('input[type="search"]');
   await input.click();

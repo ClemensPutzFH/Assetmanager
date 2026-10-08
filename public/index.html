@@ -1942,34 +1942,57 @@
       body.gtw {
         padding-bottom: 5.5rem;
       }
+      /* Kopf: Überschrift, Auftragsart und Suche stehen in einer Zeile, wenn das Fenster breit genug ist, sonst untereinander */
       .gtw-top {
         position: sticky;
         top: 0;
         z-index: 3;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 14px;
         background: var(--bg);
         border-bottom: 1px solid var(--bd);
-        padding: 12px 14px 10px;
+        padding: 10px 14px;
+      }
+      .gtw-ph {
+        flex: 0 1 auto;
+        min-width: 0;
       }
       .gtw-top .gt-ph {
         min-height: 2.25rem; /* mit und ohne „Alle Vorschläge übernehmen“ gleich hoch */
-        margin-bottom: 6px;
+        margin: 0;
+        gap: 4px 14px;
+        justify-content: flex-start;
+      }
+      .gtw-chips {
+        flex: 0 1 auto;
+        min-width: 0;
       }
       .gtw-top .chips {
-        margin-bottom: 8px;
+        margin: 0;
       }
       .gtw-top input[type='search'] {
-        display: block;
-        width: 100%;
+        flex: 1 1 14rem;
+        min-width: 12rem;
         box-sizing: border-box;
+        margin: 0;
       }
       .gtw-body {
         padding: 12px 14px 0;
       }
+      /* Karten: so viele Spalten, wie ins Fenster passen (jede mindestens 25rem breit, dann ist die Karte flach mit Knopf rechts);
+         ein schmales Fenster hat eine Spalte, ein breites Fenster nutzt die Breite, statt wenige Karten ganz breit zu ziehen */
       body.gtw .gt-pool {
         max-height: none;
         overflow: visible;
         padding: 0;
         margin: 0;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 25rem), 1fr));
+      }
+      body.gtw .gt-pool > .gt-empty {
+        grid-column: 1 / -1;
       }
       .gtw-more {
         margin-top: 10px;
@@ -2036,13 +2059,18 @@
       .gt-pool {
         display: flex;
         flex-direction: column;
-        gap: 10px;
+        gap: 8px;
       }
+      /* Karte „noch offen“, flach: oben Nummer, Art, Team und der Knopf rechts, dann der Kurztext (rechts davon die Statusmarken), dann
+         Adresse und SAP-Termin. Die Karte ist ein eigener Container: wie sie sich zusammenzieht, richtet sich nach ihrer Breite, nicht
+         nach der des Fensters – in der Seite, im Extra-Fenster und beim Ausgleiten gleich. */
       .gt-pc {
         margin: 0;
+        padding: 8px 12px;
         cursor: pointer;
         user-select: none;
         touch-action: pan-y;
+        container-type: inline-size;
       }
       .gt-pc.sel {
         border-color: var(--ac);
@@ -2050,18 +2078,94 @@
           0 0 0 2px color-mix(in srgb, var(--ac) 35%, transparent),
           var(--sh1);
       }
-      .gt-pc .gt-sap {
-        font-size: 0.875rem;
-        margin-top: 4px;
+      .gt-pcb {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 2px 10px;
+        align-items: center;
+      }
+      .gt-pc .row {
+        grid-row: 1;
+        grid-column: 1;
+        gap: 3px 5px;
       }
       .gt-pc .gt-go {
-        margin-top: 8px;
-        padding: 8px 12px;
-        font-size: 0.875rem;
+        grid-row: 1;
+        grid-column: 2;
+      }
+      /* Kurztext links, Statusmarken rechts (bei mehreren untereinander), eine Zeile über beide Spalten */
+      .gt-tr {
+        grid-row: 2;
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .gt-tr .kt {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .gt-st {
+        flex: 0 0 auto;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 3px 4px;
+        max-width: 12rem;
+      }
+      .gt-pc .row > b {
+        font-size: 0.9375rem;
+        white-space: nowrap; /* die Nummer bricht nie am Bindestrich um (65900008-0010) */
+      }
+      .gt-pc .tag {
+        padding: 0 7px;
+      }
+      /* Art und Team in der Kopfzeile etwas kleiner (so bleibt die Zeile mit Nummer und Knopf einzeilig); die Statusmarken behalten ihre Größe */
+      .gt-pc .row .tag {
+        font-size: 0.6875rem;
+      }
+      .gt-pc .kt {
+        margin: 0;
+        font-size: 0.9375rem;
+        line-height: 1.3;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+      }
+      .gt-meta {
+        grid-row: 3;
+        grid-column: 1 / -1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0 0.9em;
+        font-size: 0.8125rem;
+        line-height: 1.35;
+      }
+      .gt-pc .mu,
+      .gt-pc .gt-sap {
+        font-size: inherit;
+        margin: 0;
+      }
+      .gt-pc .gt-go {
+        margin: 0;
+        padding: 4px 9px;
+        font-size: 0.8125rem;
+        white-space: nowrap;
       }
       .gt-pc .gt-go:disabled {
         opacity: 0.55;
         cursor: default;
+      }
+      @container (max-width: 27rem) {
+        .gt-kw {
+          display: none;
+        }
+      }
+      @media (pointer: coarse) {
+        .gt-pc .gt-go {
+          padding: 8px 12px;
+        }
       }
       .gt-empty {
         padding: 12px 14px;
@@ -2611,7 +2715,7 @@
       }
       @media (min-width: 1000px) {
         .gtp {
-          grid-template-columns: 21rem minmax(0, 1fr);
+          grid-template-columns: 24rem minmax(0, 1fr);
         }
         .gt-pool {
           max-height: 72vh;
@@ -5388,13 +5492,18 @@
        * Termin einer Reparatur/Entstörung mit Uhrzeit: „Mi 07.01.2026 · 04:00–06:30 Uhr“ (über Mitternacht: „… 13:00 Uhr bis 08.01.2026,
        * 05:55 Uhr“). Fehlt die Uhrzeit, steht nur das Datum; fehlt das Datum, ein leerer Text.
        */
-      const termText = order => {
+      // short: ohne das laufende Jahr („Mo 05.10.“ statt „Mo 05.10.2026“) – für enge Stellen wie die Karten der Offen-Liste
+      const termText = (order, short = false) => {
         const from = isoOfDate(order.start),
-          to = isoOfDate(order.ende);
+          to = isoOfDate(order.ende),
+          date = t => {
+            const d = dateDe(t);
+            return short && d.endsWith('.' + new Date().getFullYear()) ? d.slice(0, -4) : d;
+          };
         if (!from) return '';
-        const day = weekdayShort(from) + ' ' + dateDe(order.start);
+        const day = weekdayShort(from) + ' ' + date(order.start);
         if (to && to !== from)
-          return `${day}${order.uhr ? ' · ' + order.uhr + ' Uhr' : ''} bis ${weekdayShort(to)} ${dateDe(order.ende)}${order.uhr2 ? ', ' + order.uhr2 + ' Uhr' : ''}`;
+          return `${day}${order.uhr ? ' · ' + order.uhr + ' Uhr' : ''} bis ${weekdayShort(to)} ${date(order.ende)}${order.uhr2 ? ', ' + order.uhr2 + ' Uhr' : ''}`;
         return day + (order.uhr ? ' · ' + order.uhr + (order.uhr2 && order.uhr2 > order.uhr ? '–' + order.uhr2 : '') + ' Uhr' : '');
       };
       // Etikett „Heute“ / „Morgen“ für noch nicht erledigte Reparaturen und Entstörungen (Termin = Beginndatum)
@@ -8363,7 +8472,13 @@
           melds = bySeverity(meldungenOf(o)),
           gebrechen = worstGebrechen(melds),
           late = lateInfo(o),
-          title = (orderKind(o) === 'rep' && o.vtxt ? o.vtxt : o.kurz) || '–';
+          title = (orderKind(o) === 'rep' && o.vtxt ? o.vtxt : o.kurz) || '–',
+          // Statusmarken (im Verzug, Gebrechen, Externe Firma): stehen rechts neben dem Kurztext
+          status = [
+            late && el('span', { class: 'tag st-nok' }, `⏰ im Verzug · ${late.days === 1 ? '1 Tag' : late.days + ' Tage'}`),
+            gebrechen && gebrechenTag(gebrechen),
+            (o.ext || []).length > 0 && el('span', { class: 'tag st-teil' }, '🏗 Externe Firma')
+          ].filter(Boolean);
         return el(
           'div',
           {
@@ -8383,35 +8498,44 @@
               }
             }
           },
+          // (das Raster liegt in einem inneren Element: beim Ausgleiten setzt animateRemoved der alten Karte selbst display:flex)
           el(
             'div',
-            { class: 'row' },
-            el('b', {}, o.auftrag),
-            el('span', { class: 'tag' }, kindTag(orderKind(o))),
-            el('span', { class: 'tag' }, sap.team),
-            late && el('span', { class: 'tag st-nok' }, `⏰ im Verzug · ${late.days === 1 ? '1 Tag' : late.days + ' Tage'}`),
-            gebrechen && gebrechenTag(gebrechen),
-            (o.ext || []).length > 0 && el('span', { class: 'tag st-teil' }, '🏗 Externe Firma')
-          ),
-          el('div', { class: 'kt' }, title),
-          (o.str || o.plz) && el('div', { class: 'mu' }, [o.plz, o.str].filter(Boolean).join(' ')),
-          el('div', { class: 'gt-sap' }, isoOfDate(sap.start) ? '🕒 SAP: ' + termText({ start: sap.start, ende: sap.ende, uhr: sap.uhr, uhr2: sap.uhr2 }) + (o.arb ? ` · ${o.arb} Std geplant` : '') : el('span', { class: 'mu' }, 'SAP nennt keinen Termin')),
-          el(
-            'button',
-            {
-              class: 'gt-go',
-              disabled: sug ? null : 'disabled',
-              title: sug ? `${sug.team}, ${slotText(sug)}` : 'SAP nennt keinen Termin – bitte im Fenster einstellen',
-              onclick: e => {
-                e.stopPropagation();
-                if (gSel === o.auftrag) {
-                  gSel = '';
-                  gDraft = null;
+            { class: 'gt-pcb' },
+            el(
+              'div',
+              { class: 'row' },
+              el('b', {}, o.auftrag),
+              // (in einer schmalen Karte nur das Symbol: das Wort blendet das CSS aus, es bleibt im Text)
+              el('span', { class: 'tag', title: kindInfo(orderKind(o)).name }, kindInfo(orderKind(o)).icon + ' ', el('span', { class: 'gt-kw' }, kindInfo(orderKind(o)).name)),
+              el('span', { class: 'tag' }, sap.team)
+            ),
+            el(
+              'button',
+              {
+                class: 'gt-go',
+                disabled: sug ? null : 'disabled',
+                title: sug ? `Vorschlag aus SAP übernehmen: ${sug.team}, ${slotText(sug)}` : 'SAP nennt keinen Termin – bitte im Fenster einstellen',
+                'aria-label': `Vorschlag aus SAP für ${o.auftrag} übernehmen`,
+                onclick: e => {
+                  e.stopPropagation();
+                  if (gSel === o.auftrag) {
+                    gSel = '';
+                    gDraft = null;
+                  }
+                  dispoSave([{ a: o.auftrag, ...sug }], `${o.auftrag} → ${sug.team}, ${slotText(sug)}`);
                 }
-                dispoSave([{ a: o.auftrag, ...sug }], `${o.auftrag} → ${sug.team}, ${slotText(sug)}`);
-              }
-            },
-            '＋ Vorschlag übernehmen'
+              },
+              '＋ Übernehmen'
+            ),
+            // (Kurztext und Statusmarken: eine Zeile über beide Spalten – so beeinflussen die Marken nicht die Breite der Kopfzeile)
+            el('div', { class: 'gt-tr' }, el('div', { class: 'kt', title }, title), status.length > 0 && el('div', { class: 'gt-st' }, status)),
+            el(
+              'div',
+              { class: 'gt-meta' },
+              (o.str || o.plz) && el('span', { class: 'mu' }, [o.plz, o.str].filter(Boolean).join(' ')),
+              el('span', { class: 'gt-sap' }, isoOfDate(sap.start) ? '🕒 SAP: ' + termText({ start: sap.start, ende: sap.ende, uhr: sap.uhr, uhr2: sap.uhr2 }, true) + (o.arb ? ` · ${o.arb} Std geplant` : '') : el('span', { class: 'mu' }, 'SAP nennt keinen Termin'))
+            )
           )
         );
       }
@@ -8490,7 +8614,7 @@
         if (poolWinAlive()) return focusPoolWin();
         let w = null;
         try {
-          w = window.open('', 'dispo-pool', 'popup=yes,width=520,height=860');
+          w = window.open('', 'dispo-pool', `popup=yes,width=520,height=${Math.max(480, Math.min(860, (screen.availHeight || 940) - 80))}`);
         } catch (e) {}
         if (!w) {
           errorMsg = 'Das Extra-Fenster wurde vom Browser blockiert – bitte Pop-ups für diese Seite erlauben.';
@@ -8544,7 +8668,7 @@
         const ui = {
           doc: d,
           ph: el('div', { class: 'gtw-ph' }),
-          chips: el('div', {}),
+          chips: el('div', { class: 'gtw-chips' }),
           search: poolSearch(),
           list: el('div', { class: 'gt-pool', 'data-list': '1' }),
           more: el('div', { class: 'gtw-more' }),
