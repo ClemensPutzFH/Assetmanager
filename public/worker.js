@@ -6,7 +6,7 @@
  *                                       hochladen; jede Datei wird an ihren Spalten erkannt, siehe parseOrderFiles)
  *   type 'pruef'   { buf }          -> { by: { Auftrag: [Kurztexte] } }                (Prüflos-Excel hochladen)
  *   type 'cmp'     { buf }          -> { rows, hasStatus }                             (Vergleich Excel <-> Export)
- *   sonst          { A, P, dc, tc } -> ArrayBuffer der fertigen .xlsx                  (Export)
+ *   sonst          { A, P, dc, tc, E } -> ArrayBuffer der fertigen .xlsx                (Export; E = Tageseinträge der Daueraufträge)
  * ================================================================================================= */
 importScripts('/vendor/xlsx.full.min.js');
 // Spaltenüberschrift vereinheitlichen: Kleinbuchstaben, nur a–z, 0–9 und äöüß („Verantw.ArbPl.“ -> „verantwarbpl“)
@@ -121,6 +121,10 @@ const readRows = (rows, headerRow, spec, dates = [], times = []) => {
  *   ent  Entstörung  3NAE
  * Alle anderen (z. B. 3NAV, 3NIN, 3NBT, 3NAW mit anderer Leistungsart) gehören nicht dazu: '' .
  */
+// Team mit angehängtem „P“ („FW-IH01P“): geplant und vorgemerkt, aber noch nicht fix – wird nicht angezeigt
+const isPlanned = team => /\d+P$/i.test(String(team || '').trim());
+// Arbeitsplatz „FW-IHEXT“: externe Firmen
+const isExternal = team => /EXT$/i.test(String(team || '').trim());
 const kindOf = (art, lart, hasLart) => {
   art = art.toUpperCase();
   if (art === '3NAW') return !hasLart || lart === 'FWS' ? 'war' : lart === 'FWD' ? 'dau' : '';
@@ -135,15 +139,19 @@ const kindOf = (art, lart, hasLart) => {
  * Zusammengeführt wird zu den Einheiten der App (rows):
  *   · Wartung, Dauerauftrag, Entstörung: ein Eintrag je Auftrag (Schlüssel = Auftragsnummer)
  *   · Reparatur: ein Eintrag je Vorgang (Schlüssel = „Auftragsnummer-Vorgang“, Team = Arbeitsplatz des Vorgangs)
- * Ohne Vorgänge-Datei bleibt ein Reparaturauftrag ein Eintrag je Auftrag. Aufträge anderer Auftragsarten werden übergangen (ignored:
- * Auftragsart -> Anzahl), Zeilen ohne Team gezählt (skip). files = was in den Dateien gefunden wurde.
+ * Vorgänge geplanter Teams („…P“, z. B. FW-IH01P) sind noch nicht fix und entfallen (planned). Vorgänge der externen Firmen (FW-IHEXT)
+ * sind kein Team: sie hängen als `ext` an den Aufträgen der internen Teams; hat eine Reparatur nur externe Vorgänge, bekommt das
+ * verantwortliche Team des Auftrags einen Auftrag (ohne Vorgang). Ohne Vorgänge-Datei bleibt ein Reparaturauftrag ein Eintrag je
+ * Auftrag. Aufträge anderer Auftragsarten werden übergangen (ignored: Auftragsart -> Anzahl), Zeilen ohne Team gezählt (skip).
+ * files = was in den Dateien gefunden wurde.
  */
 function parseOrderFiles(bufs) {
   const orders = new Map(),
     steps = [],
     meldungen = new Map(),
     ignored = {};
-  let skip = 0;
+  let skip = 0,
+    planned = 0; // Vorgänge/Aufträge geplanter Teams („…P“), die noch nicht angezeigt werden
   const files = { orders: 0, vorgaenge: 0, meldungen: 0 };
   for (const buf of bufs)
     for (const rows of readSheets(buf)) {
@@ -194,6 +202,11 @@ function parseOrderFiles(bufs) {
       ignored[o.art || '?'] = (ignored[o.art || '?'] || 0) + 1;
       continue;
     }
+    // Auftrag eines geplanten Teams (z. B. „FW-IH01P“): noch nicht fix, wird nicht angezeigt
+    if (isPlanned(o.team)) {
+      planned++;
+      continue;
+    }
     const base = {
       kind,
       nr: o.auftrag,
@@ -207,9 +220,16 @@ function parseOrderFiles(bufs) {
       kurz: o.kurz,
       mel: o.mel || ''
     };
-    const l = stepsOf.get(o.auftrag) || [];
-    if (kind === 'rep' && l.length)
-      for (const v of l)
+    // Vorgänge: geplante („…P“) gibt es für die App noch nicht; Vorgänge der externen Firmen („FW-IHEXT“) sind kein Team, sondern
+    // werden beim Auftrag angezeigt (ext) – die externen arbeiten mit den internen Teams zusammen
+    const all = stepsOf.get(o.auftrag) || [],
+      fix = all.filter(v => !isPlanned(v.vteam)),
+      own = fix.filter(v => !isExternal(v.vteam)),
+      ext = fix.filter(v => isExternal(v.vteam)).map(v => ({ vg: v.vg, t: v.vtxt, ...(+v.arb ? { h: +v.arb } : {}) }));
+    planned += all.length - fix.length;
+    if (kind === 'rep' && own.length)
+      // Reparatur: jeder eigene Vorgang ist ein Auftrag seines Teams
+      for (const v of own)
         rows.push({
           ...base,
           auftrag: o.auftrag + '-' + v.vg,
@@ -220,22 +240,26 @@ function parseOrderFiles(bufs) {
           ende: v.ende || '',
           uhr: v.uhr,
           uhr2: v.uhr2,
-          arb: v.arb
+          arb: v.arb,
+          ext
         });
+    else if (kind === 'rep' && all.length && !fix.length) continue; // nur geplante Vorgänge: noch nichts anzuzeigen
     else {
-      // Entstörung: Beginn laut erstem, Ende laut letztem Vorgang
-      const first = l[0],
-        last = l[l.length - 1];
+      // Entstörung, Dauerauftrag, Wartung (ohne Vorgänge) und Reparatur ohne eigenen Vorgang (nur externe Firmen oder gar keine
+      // Vorgänge-Datei): ein Auftrag des verantwortlichen Teams. Beginn laut erstem, Ende laut letztem Vorgang.
+      const first = fix[0],
+        last = fix[fix.length - 1];
       rows.push({
         ...base,
         auftrag: o.auftrag,
-        vtxt: (first && first.vtxt) || '',
+        vtxt: kind === 'rep' ? '' : (first && first.vtxt) || '',
         team: o.team,
         start: (first && first.start) || o.start || '',
         ende: (last && last.ende) || o.ende || '',
         uhr: (first && first.uhr) || '',
         uhr2: (last && last.uhr2) || '',
-        arb: first ? l.reduce((a, v) => a + (+v.arb || 0), 0) : ''
+        arb: first ? fix.reduce((a, v) => a + (+v.arb || 0), 0) : '',
+        ext
       });
     }
   }
@@ -244,6 +268,7 @@ function parseOrderFiles(bufs) {
     meldungen: [...meldungen.values()].map(({ _present, ...m }) => m),
     skip,
     ignored,
+    planned,
     files
   };
 }
@@ -317,7 +342,7 @@ function parseForComparison(buf) {
  * Erzeugt die Export-Datei: Blatt „Aufträge“ (A) und Blatt „Prüfobjekte“ (P) als Tabellen mit Kopfzeile in Zeile 1.
  * dc / tc = Spaltenindex der Datums- bzw. Uhrzeit-Spalte in A (bekommen echte Excel-Formate dd.mm.yyyy / hh:mm).
  */
-function buildExport(A, P, dc, tc) {
+function buildExport(A, P, dc, tc, E) {
   // Tabelle aus Zeilen: Datums-/Uhrzeitformat, Spaltenbreite nach Inhalt (höchstens 60), Autofilter über alle Spalten
   const makeSheet = (aoa, dc = -1, tc = -1) => {
     const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -344,11 +369,13 @@ function buildExport(A, P, dc, tc) {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, makeSheet(A, dc, tc), 'Aufträge');
   XLSX.utils.book_append_sheet(workbook, makeSheet(P), 'Prüfobjekte');
+  // Tageseinträge der Daueraufträge (Datum Spalte 3, Uhrzeit Spalte 4)
+  if (E) XLSX.utils.book_append_sheet(workbook, makeSheet(E, 3, 4), 'Zeiteinträge');
   return XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
 }
 // Nachricht der Oberfläche verarbeiten; große Ergebnisse (ArrayBuffer) werden ohne Kopie übergeben
 onmessage = e => {
-  const { type, buf, bufs, A, P, dc, tc } = e.data;
+  const { type, buf, bufs, A, P, dc, tc, E } = e.data;
   try {
     const res =
       type === 'orders'
@@ -357,7 +384,7 @@ onmessage = e => {
           ? parseChecklists(buf)
           : type === 'cmp'
             ? parseForComparison(buf)
-            : buildExport(A, P, dc, tc);
+            : buildExport(A, P, dc, tc, E);
     const tr =
       res instanceof ArrayBuffer ? [res] : res && res.buffer instanceof ArrayBuffer ? [res.buffer] : [];
     postMessage({ res }, tr);

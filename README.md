@@ -127,15 +127,18 @@ Die App kennt fünf Auftragsarten. Der Monteur wählt sie auf der **Startseite**
 | Auftragsart | Quelle (SAP) | Besonderheiten |
 |---|---|---|
 | **Wartung** (`war`) | `3NAW` mit Leistungsart `FWS` (fehlt die Spalte „IH-Leistungsart“ ganz, gilt jeder `3NAW` als Wartung – ältere Dateien) | Prüfobjekte bewerten + Zeit; Fortschritt und Wochenpensum bis 31.12. |
-| **Reparatur** (`rep`) | `3NAR` | **Jeder Vorgang ist ein eigener Auftrag** (Schlüssel „Auftragsnummer-Vorgang“, z. B. `65046778-0010`; Team = Arbeitsplatz des Vorgangs). Termin **und Uhrzeit**, Meldung(en) |
+| **Reparatur** (`rep`) | `3NAR` | **Jeder Vorgang ist ein eigener Auftrag** (Schlüssel „Auftragsnummer-Vorgang“, z. B. `65046778-0010`; Team = Arbeitsplatz des Vorgangs). Termin **und Uhrzeit**, Meldung(en), externe Firmen (siehe unten) |
 | **Entstörung** (`ent`) | `3NAE` | Termin **und Uhrzeit** (aus dem Vorgang), Meldung(en) |
-| **Dauerauftrag** (`dau`) | `3NAW` mit Leistungsart `FWD` | laufende Arbeiten, keine Meldung |
+| **Dauerauftrag** (`dau`) | `3NAW` mit Leistungsart `FWD` | laufende Arbeiten, keine Meldung; **mehrere Tageseinträge** (siehe unten), nie „erledigt“ |
 | **Meldungen** (`mel`) | Meldungen-Excel | Schäden, die noch **keinem Auftrag** zugeordnet sind (nur eine Liste); Meldungen **mit** Auftrag stehen beim Auftrag (Karte „Meldung“ in der Detailansicht, erste Beschreibung auf der Karte) |
 
-- Reparatur, Entstörung und Dauerauftrag haben **keine Prüfobjekte**: erledigt ist ein Auftrag, sobald die Zeit vollständig zurückgemeldet ist (Datum, Beginn, Dauer). Bei Reparatur/Entstörung sind Datum und Beginn der Zeitkarte mit dem Termin vorbelegt.
+- Reparatur, Entstörung und Dauerauftrag haben **keine Prüfobjekte**: erledigt ist eine Reparatur/Entstörung, sobald die Zeit vollständig zurückgemeldet ist (Datum, Beginn, Dauer). Bei Reparatur/Entstörung sind Datum und Beginn der Zeitkarte mit dem Termin vorbelegt.
+- **Tageseinträge (Dauerauftrag):** Statt einer Zeit gibt es beliebig viele Einträge (Datum, Beginn, Dauer in Viertelstunden, „mit wem“; Start/Ende-Knopf, Ändern, Löschen). Die Karte zeigt die Gesamtzeit, der Auftrag gilt mit Einträgen als „in Arbeit“. Jeder Eintrag ist ein eigenes Ergebnis mit dem Schlüssel `Auftrag#Kennung` (Tabelle `ergebnis`, gleiches Format wie die Zeit eines Auftrags; ohne `min` = gelöscht). Dadurch kollidieren zwei Monteure, die am selben Tag Einträge machen, nicht (der Konflikt-Schutz gilt je Eintrag); höchstens 500 Einträge je Auftrag, nur für Daueraufträge (sonst HTTP 400). Der Excel-Export hat dafür das Blatt „Zeiteinträge“.
+- **Externe Firmen (`FW-IHEXT`):** Das ist kein Team. Ihre Vorgänge hängen am Auftrag der internen Teams („🏗 Externe Firma“ auf der Karte, in der Detailansicht mit Vorgang, Text und geplanten Stunden). Hat eine Reparatur nur externe Vorgänge, bekommt das verantwortliche Team des Auftrags (Verantw.ArbPl. der Aufträge-Datei) einen Auftrag ohne Vorgang.
+- **Geplante Teams (`…P`, z. B. `FW-IH01P`):** geplant und vorgemerkt, aber noch nicht fix – diese Vorgänge werden **nicht angezeigt** (beim Upload nicht geladen; die Meldung nach dem Upload nennt ihre Anzahl). Sobald der Vorgang in SAP einem festen Team gehört, kommt er mit dem nächsten Upload dazu.
 - **Termin & Uhrzeit:** Reparaturen und Entstörungen zeigen unter der Nummer „🕒 Mi 07.01.2026 · 04:00–06:30 Uhr“ (über Mitternacht: „… 22:00 Uhr bis Mi 08.10.2026, 05:30 Uhr“), „📅 Heute/Morgen“ als Etikett und sind standardmäßig nach Termin und Uhrzeit sortiert (heute und später aufsteigend, danach das Vergangene mit dem Neuesten zuerst). Fehlt eine Uhrzeit (SAP liefert `00:00:00`), steht nur das Datum.
 - Andere Auftragsarten (`3NAV`, `3NIN`, `3NBT`, `3NAW` mit anderer Leistungsart) werden beim Upload **übergangen**; die Meldung nach dem Upload nennt sie.
-- Der Fortschritt (Tab „Fortschritt“, Wochenpensum) zählt nur Wartungen.
+- **Fortschritt** (Prozent, Wochenpensum bis 31.12., Tab „Fortschritt“ des Disponenten) gibt es nur bei **Wartungen**; die anderen Auftragsarten zeigen nur Zähler (offen/gesamt).
 
 ## Excel-Spalten, die gelesen werden
 Im Tab „Upload“ können **mehrere Dateien auf einmal** gewählt werden; jede wird an ihren Spalten erkannt und mit den anderen zusammengeführt:

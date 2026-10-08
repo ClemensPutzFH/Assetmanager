@@ -11,9 +11,12 @@
  * TABELLEN
  *   orders    Aufträge (del = 1: gelöscht/verschoben, bleibt als Markierung, damit Geräte es erfahren). kind = Auftragsart der App:
  *             war Wartung (3NAW/FWS) · dau Dauerauftrag (3NAW/FWD) · rep Reparatur (3NAR) · ent Entstörung (3NAE). Bei Reparaturen ist
- *             jeder Vorgang ein eigener Eintrag: auftrag = „Nummer-Vorgang“ (z. B. 65046778-0010), nr = die echte Auftragsnummer
+ *             jeder Vorgang ein eigener Eintrag: auftrag = „Nummer-Vorgang“ (z. B. 65046778-0010), nr = die echte Auftragsnummer;
+ *             ext = Vorgänge externer Firmen (FW-IHEXT) zum Auftrag (JSON, nur zur Anzeige); geplante Teams („…P“) werden gar nicht geladen
  *   meldung   Meldungen (Schäden): mit Auftrag (auftrag = echte Auftragsnummer) oder noch ohne (auftrag = '')
- *   pruef     Prüfobjekt-Liste je Auftrag (JSON)       ergebnis  Bewertung/Zeit je Auftrag (JSON, Format siehe index.html)
+ *   pruef     Prüfobjekt-Liste je Auftrag (JSON)       ergebnis  Bewertung/Zeit je Auftrag (JSON, Format siehe index.html).
+ *             Daueraufträge haben mehrere Tageseinträge: je Eintrag eine Zeile mit dem Schlüssel „Auftrag#Kennung“ (Format wie die Zeit
+ *             eines Auftrags: min, dat, von, mit …); ein Eintrag ohne `min` gilt als gelöscht
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
  *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
@@ -148,7 +151,7 @@ const addColumn = (table, column, type) => {
 // Auftragsarten: bisherige Aufträge sind Wartungsaufträge. nr = echte Auftragsnummer (bei Reparaturen hat `auftrag` noch den Vorgang
 // angehängt), vg/vtxt = Vorgang und dessen Kurztext, lart = Leistungsart, uhr/uhr2 = Uhrzeit von/bis, arb = geplante Arbeit (Stunden),
 // mel = Meldungsnummer laut Aufträge-Excel
-for (const [column, type] of [['kind', 'TEXT'], ['nr', 'TEXT'], ['vg', 'TEXT'], ['vtxt', 'TEXT'], ['lart', 'TEXT'], ['uhr', 'TEXT'], ['uhr2', 'TEXT'], ['arb', 'TEXT'], ['mel', 'TEXT']])
+for (const [column, type] of [['kind', 'TEXT'], ['nr', 'TEXT'], ['vg', 'TEXT'], ['vtxt', 'TEXT'], ['lart', 'TEXT'], ['uhr', 'TEXT'], ['uhr2', 'TEXT'], ['arb', 'TEXT'], ['mel', 'TEXT'], ['ext', 'TEXT']])
   addColumn('orders', column, type);
 db.exec("UPDATE orders SET kind='war' WHERE kind IS NULL; UPDATE orders SET nr=auftrag WHERE nr IS NULL; CREATE INDEX IF NOT EXISTS orders_nr ON orders(nr)");
 addColumn('dev', 'usr', 'TEXT');
@@ -238,6 +241,9 @@ const sql = {
     'SELECT d.auftrag,d.v,d.at,d.seq FROM dmark d JOIN orders o ON o.auftrag=d.auftrag WHERE d.seq>? AND d.v=1 AND o.del=0 AND o.team=?'
   ),
   getMark: db.prepare('SELECT v,at,seq FROM dmark WHERE auftrag=?'),
+  // Tageseinträge eines Dauerauftrags (Schlüssel „Auftrag#Kennung“)
+  getOrderKind: db.prepare('SELECT kind FROM orders WHERE auftrag=? AND del=0'),
+  countEntries: db.prepare('SELECT COUNT(*) n FROM ergebnis WHERE auftrag LIKE ?'),
   ordersOfIds: db.prepare('SELECT auftrag,team FROM orders WHERE auftrag IN (SELECT value FROM json_each(?))'),
   pruefOne: db.prepare('SELECT items FROM pruef WHERE auftrag=?'),
   maxSeq: db.prepare(
@@ -259,15 +265,15 @@ const sql = {
   ),
   tombAll: db.prepare('UPDATE orders SET del=1, ts=?, seq=? WHERE del=0'),
   upOrder:
-    db.prepare(`INSERT INTO orders(auftrag,team,tp,art,plz,str,kurz,start,ende,kind,nr,vg,vtxt,lart,uhr,uhr2,arb,mel,del,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+    db.prepare(`INSERT INTO orders(auftrag,team,tp,art,plz,str,kurz,start,ende,kind,nr,vg,vtxt,lart,uhr,uhr2,arb,mel,ext,del,seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
     ON CONFLICT(auftrag) DO UPDATE SET team=excluded.team,tp=excluded.tp,art=excluded.art,plz=excluded.plz,str=excluded.str,kurz=excluded.kurz,start=excluded.start,
       ende=COALESCE(NULLIF(excluded.ende,''),orders.ende),kind=excluded.kind,nr=excluded.nr,vg=excluded.vg,vtxt=excluded.vtxt,lart=excluded.lart,uhr=excluded.uhr,uhr2=excluded.uhr2,
-      arb=excluded.arb,mel=excluded.mel,del=0,seq=excluded.seq
+      arb=excluded.arb,mel=excluded.mel,ext=excluded.ext,del=0,seq=excluded.seq
     WHERE orders.del=1 OR orders.team IS NOT excluded.team OR orders.tp IS NOT excluded.tp OR orders.art IS NOT excluded.art OR orders.plz IS NOT excluded.plz
        OR orders.str IS NOT excluded.str OR orders.kurz IS NOT excluded.kurz OR orders.start IS NOT excluded.start
        OR orders.ende IS NOT COALESCE(NULLIF(excluded.ende,''),orders.ende) OR orders.kind IS NOT excluded.kind OR orders.nr IS NOT excluded.nr
        OR orders.vg IS NOT excluded.vg OR orders.vtxt IS NOT excluded.vtxt OR orders.lart IS NOT excluded.lart OR orders.uhr IS NOT excluded.uhr
-       OR orders.uhr2 IS NOT excluded.uhr2 OR orders.arb IS NOT excluded.arb OR orders.mel IS NOT excluded.mel`),
+       OR orders.uhr2 IS NOT excluded.uhr2 OR orders.arb IS NOT excluded.arb OR orders.mel IS NOT excluded.mel OR orders.ext IS NOT excluded.ext`),
   upPruef: db.prepare(
     'INSERT INTO pruef(auftrag,items,seq) VALUES(?,?,?) ON CONFLICT(auftrag) DO UPDATE SET items=excluded.items, seq=excluded.seq WHERE pruef.items IS NOT excluded.items'
   ),
@@ -908,7 +914,15 @@ function cleanResultDoc(orderNo, doc) {
   }
   return clean;
 }
+// Vorgänge externer Firmen zum Auftrag: [{ vg, t (Text), h (Stunden) }] höchstens 30 Stück als JSON-Text, sonst null
+const cleanExt = list => {
+  const clean = (Array.isArray(list) ? list : [])
+    .slice(0, 30)
+    .map(x => ({ vg: clipString(x && x.vg, 8), t: clipString(x && x.t, 200), ...(+(x && x.h) > 0 ? { h: +x.h } : {}) }));
+  return clean.length ? JSON.stringify(clean) : null;
+};
 // nur die bekannten Felder eines Auftrags an die Geräte schicken
+const MAX_ENTRIES = 500; // Tageseinträge je Dauerauftrag
 const orderFields = r => ({
   auftrag: r.auftrag,
   team: r.team,
@@ -926,7 +940,8 @@ const orderFields = r => ({
   ...(r.uhr ? { uhr: r.uhr } : {}),
   ...(r.uhr2 ? { uhr2: r.uhr2 } : {}),
   ...(r.arb ? { arb: r.arb } : {}),
-  ...(r.mel ? { mel: r.mel } : {})
+  ...(r.mel ? { mel: r.mel } : {}),
+  ...(r.ext ? { ext: JSON.parse(r.ext) } : {})
 });
 // nur die bekannten Felder einer Meldung an die Geräte schicken (leere Felder weglassen)
 const meldungFields = r => ({
@@ -1432,7 +1447,8 @@ async function handleApi(req, res, url) {
   }
   // Monteur: Ergebnis eines Auftrags speichern – PUT /api/ergebnis/<Auftragsnummer>
   let match;
-  if ((match = pathname.match(/^\/api\/ergebnis\/(\d{1,20}(?:-\d{1,4})?)$/)) && method === 'PUT') {
+  if ((match = pathname.match(/^\/api\/ergebnis\/(\d{1,20}(?:-\d{1,4})?(?:(?:#|%23)[a-z0-9]{4,12})?)$/)) && method === 'PUT') {
+    match[1] = match[1].replace('%23', '#'); // Tageseintrag eines Dauerauftrags: „Auftrag#Kennung“ (das # kommt als %23 an)
     // _b = Stand (Änderungsnummer), auf dem die Eingabe beruht. Hat inzwischen ein anderes Gerät gespeichert, gewinnt der Server:
     // die Eingabe wird abgelehnt (409) und das Gerät bekommt den aktuellen Stand zurück. Ohne _b (alte App-Version): wie bisher.
     const user = userFromRequest(req);
@@ -1444,11 +1460,20 @@ async function handleApi(req, res, url) {
     if (!teamAllowed(user, d.team))
       return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt – dieser Auftrag gehört zu einem anderen Team.' });
     d.u = user.sap; // wer das Ergebnis zuletzt gespeichert hat (kommt aus der Anmeldung, nicht vom Gerät)
+    // Schlüssel „Auftrag#Kennung“ = ein Tageseintrag eines Dauerauftrags; gesperrt wird über den Auftrag
+    const orderKey = match[1].split('#')[0],
+      isEntry = match[1].includes('#');
     const r = await inBatch(() => {
+      if (isEntry) {
+        const o = sql.getOrderKind.get(orderKey);
+        if (!o || o.kind !== 'dau') return { bad: 'Tageseinträge gibt es nur bei Daueraufträgen.' };
+      }
       const cur = sql.getErg.get(match[1]);
       // Vom Disponenten abgehakt: der Monteur kann nichts mehr ändern (erst wieder, wenn der Haken zurückgenommen wird)
-      const mark = sql.getMark.get(match[1]);
+      const mark = sql.getMark.get(orderKey);
       if (mark && mark.v) return { locked: mark, cur: cur || null };
+      if (isEntry && !cur && sql.countEntries.get(orderKey + '#%').n >= MAX_ENTRIES)
+        return { bad: `Zu diesem Dauerauftrag gibt es schon ${MAX_ENTRIES} Einträge.` };
       if (base !== null && (cur ? cur.seq : 0) !== base) return { cur: cur || null };
       // Zeitrückmeldung (tu = SAP-User, der sie gemacht hat): bleibt die Zeit unverändert, bleibt auch der bisherige Benutzer
       // (z. B. wenn ein anderer Monteur nur Prüfobjekte bewertet); neue oder geänderte Zeit gehört dem speichernden Benutzer
@@ -1923,6 +1948,7 @@ async function handleApi(req, res, url) {
           clipString(r.uhr2, 5),
           clipString(r.arb, 10),
           clipString(String(r.mel || '').replace(/\D/g, ''), 20),
+          cleanExt(r.ext),
           changeSeq
         );
       // dieselbe Auftragsnummer unter anderem Schlüssel (z. B. vorher ohne Vorgänge geladen): der alte Eintrag ist überholt
@@ -1968,6 +1994,7 @@ async function handleApi(req, res, url) {
         count: rows.length || upload.count || 0,
         kinds: rows.length ? counts : upload.kinds,
         meldungen: meldungen.length || upload.meldungen || 0,
+        planned: +body.planned | 0 || undefined,
         ignored: body.ignored && typeof body.ignored === 'object' ? Object.fromEntries(Object.entries(body.ignored).slice(0, 20).map(([k, v]) => [clipString(k, 10), +v | 0])) : undefined
       });
       catalogVer++;

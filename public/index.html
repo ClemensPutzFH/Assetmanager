@@ -998,6 +998,40 @@
       .mel1 {
         margin-top: 2px;
       }
+      .zrow {
+        padding: 8px 0;
+        border-top: 1px solid var(--bd);
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        align-items: flex-start;
+      }
+      .zrow.on {
+        background: color-mix(in srgb, var(--ac) 8%, var(--card));
+        margin: 0 -14px;
+        padding: 8px 14px;
+      }
+      .zrow button {
+        margin-top: 4px;
+      }
+      .zne {
+        display: block;
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid var(--bd);
+      }
+      .zall {
+        margin: 6px 0 10px;
+      }
+      .extbox {
+        margin-top: 8px;
+        padding: 8px 10px;
+        border: 1px solid var(--bd);
+        border-radius: 10px;
+      }
+      .extbox .mu {
+        margin-top: 2px;
+      }
       .mld .kt {
         margin-top: 4px;
       }
@@ -1855,7 +1889,8 @@
        *   Auftrag        { auftrag, team, tp (Techn. Platz), art, plz, str, kurz, start, ende, kind, nr, vg?, vtxt?, lart?, uhr?, uhr2?, arb?, mel? }
        *                  kind = Auftragsart der App: war Wartung (3NAW/FWS) · rep Reparatur (3NAR) · ent Entstörung (3NAE) · dau Dauerauftrag
        *                  (3NAW/FWD). `auftrag` ist der Schlüssel (Reparatur: „Nummer-Vorgang“, weil jeder Vorgang ein eigener Auftrag ist),
-       *                  nr die echte Auftragsnummer, vg/vtxt Vorgang und dessen Text, uhr/uhr2 Uhrzeit von/bis (HH:MM), mel Meldungsnummer
+       *                  nr die echte Auftragsnummer, vg/vtxt Vorgang und dessen Text, uhr/uhr2 Uhrzeit von/bis (HH:MM), mel Meldungsnummer,
+       *                  ext = [{ vg, t, h? }] Vorgänge externer Firmen (FW-IHEXT), die mit den internen Teams am Auftrag arbeiten
        *   Meldung        { nr, dat, txt, str, plz, auftrag (leer = noch ohne Auftrag), code, tp, stat, team, grp }
        *   Prüfobjekte    Liste von Kurztexten je Auftrag (aus dem Prüflos-Excel)
        *   Ergebnis-Doc   { a, team, n, ok, nx, s, nok, min?, tat?, dat?, von?, u?, tu? } je Auftrag (u = SAP-User, der zuletzt gespeichert hat,
@@ -1897,6 +1932,22 @@
         node.append(...children.flat().filter(x => x != null && x !== false));
         return node;
       };
+      /**
+       * Map „Schlüssel -> Ergebnis-Dokument“, die sich merkt, zu welchen Daueraufträgen es Tageseinträge gibt. Ein Tageseintrag ist ein
+       * Ergebnis-Dokument mit dem Schlüssel „Auftrag#Kennung“ (Format wie die Zeit eines Auftrags: min, dat, von, mit …).
+       * entryKeys: Auftragsnummer -> Menge der Schlüssel seiner Tageseinträge
+       */
+      const entryKeys = new Map();
+      class ResultMap extends Map {
+        set(key, value) {
+          const i = typeof key === 'string' ? key.indexOf('#') : -1;
+          if (i > 0) {
+            const order = key.slice(0, i);
+            (entryKeys.get(order) || entryKeys.set(order, new Set()).get(order)).add(key);
+          }
+          return super.set(key, value);
+        }
+      }
       // ---- Zustand (global; render() zeichnet die Seite daraus neu) ----
       // Server-Stand / Cache
       // syncSeq: letzte Änderungsnummer des Servers, die wir kennen (poll holt nur Neueres)
@@ -1957,8 +2008,8 @@
         // listScrollY: Scroll-Position der Liste, bevor ein Auftrag geöffnet wurde (closeOrder stellt sie wieder her)
         listScrollY = 0,
         // results: Auftragsnummer -> Ergebnis-Dokument (Stand vom Server); outbox: noch nicht gesendete Ergebnisse
-        results = new Map(),
-        outbox = new Map(),
+        results = new ResultMap(),
+        outbox = new ResultMap(),
         // sendState: Auftragsnummer -> { busy, dirty } – verhindert parallele Sendungen desselben Auftrags (siehe sendPending)
         sendState = new Map(),
         // dispoTab: Tab der Disponentenansicht: 'ue' Übersicht, 'st' Fortschritt, 'up' Upload, 'vg' Vergleich
@@ -2001,7 +2052,10 @@
         timeMinutes = '',
         timeError = '',
         timeDate = '',
-        timeStart = '';
+        timeStart = '',
+        // entryKey: Dauerauftrag – Schlüssel des Tageseintrags, der gerade bearbeitet wird ('' = neuer Eintrag) · entriesAll: alle Einträge zeigen
+        entryKey = '',
+        entriesAll = false;
       // Abhaken (Disponent)
       // marks: Auftragsnummer -> { v, at, sq } (siehe markState)
       let marks = new Map(),
@@ -2353,13 +2407,14 @@
           await api(
             'POST',
             '/api/orders',
-            { rows: r.rows, meldungen: r.meldungen, keep, ignored: r.ignored, files: files.map(f => f.name).join(', ') },
+            { rows: r.rows, meldungen: r.meldungen, keep, ignored: r.ignored, planned: r.planned, files: files.map(f => f.name).join(', ') },
             120000
           );
           await poll();
           const counts = {};
           for (const o of r.rows) counts[o.kind] = (counts[o.kind] || 0) + 1;
           const ignoredTotal = Object.values(r.ignored).reduce((a, n) => a + n, 0);
+          const plannedText = r.planned ? ` · ${r.planned} geplante Vorgänge (Team mit „P“) noch nicht angezeigt` : '';
           infoMsg =
             [
               ...KINDS.filter(x => counts[x.k]).map(x => kindCount(x.k, counts[x.k])),
@@ -2368,6 +2423,7 @@
               .filter(Boolean)
               .join(' · ') +
             ' gespeichert' +
+            plannedText +
             (r.skip ? ` · ${r.skip} Zeilen ohne Team übersprungen` : '') +
             (ignoredTotal
               ? ` · ${ignoredTotal === 1 ? '1 Auftrag' : ignoredTotal + ' Aufträge'} anderer Auftragsarten übergangen (${Object.entries(r.ignored)
@@ -2546,6 +2602,10 @@
               'Meldung(en)'
             ]
           ];
+          // Daueraufträge: jeder Tageseintrag eine Zeile (Blatt „Zeiteinträge“); beim Auftrag stehen die Summen
+          const entryRows = [
+            ['Auftrag', 'Team', 'Kurztext', 'Durchgeführt am', 'Beginn (Uhrzeit)', 'Dauer (Min)', 'Dauer (Std)', 'Gearbeitet mit', 'Eingetragen von', 'Eingetragen am']
+          ];
           const checklistRows = [
             [
               'Auftrag',
@@ -2596,7 +2656,11 @@
               status.tu ? userLabel(status.tu) : null,
               status.mit && status.mit.length ? status.mit.map(userLabel).join(', ') : null,
               status.nok.map(z => (z.m ? `${z.t} → ${z.m}` : z.t)).join(' | '),
-              stale ? 'Prüfliste seit der Bewertung geändert' : '',
+              stale
+                ? 'Prüfliste seit der Bewertung geändert'
+                : status.cnt
+                  ? `${status.cnt} Tageseinträge – siehe Blatt „Zeiteinträge“`
+                  : '',
               markState(order.auftrag)
                 ? new Date(marks.get(order.auftrag).at).toLocaleString('de-AT') +
                   (markState(order.auftrag) === 2 ? ' (danach geändert)' : '')
@@ -2609,6 +2673,19 @@
               order.uhr2 || '',
               meldungenOf(order).map(m => `${m.nr}: ${m.txt}`).join(' | ') || order.mel || ''
             ]);
+            for (const e of status.ein || [])
+              entryRows.push([
+                orderNr(order),
+                order.team,
+                order.kurz,
+                isoToExcelDate(performedDate(e)),
+                timeToExcelFraction(e.von),
+                e.min,
+                Math.round((e.min / 60) * 100) / 100,
+                e.mit && e.mit.length ? e.mit.map(userLabel).join(', ') : null,
+                e.tu ? userLabel(e.tu) : null,
+                e.tat ? new Date(e.tat).toLocaleString('de-AT') : null
+              ]);
             items.forEach((t, i) => {
               const itemMark = valid ? status.s[i] : '-',
                 z = valid ? status.nok.find(z => z.i === i) : null;
@@ -2627,6 +2704,7 @@
             type: 'xlsx',
             A: orderRows,
             P: checklistRows,
+            E: entryRows.length > 1 ? entryRows : null,
             dc: orderRows[0].indexOf('Durchgeführt am'),
             tc: orderRows[0].indexOf('Beginn (Uhrzeit)')
           });
@@ -2666,7 +2744,10 @@
         armAllOk = false;
         editIndex = null;
         checklist = { st: 'load' };
-        const existingResult = resultOf(order.auftrag);
+        entryKey = '';
+        entriesAll = false;
+        // Dauerauftrag: das Formular ist ein neuer Tageseintrag (die Einträge stehen darüber)
+        const existingResult = orderKind(order) === 'dau' ? null : resultOf(order.auftrag);
         // ältere, nicht auf Viertelstunden gerundete Zeiten werden im Formular auf die nächste Viertelstunde aufgerundet vorbelegt
         const shownMin = existingResult && existingResult.min != null ? roundUpQuarter(existingResult.min) : null;
         timeHours = shownMin != null ? String(Math.floor(shownMin / 60)) : '';
@@ -2718,7 +2799,46 @@
 
       // ---- Ergebnisse und Status ----
       // Ergebnis-Dokument eines Auftrags (Format siehe Kopfkommentar): erst die noch nicht gesendete Eingabe (outbox), sonst der Stand vom Server
-      const resultOf = orderNo => outbox.get(orderNo) || results.get(orderNo);
+      const rawResult = key => outbox.get(key) || results.get(key);
+      // Tageseinträge eines Dauerauftrags (nur gültige, mit Zeit), älteste zuerst; jeder mit seinem Schlüssel `k`
+      function entriesOf(orderNo) {
+        const keys = entryKeys.get(orderNo);
+        if (!keys) return [];
+        return [...keys]
+          .map(k => {
+            const d = rawResult(k);
+            return d && d.min != null ? { ...d, k } : null;
+          })
+          .filter(Boolean)
+          .sort((a, b) => (performedDate(a) + ' ' + (a.von || '')).localeCompare(performedDate(b) + ' ' + (b.von || '')) || a.k.localeCompare(b.k));
+      }
+      // Ein Dauerauftrag mit Tageseinträgen hat als „Ergebnis“ die Summe: min = Gesamtdauer, dat/von = letzter Eintrag, tat/tu = zuletzt
+      // eingetragen, cnt = Anzahl, ein = die Einträge. Alle anderen Aufträge: ihr gespeichertes Ergebnis.
+      const resultOf = orderNo => {
+        if (entryKeys.has(orderNo)) {
+          const list = entriesOf(orderNo);
+          if (list.length) {
+            const last = list[list.length - 1];
+            return {
+              a: orderNo,
+              team: last.team,
+              n: 0,
+              ok: 0,
+              nx: 0,
+              s: '',
+              nok: [],
+              min: list.reduce((sum, e) => sum + e.min, 0),
+              dat: performedDate(last),
+              von: last.von,
+              tat: Math.max(...list.map(e => e.tat || 0)),
+              tu: last.tu,
+              cnt: list.length,
+              ein: list
+            };
+          }
+        }
+        return rawResult(orderNo);
+      };
       /**
        * Status eines Auftrags, abgeleitet aus dem Ergebnis-Dokument:
        *   st = 'done'  erledigt: alle Prüfobjekte bewertet UND Zeitrückmeldung vollständig
@@ -2734,18 +2854,19 @@
         const result = resultOf(order.auftrag);
         if (!result) return STATUS_NONE;
         let status = statusCache.get(result);
-        if (!status) statusCache.set(result, (status = computeOrderStatus(result, orderKind(order) !== 'war')));
+        if (!status) statusCache.set(result, (status = computeOrderStatus(result, orderKind(order))));
         return status;
       };
-      // withoutList: Auftragsart ohne Prüfobjekte (Reparatur, Entstörung, Dauerauftrag) – erledigt ist sie mit vollständiger Zeit
-      const computeOrderStatus = (result, withoutList) => {
+      // Auftragsart ohne Prüfobjekte (Reparatur, Entstörung): erledigt ist sie mit vollständiger Zeit. Ein Dauerauftrag ist nie „erledigt“
+      // (er läuft weiter): mit Tageseinträgen ist er „in Arbeit“.
+      const computeOrderStatus = (result, kind) => {
         const openCount = Math.max(0, (result.n | 0) - (result.ok | 0) - (result.nx | 0));
         return {
           ...result,
           op: openCount,
           nok: (result.nok || []).map(z => (typeof z === 'string' ? { t: z, m: '' } : z)),
           st:
-            (result.n > 0 || withoutList) && !openCount && timeComplete(result)
+            kind !== 'dau' && (result.n > 0 || kind !== 'war') && !openCount && timeComplete(result)
               ? 'done'
               : result.ok + result.nx > 0 || result.min != null
                 ? 'teil'
@@ -2875,6 +2996,9 @@
       // Zeit-Etikett: Dauer, oder Warnung, sobald am Auftrag gearbeitet wurde, die Zeitrückmeldung aber fehlt/unvollständig ist
       const timeTag = r => {
         const d = resultOf(r.auftrag);
+        // Dauerauftrag: Gesamtdauer aller Tageseinträge
+        if (orderKind(r) === 'dau')
+          return d && d.cnt ? el('span', { class: 'tag' }, `⏱ ${formatMinutes(d.min)} · ${d.cnt === 1 ? '1 Eintrag' : d.cnt + ' Einträge'}`) : null;
         if (timeComplete(d)) return el('span', { class: 'tag' }, '⏱ ' + formatMinutes(d.min));
         if (d && d.min != null) return el('span', { class: 'tag st-zf' }, '⏱ Beginn fehlt');
         return d && d.ok + d.nx > 0 ? el('span', { class: 'tag st-zf' }, '⏱ Zeit fehlt') : null;
@@ -2928,21 +3052,26 @@
        * Speichert Zeitfelder im Ergebnis-Dokument (min > 0) bzw. löscht sie (min leer/0). Gibt es noch keine gültige
        * Bewertung, wird ein leeres Dokument angelegt – so kann die Zeit vor den Prüfobjekten erfasst werden.
        */
-      function storeTime(order, items, minutes, date, start) {
+      // Kennung eines neuen Tageseintrags (Kleinbuchstaben und Ziffern, 7 Zeichen)
+      const newEntryId = () => (Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 5)).padEnd(7, '0');
+      // key: Schlüssel des Ergebnisses – der Auftrag selbst, bei einem Dauerauftrag der Tageseintrag („Auftrag#Kennung“; leer = neuer)
+      function storeTime(order, items, minutes, date, start, key = '') {
         if (isLocked(order.auftrag)) return denyLocked();
+        const dau = orderKind(order) === 'dau';
+        key = key || (dau ? order.auftrag + '#' + newEntryId() : order.auftrag);
         timeFormAtOpen = timeFormSnapshot();
         timeFormOpen = false;
         timeFlash = minutes > 0;
         // kurze Bestätigung (bei „Ende“ hat stopTimer schon eine eigene Meldung gesetzt)
         if (minutes > 0 && !infoMsg.startsWith('⏱')) infoMsg = '✓ Zeit gespeichert: ' + formatMinutes(minutes);
         else if (!(minutes > 0)) infoMsg = '🗑 Zeit gelöscht';
-        const result = resultOf(order.auftrag),
+        const result = rawResult(key),
           count = items.length,
           listValid = !!(result && result.s && result.n === count && result.s.length === count);
         const doc = {
           ...(listValid
             ? result
-            : { a: order.auftrag, team: order.team, n: count, ok: 0, nx: 0, s: '-'.repeat(count), nok: [] })
+            : { a: key, team: order.team, n: count, ok: 0, nx: 0, s: '-'.repeat(count), nok: [] })
         };
         delete doc.min;
         delete doc.tat;
@@ -2958,15 +3087,27 @@
           if (start) doc.von = start;
           doc.mit = [...timeWith]; // immer als Liste (auch leer): so ist „alle abgewählt“ etwas anderes als „nicht angegeben“
         }
-        doc._b = serverBaseOf(order.auftrag);
-        outbox.set(order.auftrag, doc);
+        doc._b = serverBaseOf(key);
+        outbox.set(key, doc);
         errorMsg = '';
+        // Dauerauftrag: nach dem Speichern (oder Löschen) ist das Formular wieder ein leerer, neuer Eintrag
+        if (dau) {
+          entryKey = '';
+          timeHours = '';
+          timeMinutes = '';
+          timeStart = '';
+          timeDate = today();
+          timeWith = [];
+          timeWithAuto = session.role === 'monteur';
+          applyDefaultWith(order);
+          timeFormAtOpen = timeFormSnapshot();
+        }
         saveOutbox();
         render();
-        sendPending(order.auftrag);
+        sendPending(key);
       }
       // Prüft die Eingaben der Zeitkarte (Datum nicht leer/zukünftig, Beginn, Dauer 1 Min – 24 Std) und speichert sie
-      function validateAndStoreTime(order, items) {
+      function validateAndStoreTime(order, items, key = '') {
         const minutes = (parseInt(timeHours || '0', 10) || 0) * 60 + (parseInt(timeMinutes || '0', 10) || 0);
         const fail = message => {
           timeError = message;
@@ -2981,7 +3122,7 @@
           return fail('Bitte eine Dauer zwischen 15 Minuten und 24 Stunden eingeben.');
         if (minutes % 15 !== 0) return fail('Die Dauer wird in Viertelstunden angegeben (15, 30, 45 Min …).');
         timeError = '';
-        storeTime(order, items, minutes, timeDate, timeStart);
+        storeTime(order, items, minutes, timeDate, timeStart, key);
       }
       // ---- Start / Ende: der Monteur kann beim Arbeitsbeginn „Start“ und am Ende „Ende“ drücken ----
       // „Ende“ speichert Datum, Beginn und Dauer wie die Zeitkarte. Der Start wird je Gerät gemerkt (localStorage), auch wenn die
@@ -3034,14 +3175,81 @@
         for (const n of document.querySelectorAll('[data-tmr]')) n.textContent = formatMinutes(elapsedMinutes(+n.dataset.tmr));
       }, 15000);
       // Löscht die erfasste Zeit (Felder leeren und Zeitangaben im Ergebnis entfernen)
-      function deleteTime(order, items) {
+      function deleteTime(order, items, key = '') {
         timeHours = '';
         timeMinutes = '';
         timeError = '';
         timeStart = '';
         timeWith = [];
         timeDate = today();
-        storeTime(order, items, null);
+        storeTime(order, items, null, '', '', key);
+      }
+      // Dauerauftrag: einen Tageseintrag zum Ändern ins Formular laden (key leer = zurück zu einem neuen Eintrag)
+      function editEntry(order, key) {
+        const e = key ? rawResult(key) : null;
+        entryKey = e ? key : '';
+        timeHours = e ? String(Math.floor(e.min / 60)) : '';
+        timeMinutes = e ? String(e.min % 60) : '';
+        timeDate = e ? performedDate(e) || today() : today();
+        timeStart = e && e.von ? roundQuarterHHMM(e.von) : '';
+        timeWith = e && e.mit ? [...e.mit] : [];
+        timeWithAuto = !e && session.role === 'monteur';
+        timeError = '';
+        timeFormOpen = !!e;
+        applyDefaultWith(order);
+        timeFormAtOpen = timeFormSnapshot();
+        render();
+      }
+      // Kopf der Karte bei einem Dauerauftrag: Summe und die Tageseinträge (neueste zuerst); der Monteur kann sie ändern
+      function entriesHead(order, isMonteur) {
+        const list = entriesOf(order.auftrag).reverse(),
+          total = list.reduce((sum, e) => sum + e.min, 0),
+          locked = isMonteur && isLocked(order.auftrag),
+          shown = entriesAll ? list : list.slice(0, 8);
+        return [
+          el('b', {}, 'Tageseinträge'),
+          el(
+            'p',
+            { class: 'mu', 'data-k': 'zs0' },
+            list.length
+              ? `Gesamt ${formatMinutes(total)} in ${list.length === 1 ? '1 Eintrag' : list.length + ' Einträgen'}`
+              : 'Noch keine Einträge – für jeden Tag, an dem gearbeitet wurde, ein Eintrag.'
+          ),
+          ...shown.map(e =>
+            el(
+              'div',
+              { class: 'zrow' + (entryKey === e.k ? ' on' : ''), 'data-k': 'ze' + e.k },
+              el(
+                'div',
+                {},
+                el('b', {}, `${weekdayShort(performedDate(e))} ${formatIsoDate(performedDate(e))}`),
+                ` · ${e.von ? 'ab ' + e.von + ' Uhr · ' : ''}${formatMinutes(e.min)}`
+              ),
+              e.mit && e.mit.length > 0 && el('div', { class: 'mu' }, '👥 ' + userNamesText(e.mit)),
+              e.tu && el('div', { class: 'mu' }, '👤 ' + userLabel(e.tu)),
+              isMonteur &&
+                !locked &&
+                el(
+                  'button',
+                  { onclick: () => editEntry(order, entryKey === e.k ? '' : e.k) },
+                  entryKey === e.k ? 'Wird bearbeitet' : '✎ Ändern'
+                )
+            )
+          ),
+          list.length > shown.length &&
+            el(
+              'button',
+              {
+                class: 'zall',
+                'data-k': 'za',
+                onclick: () => {
+                  entriesAll = true;
+                  render();
+                }
+              },
+              `Alle ${list.length} Einträge anzeigen`
+            )
+        ];
       }
       /**
        * Karte „Zeit“: zeigt die erfasste Zeit mit Hinweisen, warum der Auftrag noch nicht „erledigt“ ist.
@@ -3049,30 +3257,40 @@
        * (Schnellwahl + Stunden/Minuten) und Speichern/Löschen.
        */
       function timeCard(order, isMonteur) {
-        const result = resultOf(order.auftrag),
+        // Dauerauftrag: mehrere Tageseinträge. Das Formular unten gilt dann für einen neuen Eintrag oder den gerade bearbeiteten (entryKey)
+        const dau = orderKind(order) === 'dau',
+          entry = dau && entryKey ? rawResult(entryKey) : null,
+          result = dau ? entry : resultOf(order.auftrag),
+          key = dau ? entryKey : order.auftrag,
           items = checklist.st === 'ok' ? checklist.list : null,
           hasTime = !!(result && result.min != null);
         const timePanel = el(
           'div',
           { class: 'card', 'data-zeit': '1', 'data-k': 'zc' },
-          el('b', {}, 'Zeit'),
-          el(
-            'p',
-            { class: 'mu' },
-            hasTime
-              ? `Durchgeführt am ${formatIsoDate(performedDate(result)) || '–'}${result.von ? ' · ab ' + result.von + ' Uhr' : ''} · Dauer ${formatMinutes(result.min)}`
-              : 'Noch keine Zeit zurückgemeldet.'
-          ),
-          hasTime && result.tu && el('p', { class: 'mu' }, '👤 Zeit zurückgemeldet von ' + userLabel(result.tu)),
-          hasTime && result.mit && el('p', { class: 'mu' }, '👥 Gearbeitet mit: ' + userNamesText(result.mit)),
-          result &&
-            result.u &&
-            result.u !== result.tu &&
-            el('p', { class: 'mu' }, '👤 Zuletzt gespeichert von ' + userLabel(result.u))
+          ...(dau
+            ? entriesHead(order, isMonteur)
+            : [
+                el('b', {}, 'Zeit'),
+                el(
+                  'p',
+                  { class: 'mu' },
+                  hasTime
+                    ? `Durchgeführt am ${formatIsoDate(performedDate(result)) || '–'}${result.von ? ' · ab ' + result.von + ' Uhr' : ''} · Dauer ${formatMinutes(result.min)}`
+                    : 'Noch keine Zeit zurückgemeldet.'
+                ),
+                hasTime && result.tu && el('p', { class: 'mu' }, '👤 Zeit zurückgemeldet von ' + userLabel(result.tu)),
+                hasTime && result.mit && el('p', { class: 'mu' }, '👥 Gearbeitet mit: ' + userNamesText(result.mit)),
+                result &&
+                  result.u &&
+                  result.u !== result.tu &&
+                  el('p', { class: 'mu' }, '👤 Zuletzt gespeichert von ' + userLabel(result.u))
+              ])
         );
         // abgehakt (Monteur): nur ansehen – keine Hinweise zum Ausfüllen, keine Eingabe von Zeit und Kollegen
         if (isMonteur && isLocked(order.auftrag)) return timePanel;
-        if (hasTime && !timeComplete(result))
+        if (dau) {
+          // keine Hinweise zu „erledigt“: ein Dauerauftrag läuft weiter
+        } else if (hasTime && !timeComplete(result))
           timePanel.append(
             el(
               'p',
@@ -3165,6 +3383,10 @@
           return g.toLocaleDateString('sv-SE');
         };
         const timerStart = timerStartOf(order.auftrag);
+        if (dau)
+          timePanel.append(
+            el('b', { class: 'zne', 'data-k': 'zn' }, entry ? `Eintrag bearbeiten (${formatIsoDate(performedDate(entry))})` : 'Neuer Eintrag')
+          );
         if (timerStart || !hasTime)
           timePanel.append(
             el(
@@ -3217,7 +3439,13 @@
                     render();
                   }
                 },
-                hasTime ? '✎ Zeit ändern' : '✎ Zeit von Hand eintragen'
+                dau
+                  ? hasTime
+                    ? '✎ Eintrag ändern'
+                    : '✎ Eintrag von Hand eintragen'
+                  : hasTime
+                    ? '✎ Zeit ändern'
+                    : '✎ Zeit von Hand eintragen'
               )
             )
           );
@@ -3361,21 +3589,22 @@
               {
                 class: 'sv',
                 disabled: items ? null : 'disabled',
-                onclick: () => validateAndStoreTime(order, items)
+                onclick: () => validateAndStoreTime(order, items, key)
               },
-              hasTime ? 'Zeit ändern' : 'Zeit speichern'
+              dau ? (hasTime ? 'Eintrag ändern' : 'Eintrag speichern') : hasTime ? 'Zeit ändern' : 'Zeit speichern'
             ),
-            hasTime && el('button', { class: 'er', onclick: () => deleteTime(order, items) }, 'Löschen'),
+            hasTime && el('button', { class: 'er', onclick: () => deleteTime(order, items, key) }, dau ? 'Eintrag löschen' : 'Löschen'),
             el(
               'button',
               {
                 onclick: () => {
+                  if (dau && entryKey) return editEntry(order, ''); // Bearbeiten abbrechen: zurück zu einem neuen Eintrag
                   timeFormOpen = false;
                   timeError = '';
                   render();
                 }
               },
-              'Zuklappen'
+              dau && entryKey ? 'Abbrechen' : 'Zuklappen'
             )
           )
         );
@@ -3738,7 +3967,7 @@
       // Lädt den gespeicherten Stand (IndexedDB) für key in den Speicher; ist keiner da, bleibt alles leer
       async function loadCache(key) {
         ordersMap = new Map();
-        results = new Map();
+        results = new ResultMap();
         resultSeq = new Map();
         marks = new Map();
         syncSeq = 0;
@@ -3877,7 +4106,7 @@
           if (!response.same) {
             if (response.full) {
               ordersMap = new Map();
-              results = new Map();
+              results = new ResultMap();
               resultSeq = new Map();
               marks = new Map();
               gasRows = new Map();
@@ -4187,6 +4416,7 @@
         armAllOk = false;
         timeFormOpen = false;
         timeError = '';
+        entryKey = '';
       }
       // Zeitpunkt (ms) als „TT.MM.JJ, HH:MM“
       const formatDateTime = t =>
@@ -4620,7 +4850,7 @@
         const t = searchText.trim().toLowerCase();
         return (
           !t ||
-          [orderNr(r), r.vg, r.vtxt, r.kurz, r.str, r.plz, r.tp, r.mel, ...meldungenOf(r).map(m => m.nr + ' ' + m.txt)]
+          [orderNr(r), r.vg, r.vtxt, r.kurz, r.str, r.plz, r.tp, r.mel, ...(r.ext || []).map(x => x.t), ...meldungenOf(r).map(m => m.nr + ' ' + m.txt)]
             .join(' ')
             .toLowerCase()
             .includes(t)
@@ -4653,7 +4883,8 @@
           melds = meldungenOf(order),
           // Reparatur: der Vorgang ist der Auftrag – sein Text ist der Titel, der Kurztext des Auftrags darunter
           title = kind === 'rep' && order.vtxt ? order.vtxt : order.kurz,
-          subtitle = kind === 'rep' ? (order.vtxt && order.kurz !== order.vtxt ? order.kurz : '') : order.vtxt;
+          subtitle = kind === 'rep' ? (order.vtxt && order.kurz !== order.vtxt ? order.kurz : '') : order.vtxt,
+          ext = order.ext || [];
         return el(
           'div',
           {
@@ -4685,6 +4916,7 @@
             termTag(order),
             dueTag(order),
             melds.length > 0 && el('span', { class: 'tag st-teil' }, melds.length === 1 ? '📋 Meldung' : `📋 ${melds.length} Meldungen`),
+            ext.length > 0 && el('span', { class: 'tag st-teil' }, '🏗 Externe Firma'),
             isLocked(order.auftrag) && el('span', { class: 'tag' }, '🔒 Abgehakt'),
             clickable && el('span', { class: 'chev' }, kind === 'war' ? 'Prüfobjekte ›' : 'Details ›')
           ),
@@ -4706,16 +4938,33 @@
               clickable && sortMode() === 'nah' && distanceText(order) && ' · 📍 ' + distanceText(order)
             ),
           order.tp && el('div', { class: 'mu' }, 'Techn. Platz: ' + order.tp),
+          // externe Firmen arbeiten mit den internen Teams zusammen: in der Detailansicht mit ihren Vorgängen
+          !clickable &&
+            ext.length > 0 &&
+            el(
+              'div',
+              { class: 'extbox' },
+              el('b', {}, '🏗 Externe Firma arbeitet mit'),
+              ...ext.map(x => el('div', { class: 'mu' }, `Vorgang ${x.vg}${x.t ? ' · ' + x.t : ''}${x.h ? ' · ' + x.h + ' Std geplant' : ''}`))
+            ),
           !timed &&
             (order.start || order.ende) &&
             el('div', { class: 'mu' }, 'Termin: ' + [dateDe(order.start), dateDe(order.ende)].filter(Boolean).join(' – ')),
           isDispo &&
             result &&
             result.min != null &&
-            el('div', { class: 'mu' }, el('b', {}, '⏱ Dauer: ' + formatMinutes(result.min)), ' · ' + workSpanText(result)),
+            (kind === 'dau'
+              ? el(
+                  'div',
+                  { class: 'mu' },
+                  el('b', {}, '⏱ Gesamt: ' + formatMinutes(result.min)),
+                  ` · ${result.cnt === 1 ? '1 Eintrag' : result.cnt + ' Einträge'} · zuletzt ${formatIsoDate(result.dat) || '–'}`
+                )
+              : el('div', { class: 'mu' }, el('b', {}, '⏱ Dauer: ' + formatMinutes(result.min)), ' · ' + workSpanText(result))),
           isDispo &&
             result &&
             result.min != null &&
+            kind !== 'dau' &&
             result.mit &&
             el('div', { class: 'mu' }, '👥 Gearbeitet mit: ' + userNamesText(result.mit)),
           isDispo &&
@@ -4793,7 +5042,7 @@
        * Karte „Fortschritt“ für die Monteur-Teamliste: Prozent erledigt, Balken und das nötige Wochenpensum
        * (offene Aufträge / Arbeitswochen bis zur Frist). 100 % erscheint nur, wenn wirklich alles erledigt ist.
        */
-      function progressCard(total, done, withQuota = true) {
+      function progressCard(total, done) {
         const openCount = total - done,
           percentDone = done === total ? 100 : Math.min(99, Math.round((done / total) * 100)),
           deadlineDate = deadline(),
@@ -4831,8 +5080,6 @@
                 : `Alle ${total} Aufträge erledigt`
             )
           ),
-          // das Wochenpensum bis zur Frist (31.12.) gibt es nur für Wartungen
-          withQuota &&
           el(
             'div',
             { class: 'ps' + (openCount && !workingDays ? ' warn' : '') },
@@ -6627,7 +6874,8 @@
               // Ist die neue Seite zu kurz, um den Bereich an seiner Stelle zu halten (z. B. Umschalter der Auftragsart: eine kurze
               // Liste ersetzt eine lange), reserviert sie unten den fehlenden Platz – sonst käme die Seite höher zu stehen und der
               // Bereich unter dem Finger spränge nach unten. Das Neuzeichnen gibt den Platz wieder frei.
-              const lack = d - (document.documentElement.scrollHeight - innerHeight - scrollY);
+              // (scrollHeight ist nie kleiner als der Bildschirm – darum die wirkliche Höhe der Seite über das Ende von <body>)
+              const lack = scrollY + d + innerHeight - (document.body.getBoundingClientRect().bottom + scrollY);
               if (lack > 0) app.style.paddingBottom = `calc(40px + ${Math.ceil(lack)}px)`;
               scrollBy(0, d);
             }
@@ -7862,10 +8110,9 @@
           sortChips(),
           searchRow
         );
+        // Fortschritt und Wochenpensum (Frist 31.12.) gibt es nur bei Wartungen
         app.append(
-          rows.length
-            ? el('div', { class: 'mtop' }, progressCard(rows.length, doneCount, withList), controls)
-            : controls,
+          rows.length && withList ? el('div', { class: 'mtop' }, progressCard(rows.length, doneCount), controls) : controls,
           container
         );
         container.append(orderList(view(), false));

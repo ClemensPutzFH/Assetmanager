@@ -897,13 +897,20 @@ function kindFiles() {
     ['65900003', 'Dampf im Schacht', '1210', 'Schachtgasse 3', T, '3NAE', excelDay(0), 'X', 'TP-3', '', 'FREI', '1290000001'],
     ['65900004', 'Nächtliche Störung', '1210', 'Nachtweg 4', T, '3NAE', excelDay(-1), 'X', 'TP-4', '', 'FREI', ''],
     ['65900005', 'Allg. Tätigkeiten ohne eigenen Auftrag', '', '', T, '3NAW', excelDay(-200), 'X', 'F-N-K', 'FWD', 'FREI', ''],
-    ['65900006', 'Anderer Auftrag (3NAV)', '1210', 'Nirgendwo 6', T, '3NAV', excelDay(0), 'X', 'TP-6', 'F07', 'FREI', '']
+    ['65900006', 'Anderer Auftrag (3NAV)', '1210', 'Nirgendwo 6', T, '3NAV', excelDay(0), 'X', 'TP-6', 'F07', 'FREI', ''],
+    ['65900009', 'Nur Fremdfirma', '1210', 'Fremdgasse 9', T, '3NAR', excelDay(3), 'X', 'TP-9', 'I42', 'FREI', ''],
+    ['65900010', 'Nur geplant', '1210', 'Plangasse 10', T, '3NAR', excelDay(4), 'X', 'TP-10', 'I42', 'FREI', '']
   ];
   const stepHead = ['Auftrag', 'Auftragsart', 'Eckstarttermin', 'Eckendtermin', 'Kurztext', 'Vorgang', 'Kurztext Vrg.', 'Verantw.ArbPl.', 'IH-Leistungsart', 'Anwenderstat.', 'Sortierfeld', 'VrgArbeitsplatz', 'Arbeit', 'Iststart Uzt', 'Istende Uzt', 'Istarbeit'];
   const steps = [
     stepHead,
     ['65900001', '3NAR', excelDay(2), null, 'Gebrechen Testgasse', '0010', 'Rohr tauschen', T, 'I42', '', '', T, 8, '06:00:00', '00:00:00', 0],
     ['65900001', '3NAR', excelDay(2), null, 'Gebrechen Testgasse', '0020', 'Kabel prüfen', T, 'I42', '', '', T2, 4, '06:00:00', '00:00:00', 0],
+    // externe Firma (FW-IHEXT) arbeitet mit; ein Vorgang des geplanten Teams (FW-IH01P) ist noch nicht fix und erscheint nirgends
+    ['65900001', '3NAR', excelDay(2), null, 'Gebrechen Testgasse', '0030', 'Fremdfirma: Kabel ziehen', T, 'I42', '', '', 'FW-IHEXT', 6, '06:00:00', '00:00:00', 0],
+    ['65900001', '3NAR', excelDay(2), null, 'Gebrechen Testgasse', '0040', 'Geplante Nacharbeit', T, 'I42', '', '', 'FW-IH01P', 3, '00:00:00', '00:00:00', 0],
+    ['65900009', '3NAR', excelDay(3), null, 'Nur Fremdfirma', '0010', 'Graben durch Fremdfirma', T, 'I42', '', '', 'FW-IHEXT', 12, '00:00:00', '00:00:00', 0],
+    ['65900010', '3NAR', excelDay(4), null, 'Nur geplant', '0010', 'Noch nicht fix', T, 'I42', '', '', 'FW-IH01P', 8, '00:00:00', '00:00:00', 0],
     ['65900002', '3NAR', excelDay(1), null, 'Schieber Teststraße', '0010', 'Schieber tauschen', T, 'I42', '', '', T, 4, '13:30:00', '00:00:00', 0],
     ['65900008', '3NAR', excelDay(-3), null, 'Alter Auftrag', '0010', 'Alter Vorgang', T, 'I42', '', '', T, 2, '09:00:00', '00:00:00', 0],
     ['65900003', '3NAE', excelDay(0), excelDay(0), 'Dampf im Schacht', '0010', 'Störungsanalyse & Erstmaßnahmen', T, '', '', '', T, 2, '08:30:00', '10:15:00', 0],
@@ -960,19 +967,23 @@ async function kindUploadChecks(browser, base, errors) {
   report(Math.max(...steps) <= 12 && Math.abs(frames[frames.length - 1] - frames[0]) > 20, 'Upload Auftragsarten: Hinweise schieben den Inhalt weich nach unten', `${frames[0]} → ${frames[frames.length - 1]} px, größter Schritt ${Math.max(...steps).toFixed(0)} px`);
   await pause(page, 500);
   const info = await page.evaluate(() => [...document.querySelectorAll('#app .msg')].map(n => n.textContent).join(' | '));
-  report(/4 Reparaturen/.test(info) && /2 Entstörungen/.test(info) && /1 Dauerauftrag/.test(info) && /5 Meldungen/.test(info), 'Upload Auftragsarten: Meldung nennt die Anzahl je Auftragsart', info.slice(0, 220));
+  report(/5 Reparaturen/.test(info) && /2 Entstörungen/.test(info) && /1 Dauerauftrag/.test(info) && /5 Meldungen/.test(info), 'Upload Auftragsarten: Meldung nennt die Anzahl je Auftragsart', info.slice(0, 220));
+  report(/2 geplante Vorgänge \(Team mit „P“\) noch nicht angezeigt/.test(info), 'Upload Auftragsarten: geplante Vorgänge (Team mit P) werden nicht geladen und gemeldet');
   report(/1 Auftrag anderer Auftragsarten übergangen \(1× 3NAV\)/.test(info), 'Upload Auftragsarten: fremde Auftragsart (3NAV) wird übergangen und gemeldet');
   await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 15000 }); // der Hinweis verschwindet nach 8 s von selbst
   await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === 'Übersicht').click());
   await pause(page, 1200);
   const after = await kindBar();
   report(before.Wartungen > 0 && after.Wartungen === before.Wartungen, 'Upload Auftragsarten: Wartungsaufträge bleiben unversehrt', `${before.Wartungen} → ${after.Wartungen}`);
-  report(after.Reparaturen === 4 && after.Entstörungen === 2 && after.Daueraufträge === 1, 'Upload Auftragsarten: Dispo-Übersicht zählt je Auftragsart', JSON.stringify(after));
+  report(after.Reparaturen === 5 && after.Entstörungen === 2 && after.Daueraufträge === 1, 'Upload Auftragsarten: Dispo-Übersicht zählt je Auftragsart', JSON.stringify(after));
   report(after.Meldungen === 3, 'Upload Auftragsarten: Meldungen ohne Auftrag gezählt (alle Teams)', String(after.Meldungen));
   // Dispo: Umschalter der Auftragsart – Leiste bleibt stehen
   await probe(page, 'Dispo Übersicht: Auftragsart Reparaturen', btn('/Reparaturen/'), { ms: 900, reflow: true });
   const reps = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.textContent.replace(/\s+/g, ' ').slice(0, 90)));
   report(reps.some(t => /65900001.*Vorgang 0010.*FW-IH01/.test(t)) && reps.some(t => /65900001.*Vorgang 0020.*FW-IH02/.test(t)), 'Dispo Übersicht: jeder Vorgang einer Reparatur ist ein eigener Auftrag (mit seinem Team)');
+  const teamsSeen = await page.evaluate(() => [...document.querySelectorAll('#app select option')].map(o => o.textContent.trim().split(' ')[0]));
+  report(!teamsSeen.some(t => /EXT$|\dP$/.test(t)) && !reps.some(t => /Vorgang 0030|Vorgang 0040|65900010/.test(t)), 'Dispo Übersicht: weder FW-IHEXT noch Teams mit „P“ erscheinen als Team oder Auftrag', teamsSeen.join(', '));
+  report(reps.some(t => /65900009.*FW-IH01/.test(t) && /Externe Firma/.test(t)) && reps.some(t => /65900001.*Vorgang 0010.*Externe Firma/.test(t)), 'Dispo Übersicht: Aufträge mit externer Firma sind gekennzeichnet (auch bei nur externen Vorgängen)');
   await probe(page, 'Dispo Übersicht: Auftragsart Meldungen', btn('/Meldungen/'), { ms: 900, reflow: true });
   const mels = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].length);
   report(mels === 3, 'Dispo Übersicht: Liste Meldungen zeigt die Meldungen ohne Auftrag', String(mels));
@@ -989,22 +1000,41 @@ async function kindChecks(browser, base, viewport, errors) {
   const tiles = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#app button.kind')].map(b => [b.querySelector('.kn').textContent, b.textContent.replace(b.querySelector('.kn').textContent, '').replace(/\s+/g, ' ').trim()])));
   const t0 = await tiles();
   report(Object.keys(t0).join() === 'Wartungen,Reparaturen,Entstörungen,Daueraufträge,Meldungen', `${label} Startseite: Auswahl der Auftragsart`, Object.keys(t0).join(', '));
-  report(/3 offen · 3 gesamt/.test(t0.Reparaturen) && /2 offen · 2 gesamt/.test(t0.Entstörungen) && /📅 1 heute/.test(t0.Entstörungen) && /1 offen · 1 gesamt/.test(t0.Daueraufträge) && /2 ohne Auftrag/.test(t0.Meldungen) && /offen · \d+ gesamt/.test(t0.Wartungen), `${label} Startseite: Zahlen je Auftragsart (nur das eigene Team)`, JSON.stringify(t0).slice(0, 300));
+  report(/4 offen · 4 gesamt/.test(t0.Reparaturen) && /2 offen · 2 gesamt/.test(t0.Entstörungen) && /📅 1 heute/.test(t0.Entstörungen) && /1 offen · 1 gesamt/.test(t0.Daueraufträge) && /2 ohne Auftrag/.test(t0.Meldungen) && /offen · \d+ gesamt/.test(t0.Wartungen), `${label} Startseite: Zahlen je Auftragsart (nur das eigene Team)`, JSON.stringify(t0).slice(0, 300));
   // Startseite: Hinweis schließen/öffnen lässt nichts springen
   const hasBanner = await page.evaluate(() => [...document.querySelectorAll('#app button')].some(b => b.textContent.trim() === '✕'));
   if (hasBanner) await probe(page, `${label} Startseite: Hinweis mit ✕ schließen`, btn('/^✕$/'), { scroll: 0, ms: 800, tapTol: 400, smooth: '#app .gasl' });
+  // Fortschritt (Prozent, Wochenpensum) gibt es nur bei Wartungen
+  await chooseKind(page, 'Wartungen');
+  report(await page.evaluate(() => !!document.querySelector('#app .prg')), `${label} Wartungen: Fortschritt wird angezeigt`);
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Auftragsarten/.test(b.textContent)).click());
+  await pause(page, 600);
   // Reparaturen: nach Termin und Uhrzeit (ab heute aufsteigend, dann das Vergangene)
   await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900 });
   const order = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k));
   const o1 = await order();
-  report(o1.join() === 'o65900002-0010,o65900001-0010,o65900008-0010', `${label} Reparaturen: Termin & Uhrzeit (zuerst die nächsten, dann Vergangenes)`, o1.join(', '));
+  report(o1.join() === 'o65900002-0010,o65900001-0010,o65900009,o65900008-0010', `${label} Reparaturen: Termin & Uhrzeit (zuerst die nächsten, dann Vergangenes)`, o1.join(', '));
+  report(await page.evaluate(() => !document.querySelector('#app .prg')), `${label} Reparaturen: kein Fortschritt (nur bei Wartungen)`);
+  const extTags = await page.evaluate(() => ({
+    mixed: /Externe Firma/.test(document.querySelector('#app [data-k="o65900001-0010"]').textContent),
+    only: /Externe Firma/.test(document.querySelector('#app [data-k="o65900009"]').textContent),
+    none: !/Externe Firma/.test(document.querySelector('#app [data-k="o65900002-0010"]').textContent),
+    planned: !document.querySelector('#app [data-k="o65900010"], #app [data-k="o65900001-0040"]')
+  }));
+  report(extTags.mixed && extTags.only && extTags.none && extTags.planned, `${label} Reparaturen: externe Firma gekennzeichnet, Geplantes (P) fehlt`, JSON.stringify(extTags));
+  // Auftrag mit externer Firma: im Detail die Vorgänge der Fremdfirma
+  await probe(page, `${label} Reparatur mit externer Firma öffnen`, `() => document.querySelector('#app [data-k="o65900001-0010"]')`, { reflow: true, ms: 900 });
+  const extDetail = await page.evaluate(() => (document.querySelector('#app .extbox') || {}).textContent || '');
+  report(/Externe Firma arbeitet mit/.test(extDetail) && /Vorgang 0030/.test(extDetail) && /Fremdfirma: Kabel ziehen/.test(extDetail) && /6 Std geplant/.test(extDetail), `${label} Reparatur: Detail zeigt die externe Firma mit ihrem Vorgang`, extDetail);
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
+  await pause(page, 700);
   const trm = await page.evaluate(() => (document.querySelector('#app [data-k="o65900002-0010"] .trm') || {}).textContent);
   report(/13:30 Uhr/.test(trm || ''), `${label} Reparaturen: Karte zeigt Datum und Uhrzeit`, trm);
   const sortBtns = await page.evaluate(() => [...document.querySelectorAll('#app .chips.ab button')].map(b => b.textContent.trim()).join(','));
   report(sortBtns === 'Termin & Uhrzeit,Auftragsnummer,Entfernung', `${label} Reparaturen: Sortierung`, sortBtns);
   await probe(page, `${label} Reparaturen: Sortierung Auftragsnummer`, btn('/^Auftragsnummer$/'), { at: 300 });
   const o2 = await order();
-  report(o2[0] === 'o65900001-0010', `${label} Reparaturen: nach Auftragsnummer`, o2.join(', '));
+  report(o2.join() === 'o65900001-0010,o65900002-0010,o65900008-0010,o65900009', `${label} Reparaturen: nach Auftragsnummer`, o2.join(', '));
   await probe(page, `${label} Reparaturen: Sortierung Termin & Uhrzeit`, btn('/^Termin & Uhrzeit$/'), { at: 300 });
   // Umschalter: Entstörungen
   await probe(page, `${label} Umschalter: Entstörungen`, btn('/Entstörungen/'), { reflow: true, ms: 900 });
@@ -1034,6 +1064,58 @@ async function kindChecks(browser, base, viewport, errors) {
   await probe(page, `${label} Umschalter: Daueraufträge`, btn('/Daueraufträge/'), { reflow: true, ms: 900 });
   const dau = await order();
   report(dau.join() === 'o65900005', `${label} Daueraufträge: Liste`, dau.join(', '));
+  report(await page.evaluate(() => !document.querySelector('#app .prg')), `${label} Daueraufträge: kein Fortschritt (nur bei Wartungen)`);
+  // Dauerauftrag: mehrere Tageseinträge
+  await probe(page, `${label} Dauerauftrag öffnen`, `() => document.querySelector('#app [data-k="o65900005"]')`, { reflow: true, ms: 900 });
+  const rows = () => page.evaluate(() => [...document.querySelectorAll('#app .zrow')].map(n => n.textContent.replace(/\s+/g, ' ').trim()));
+  const sum = () => page.evaluate(() => (document.querySelector('#app [data-k="zs0"]') || {}).textContent);
+  report((await sum()) === 'Noch keine Einträge – für jeden Tag, an dem gearbeitet wurde, ein Eintrag.' && !(await page.evaluate(() => /Prüfobjekte/.test(document.querySelector('#app').textContent.replace('Prüfobjekte bewerten', '')))), `${label} Dauerauftrag: Tageseinträge statt Zeit und Prüfobjekte`, await sum());
+  await probe(page, `${label} Dauerauftrag: Eintrag von Hand öffnen`, btn('/Eintrag von Hand/'), { at: A, ms: 800 });
+  await page.fill('#app .d-time input[type=time]', '07:00');
+  await probe(page, `${label} Dauerauftrag: Schnellwahl 1 Std`, btn('/^1 Std$/'), { at: A });
+  await probe(page, `${label} Dauerauftrag: Eintrag speichern (heute)`, btn('/^Eintrag speichern$/'), { at: A, ms: 1200 });
+  await pause(page, 600);
+  let r1 = await rows();
+  report(r1.length === 1 && /ab 07:00 Uhr · 1 Std/.test(r1[0]) && (await sum()) === 'Gesamt 1 Std in 1 Eintrag', `${label} Dauerauftrag: erster Tageseintrag steht in der Liste`, r1.join(' | ') + ' / ' + (await sum()));
+  // zweiter Eintrag: gestern
+  await probe(page, `${label} Dauerauftrag: zweiten Eintrag öffnen`, btn('/Eintrag von Hand/'), { at: A, ms: 800 });
+  await probe(page, `${label} Dauerauftrag: Datum „Gestern“`, btn('/^Gestern$/'), { at: A });
+  await page.fill('#app .d-time input[type=time]', '13:00');
+  await probe(page, `${label} Dauerauftrag: Schnellwahl 2 Std`, btn('/^2 Std$/'), { at: A });
+  await probe(page, `${label} Dauerauftrag: zweiten Eintrag speichern`, btn('/^Eintrag speichern$/'), { at: A, ms: 1200 });
+  await pause(page, 600);
+  const r2 = await rows();
+  report(r2.length === 2 && /ab 07:00 Uhr · 1 Std/.test(r2[0]) && /ab 13:00 Uhr · 2 Std/.test(r2[1]) && (await sum()) === 'Gesamt 3 Std in 2 Einträgen', `${label} Dauerauftrag: zwei Tageseinträge, neuester zuerst, Summe`, r2.join(' | ') + ' / ' + (await sum()));
+  // ersten Eintrag ändern
+  await probe(page, `${label} Dauerauftrag: Eintrag ändern öffnen`, `() => document.querySelector('#app .zrow button')`, { at: A, ms: 800 });
+  const formVals = await page.evaluate(() => [...document.querySelectorAll('#app .d-time input')].map(i => i.type + '=' + i.value).join(' '));
+  report(/time=07:00/.test(formVals) && /Eintrag bearbeiten/.test(await page.evaluate(() => document.querySelector('#app .zne').textContent)), `${label} Dauerauftrag: Eintrag ist zum Ändern ins Formular geladen`, formVals);
+  await probe(page, `${label} Dauerauftrag: Schnellwahl 30 Min`, btn('/^30 Min$/'), { at: A });
+  await probe(page, `${label} Dauerauftrag: Eintrag ändern speichern`, btn('/^Eintrag ändern$/'), { at: A, ms: 1200 });
+  await pause(page, 600);
+  report((await sum()) === 'Gesamt 2 Std 30 Min in 2 Einträgen', `${label} Dauerauftrag: geänderter Eintrag zählt in der Summe`, await sum());
+  // zweiten Eintrag löschen
+  await probe(page, `${label} Dauerauftrag: Eintrag löschen öffnen`, `() => document.querySelectorAll('#app .zrow button')[1]`, { at: A, ms: 800 });
+  await probe(page, `${label} Dauerauftrag: Eintrag löschen`, btn('/^Eintrag löschen$/'), { at: A, ms: 1200 });
+  await pause(page, 600);
+  report((await rows()).length === 1 && (await sum()) === 'Gesamt 30 Min in 1 Eintrag', `${label} Dauerauftrag: gelöschter Eintrag ist weg`, (await rows()).join(' | ') + ' / ' + (await sum()));
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
+  await pause(page, 700);
+  const dauCard = await page.evaluate(() => document.querySelector('#app [data-k="o65900005"]').textContent.replace(/\s+/g, ' '));
+  report(/⏱ 30 Min · 1 Eintrag/.test(dauCard) && !/Erledigt/.test(dauCard), `${label} Dauerauftrag: Karte zeigt die Gesamtzeit, ist nie „erledigt“`, dauCard.slice(0, 120));
+  // nach dem Neuladen (Server-Stand) sind die Einträge noch da; der Server lehnt Tageseinträge bei anderen Auftragsarten ab
+  const login = await (await fetch(base + '/api/user/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: MONTEUR.user, password: MONTEUR.password }) })).json();
+  const put = async key => (await fetch(base + '/api/ergebnis/' + encodeURIComponent(key), { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': login.token }, body: JSON.stringify({ a: key, team: 'FW-IH01', n: 0, s: '', nok: [], min: 60, dat: todayIso, von: '08:00' }) })).status;
+  report((await put('65900003#abcdef')) === 400, `${label} Server: Tageseintrag bei einer Entstörung wird abgelehnt (nur Daueraufträge)`);
+  report((await put('65900005#abcdef')) === 200, `${label} Server: Tageseintrag bei einem Dauerauftrag wird angenommen`);
+  await page.reload();
+  await pause(page, 1500);
+  await chooseKind(page, 'Daueraufträge');
+  await page.evaluate(() => document.querySelector('#app [data-k="o65900005"]').click());
+  await pause(page, 900);
+  report((await rows()).length === 2 && (await sum()) === 'Gesamt 1 Std 30 Min in 2 Einträgen', `${label} Dauerauftrag: Einträge nach dem Neuladen vom Server (und der eines anderen Geräts)`, (await rows()).join(' | ') + ' / ' + (await sum()));
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
+  await pause(page, 700);
   await probe(page, `${label} Umschalter: Meldungen`, btn('/Meldungen/'), { reflow: true, ms: 900 });
   const mel = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
   report(mel === 'm1290000003,m1290000005', `${label} Meldungen: nur die des Teams ohne Auftrag, neueste zuerst`, mel);
