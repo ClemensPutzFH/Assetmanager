@@ -1186,6 +1186,21 @@ async function dispositionChecks(browser, base, viewport, errors) {
     dayIso = n => new Date(Date.now() + n * 864e5).toLocaleDateString('sv-SE');
   console.log(`\n=== Disposition: Gantt-Diagramm (${label}) ===`);
   await undispatchAll(base);
+  // Meldungen kommen mit dem Auftrag: Das Gerät des Teams kennt die Meldung (laut Upload) schon, der Auftrag erscheint aber erst mit der
+  // Disposition. Beim nächsten Abgleich (nur Änderungen) müssen beide kommen – sonst fehlten dem Monteur die Meldungen am Auftrag.
+  {
+    const login = await apiJson(base, 'POST', '/api/user/login', { user: MONTEUR.user, password: MONTEUR.password }),
+      M = { 'X-User-Token': login.token },
+      first = await apiJson(base, 'GET', '/api/sync?since=0&team=FW-IH01', null, M);
+    await apiJson(base, 'POST', '/api/dispo', { items: [{ a: '65900001-0010', team: 'FW-IH01', von: dayIso(2) + 'T06:00', bis: dayIso(2) + 'T14:00' }] }, await dispoHeaders(base));
+    const next = await apiJson(base, 'GET', `/api/sync?since=${first.seq}&team=FW-IH01`, null, M);
+    report(
+      !first.orders.some(o => o.auftrag === '65900001-0010') && next.orders.some(o => o.auftrag === '65900001-0010') && (next.meldungen || []).some(m => m.nr === '1290000002' && m.auftrag === '65900001' && !m.del),
+      `${label} Disposition: mit dem disponierten Auftrag kommen auch seine Meldungen zum Gerät des Teams (Abgleich nur der Änderungen)`,
+      `Aufträge ${(next.orders || []).map(o => o.auftrag)} · Meldungen ${(next.meldungen || []).map(m => m.nr + (m.del ? ' (gelöscht)' : ''))}`
+    );
+    await undispatchAll(base);
+  }
   const page = await newPage(browser, base, viewport, errors);
   await loginDispo(page);
   const orderOf = async a => (await dispatchOrders(base)).find(o => o.auftrag === a);
@@ -1209,6 +1224,10 @@ async function dispositionChecks(browser, base, viewport, errors) {
   report(v.pool.join() === wanted.join() && v.bars.length === 0 && v.tab === 'Disposition (7)', `${label} Disposition: 7 offene Aufträge, das Älteste zuerst (Datum laut SAP), Zahl am Tab`, `${v.tab} · ${v.pool.join(', ')}`);
   const rows = await page.evaluate(() => [...document.querySelectorAll('#app .gt-name')].map(n => n.firstChild.textContent));
   report(rows.includes('FW-IH01') && rows.includes('FW-IH02') && rows.join() === [...rows].sort((a, b) => a.localeCompare(b, 'de', { numeric: true })).join(), `${label} Diagramm: eine Zeile je Team, sortiert`, `${rows.length} Teams`);
+  // Zeilen sind schlank (früher 44/52 px); die Teamspalte links ist je Zeile gleich hoch
+  const thin = () => page.evaluate(() => ({ rows: [...document.querySelectorAll('#app .gt-row')].map(r => Math.round(r.getBoundingClientRect().height)), names: [...document.querySelectorAll('#app .gt-name')].map(r => Math.round(r.getBoundingClientRect().height)) }));
+  const t0 = await thin();
+  report(t0.rows.length > 2 && t0.rows.every(h => h === t0.rows[0]) && t0.rows[0] <= (wide ? 34 : 32) && JSON.stringify(t0.rows) === JSON.stringify(t0.names), `${label} Diagramm: Zeilen ohne gleichzeitige Aufträge sind schlank (${t0.rows[0]} px), Teamname links gleich hoch`, JSON.stringify(t0.rows.slice(0, 4)));
   const card = await page.evaluate(() => { const c = document.querySelector('#app [data-k="dp-65900002-0010"]'); return c && c.textContent.replace(/\s+/g, ' '); });
   report(/Reparatur/.test(card || '') && /FW-IH01/.test(card) && /SAP: .*13:30 Uhr/.test(card) && /4 Std geplant/.test(card) && /Übernehmen/.test(card), `${label} Offen-Karte: Auftragsart, SAP-Team, SAP-Termin, geplante Stunden`, card);
   // Karten sind flach (früher 170–220 px hoch), die Kopfzeile (Nummer, Art, Team, Knopf) bleibt am PC einzeilig, nichts ragt aus der Karte
@@ -1296,8 +1315,15 @@ async function dispositionChecks(browser, base, viewport, errors) {
   await settle(400);
   report(await page.evaluate(() => /Überschneidet sich bei FW-IH01 mit 65900001-0010/.test(document.querySelector('#app .gt-sheet .gt-warn').textContent)), `${label} Fenster: Überschneidung im selben Team wird gemeldet`, await page.evaluate(() => document.querySelector('#app .gt-sheet .gt-warn').textContent));
   await probe(page, `${label} Überschneidung speichern (beide Balken teilen sich die Zeile)`, btn('/Änderung speichern/', '#app .gt-sheet'), { ms: 1000, anim: true });
-  const cf = await page.evaluate(() => { const bars = [...document.querySelectorAll('#app .gt-row[data-team="FW-IH01"] .gt-bar.cf')]; const row = document.querySelector('#app .gt-row[data-team="FW-IH01"]'); return { n: bars.length, tops: bars.map(b => parseFloat(b.style.top)), rowH: Math.round(row.getBoundingClientRect().height), heights: bars.map(b => parseFloat(b.style.height)) }; });
-  report(cf.n === 2 && cf.tops[0] !== cf.tops[1] && cf.heights.every(h => h < cf.rowH / 2) && cf.tops.every((t, i) => t + cf.heights[i] <= cf.rowH), `${label} Überschneidung: beide Balken markiert, teilen sich die Zeile, Zeile bleibt gleich hoch`, JSON.stringify(cf));
+  await settle(400);
+  const cf = await page.evaluate(() => {
+    const bars = [...document.querySelectorAll('#app .gt-row[data-team="FW-IH01"] .gt-bar.cf')],
+      h = t => Math.round(document.querySelector(`#app .gt-row[data-team="${t}"]`).getBoundingClientRect().height),
+      name = Math.round(document.querySelector('#app .gt-name[data-team="FW-IH01"]').getBoundingClientRect().height);
+    return { n: bars.length, tops: bars.map(b => parseFloat(b.style.top)), rowH: h('FW-IH01'), nameH: name, single: h('FW-IH03'), heights: bars.map(b => parseFloat(b.style.height)), wk: [...document.querySelectorAll('#app .gt-wk')].every(w => Math.abs(w.getBoundingClientRect().bottom - document.querySelector('#app .gt-in').getBoundingClientRect().bottom) <= 1) };
+  });
+  report(cf.n === 2 && cf.tops[0] !== cf.tops[1] && cf.tops.every((t, i) => t + cf.heights[i] <= cf.rowH) && cf.heights[0] === cf.heights[1], `${label} Überschneidung: beide Balken markiert, untereinander in der Zeile (gleich hoch, nichts ragt heraus)`, JSON.stringify(cf));
+  report(cf.rowH > cf.single && cf.rowH === cf.single + cf.heights[0] + 2 && cf.nameH === cf.rowH && cf.wk, `${label} Überschneidung: erst mit zwei gleichzeitigen Aufträgen wird die Zeile dicker (um eine Bahn), Teamname und Wochenend-Tönung folgen`, `${cf.single} → ${cf.rowH} px, Name ${cf.nameH}`);
   // zurück: Vorgang 0020 gehört wieder zu FW-IH02
   await page.evaluate(() => document.querySelector('#app .gt-bar[data-k="gb-65900001-0020"]').click());
   await settle(500);
@@ -1305,6 +1331,41 @@ async function dispositionChecks(browser, base, viewport, errors) {
   await settle(300);
   await page.evaluate(() => [...document.querySelectorAll('#app .gt-sheet button')].find(b => /Änderung speichern/.test(b.textContent)).click());
   await settle(900);
+  const t1 = await thin();
+  report(t1.rows.every(h => h === t0.rows[0]) && JSON.stringify(t1.rows) === JSON.stringify(t1.names), `${label} Ohne Überschneidung ist die Zeile wieder schlank (${t1.rows[0]} px)`, JSON.stringify(t1.rows.slice(0, 4)));
+  // Die Zeile wächst und schrumpft weich (sanfter Anlauf, mehrere Bilder), die Zeilen darunter rücken mit – auch wenn die Änderung von
+  // außen kommt (anderes Gerät, hier per Server): Höhe der Zeile FW-IH01 und Lage der Zeile FW-IH03 darunter, Bild für Bild
+  {
+    const slot02 = team => ({ a: '65900001-0020', team, von: dayIso(2) + 'T06:00', bis: dayIso(2) + 'T10:00' }),
+      sample = async team => {
+        await page.evaluate(() => {
+          window.__rows = [];
+          const t0 = performance.now(),
+            loop = () => {
+              const r = document.querySelector('#app .gt-row[data-team="FW-IH01"]'),
+                lower = document.querySelector('#app .gt-row[data-team="FW-IH03"]');
+              if (r && lower) window.__rows.push([Math.round(r.getBoundingClientRect().height * 10) / 10, Math.round(lower.getBoundingClientRect().top * 10) / 10]);
+              if (performance.now() - t0 < 1600) requestAnimationFrame(loop);
+            };
+          requestAnimationFrame(loop);
+        });
+        await pause(page, 300);
+        await apiJson(base, 'POST', '/api/dispo', { items: [slot02(team)] }, await dispoHeaders(base));
+        await pause(page, 1500);
+        const r = await page.evaluate(() => window.__rows),
+          hs = r.map(x => x[0]),
+          lo = Math.min(...hs),
+          hi = Math.max(...hs),
+          steps = hs.slice(1).map((v, i) => v - hs[i]),
+          tops = r.map(x => x[1]),
+          topSteps = tops.slice(1).map((v, i) => Math.abs(v - tops[i]));
+        return { lo, hi, mid: hs.filter(h => h > lo + 0.5 && h < hi - 0.5).length, up: steps.every(d => d >= -0.5), down: steps.every(d => d <= 0.5), first: Math.max(...steps.map(Math.abs).filter(d => d > 0.01).slice(0, 1)), max: Math.max(...steps.map(Math.abs), ...topSteps) };
+      };
+    const grow = await sample('FW-IH01');
+    report(grow.hi - grow.lo >= 20 && grow.mid >= 4 && grow.up && grow.first <= 6 && grow.max <= 12, `${label} Zeile wächst weich (von außen geändert): ${grow.lo} → ${grow.hi} px über ${grow.mid} Bilder, sanfter Anlauf, Zeile darunter rückt mit`, JSON.stringify(grow));
+    const shrink = await sample('FW-IH02');
+    report(shrink.hi - shrink.lo >= 20 && shrink.mid >= 4 && shrink.down && shrink.max <= 12 && shrink.lo === t0.rows[0], `${label} Zeile schrumpft weich zurück auf ${t0.rows[0]} px`, JSON.stringify(shrink));
+  }
 
   // ---- Zoom, Navigation, Filter, Suche ----
   // (der Hinweis „Rückgängig“ läuft nach 10 s von selbst ab und schöbe sonst mitten in einer Prüfung den Inhalt weg)
@@ -1387,7 +1448,7 @@ async function dispositionChecks(browser, base, viewport, errors) {
     report(/FW-IH03/.test(during.tip || '') && during.target.join() === 'FW-IH03', `${label} Ziehen: Hinweis zeigt Team und Zeit, Zielzeile ist hervorgehoben`, `${during.tip} · ${during.target.join()}`);
     report(o3b.team === 'FW-IH03' && o3b.uhr === '09:30' && o3b.uhr2 === '11:15' && o3b.start === todayIso, `${label} Ziehen: Auftrag liegt bei FW-IH03, eine Stunde später (09:30–11:15)`, JSON.stringify({ team: o3b.team, uhr: o3b.uhr, uhr2: o3b.uhr2 }));
     const g2 = await geom();
-    report(JSON.stringify(g.tops) === JSON.stringify(g2.tops), `${label} Ziehen: die Zeilen des Diagramms bleiben an derselben Bildschirmstelle (feste Zeilenhöhe, die Seite hält den Hinweis oben aus)`, `${g.tops.slice(0, 4)} → ${g2.tops.slice(0, 4)}`);
+    report(JSON.stringify(g.tops) === JSON.stringify(g2.tops), `${label} Ziehen: die Zeilen des Diagramms bleiben an derselben Bildschirmstelle (ohne Überschneidung ändert sich keine Zeilenhöhe, die Seite hält den Hinweis oben aus)`, `${g.tops.slice(0, 4)} → ${g2.tops.slice(0, 4)}`);
     // Länge ändern: Balken antippen, dann den rechten Rand ziehen (+2 Std)
     await page.evaluate(() => document.querySelector('#app .gt-bar[data-k="gb-65900003"]').click());
     await settle(500);
@@ -2310,6 +2371,9 @@ async function kindChecks(browser, base, viewport, errors) {
   report(await page.evaluate(() => !!document.querySelector('#app .prg') && !!document.querySelector('#app [data-k="fc"]') && !document.querySelector('#app .ksw')), `${label} Wartungen: Fortschritt und Status-Filter werden angezeigt, kein Umschalter zwischen den Auftragsarten`);
   await probe(page, `${label} Wartungen: ← Auftragsarten (Seite gleitet von links herein)`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
   // Reparaturen: nach Termin und Uhrzeit (ab heute aufsteigend, dann das Vergangene)
+  // Auch wenn der Monteur in der Wartungsliste einmal „Entfernung“ gewählt hat (wird im Gerät gemerkt): Reparaturen und Entstörungen
+  // beginnen trotzdem immer mit „Termin & Uhrzeit“ – die gemerkte Wahl gilt nur für Wartungen, Daueraufträge und Meldungen
+  await page.evaluate(() => { listSort = 'nah'; timedSort = ''; try { localStorage.setItem('lsort', 'nah'); } catch (e) {} });
   await probe(page, `${label} Startseite: Reparaturen öffnen`, `() => document.querySelector('#app [data-k="kd-rep"]')`, { reflow: true, ms: 900, anim: true });
   const order = () => page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k));
   const o1 = await order();
@@ -2344,10 +2408,14 @@ async function kindChecks(browser, base, viewport, errors) {
   report(/13:30–17:30 Uhr/.test(trm || ''), `${label} Reparaturen: Karte zeigt Datum und disponierte Uhrzeit von–bis`, trm);
   const sortBtns = await page.evaluate(() => [...document.querySelectorAll('#app .chips.ab button')].map(b => b.textContent.trim()).join(','));
   report(sortBtns === 'Termin & Uhrzeit,Auftragsnummer,Entfernung', `${label} Reparaturen: Sortierung`, sortBtns);
+  report(await page.evaluate(() => [...document.querySelectorAll('#app .chips.ab button.on')].map(b => b.textContent.trim()).join() === 'Termin & Uhrzeit'), `${label} Reparaturen: „Termin & Uhrzeit“ ist die Standard-Sortierung, auch wenn in der Wartungsliste „Entfernung“ gemerkt ist`);
   await probe(page, `${label} Reparaturen: Sortierung Auftragsnummer`, btn('/^Auftragsnummer$/'), { at: 300 });
   const o2 = await order();
   report(o2.join() === 'o65900001-0010,o65900002-0010,o65900008-0010,o65900009', `${label} Reparaturen: nach Auftragsnummer`, o2.join(', '));
   await probe(page, `${label} Reparaturen: Sortierung Termin & Uhrzeit`, btn('/^Termin & Uhrzeit$/'), { at: 300 });
+  // (die Wahl „Auftragsnummer“ in der Reparaturen-Liste wird nicht gemerkt, und die gemerkte „Entfernung“ der Wartungen wieder aufräumen)
+  report(await page.evaluate(() => { try { return localStorage.getItem('lsort') === 'nah'; } catch (e) { return false; } }), `${label} Reparaturen: die gemerkte Sortierung der Wartungen („Entfernung“) bleibt unverändert, die Wahl hier wird nicht gespeichert`);
+  await page.evaluate(() => { listSort = ''; try { localStorage.removeItem('lsort'); } catch (e) {} });
   // ist für den Auftrag im Verzug eine Zeit zurückgemeldet, gilt er als bearbeitet: keine Hervorhebung mehr (die Zeit steht auf der Karte)
   {
     const user = await (await fetch(base + '/api/user/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: MONTEUR.user, password: MONTEUR.password }) })).json();

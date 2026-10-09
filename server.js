@@ -475,6 +475,17 @@ if (firstDispoStart && db.prepare("SELECT 1 FROM orders WHERE kind IN ('rep','en
   db.prepare("UPDATE orders SET seq=? WHERE kind IN ('rep','ent')").run(changeSeq);
   setMeta('seq', changeSeq);
 }
+// Früher bekamen Geräte beim Disponieren eines Auftrags dessen Meldungen nicht mit (siehe POST /api/dispo): einmalig neue Nummer für die
+// Meldungen der bereits disponierten Aufträge, damit Geräte, die sie noch nicht haben, sie beim nächsten Abgleich nachholen
+if (getMeta('meldispo') !== 1) {
+  const todo = db.prepare("SELECT 1 FROM meldung WHERE del=0 AND auftrag<>'' AND auftrag IN (SELECT nr FROM orders WHERE del=0 AND dteam IS NOT NULL) LIMIT 1").get();
+  if (todo) {
+    changeSeq++;
+    db.prepare("UPDATE meldung SET seq=? WHERE del=0 AND auftrag<>'' AND auftrag IN (SELECT nr FROM orders WHERE del=0 AND dteam IS NOT NULL)").run(changeSeq);
+    setMeta('seq', changeSeq);
+  }
+  setMeta('meldispo', 1);
+}
 // Führt fn in einer Transaktion aus und sichert dabei die Änderungsnummer mit (alles oder nichts)
 const transaction = fn => {
   db.exec('BEGIN IMMEDIATE');
@@ -2173,6 +2184,8 @@ async function handleApi(req, res, url) {
         else sql.setDispo.run(x.team, x.von, x.bis, now, changeSeq, x.a);
         changed.push({ a: x.a, from: cur.mteam, to: x.off ? null : x.team });
       }
+      // Die Geräte des Teams holen den Auftrag jetzt erst: ohne neue Nummer bekämen sie seine Meldungen nicht mit (die haben eine ältere)
+      sql.touchMeldungOfOrders.run(changeSeq, changeSeq);
       catalogVer++; // Teamliste (Anzahl Aufträge je Team) neu berechnen
       return changeSeq;
     });

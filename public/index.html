@@ -1968,8 +1968,8 @@
       }
       /* ---- Disposition (Disponent): Gantt-Diagramm, Offen-Liste, Bearbeiten-Fenster ----
          .gtb = Werkzeugleiste · .gtp = Raster (breit: Offen-Liste links, Diagramm rechts; schmal untereinander) · .gt = Diagramm ·
-         .gt-names = Teamspalte (steht still) · .gt-scroll = Zeitachse (seitlich wischbar) · .gt-row = eine Zeile je Team (feste Höhe:
-         überschneidende Aufträge teilen sie sich, nichts wächst) · .gt-bar = ein disponierter Auftrag · .gt-pc = Karte „noch offen“ ·
+         .gt-names = Teamspalte (steht still) · .gt-scroll = Zeitachse (seitlich wischbar) · .gt-row = eine Zeile je Team (schlank mit
+         einem Auftrag, mit jedem weiteren gleichzeitigen eine Bahn dicker; Höhe inline, Wechsel gleitet: ganttRowsAnimate) · .gt-bar = ein disponierter Auftrag · .gt-pc = Karte „noch offen“ ·
          .gt-sheet = Bearbeiten-Fenster (fest am unteren Rand, verändert das Layout nicht) */
       .gtb {
         margin-bottom: 12px;
@@ -3176,10 +3176,11 @@
         dispoUnlocked = false,
         pinInput = '',
         pinError = false,
-        // dispoFiltersOpen: Filter der Dispo-Übersicht am Handy aufgeklappt · listSort: Sortierung der Listen
+        // dispoFiltersOpen: Filter der Dispo-Übersicht am Handy aufgeklappt · listSort / timedSort: Sortierung der Listen
         // ('nr' Nummer | 'zeit' Termin & Uhrzeit (Reparatur, Entstörung) | 'nah' Entfernung (Monteur) | 'rueck' Rückmeldung (Disponent))
         dispoFiltersOpen = false,
-        listSort = '', // '' = Standard der Auftragsart (Reparatur/Entstörung: 'zeit', sonst 'nr')
+        listSort = '', // Wartungen, Daueraufträge, Meldungen: die gespeicherte Wahl ('' = Nummer)
+        timedSort = '', // Reparaturen, Entstörungen: '' = Standard „zeit“; eine andere Wahl gilt nur, bis die App neu geladen wird (nie gespeichert)
         // timeFormOpen: Eingabefelder (Datum, Beginn, Dauer) der Zeitkarte aufgeklappt ·
         // timeFlash: Zeit wurde gerade gespeichert (Karte blinkt kurz auf)
         timeFormOpen = false,
@@ -5887,18 +5888,24 @@
       // aktuellen Rolle nicht, wird nach Nummer sortiert (sortMode).
       // Reparaturen und Entstörungen sind zeitlich wichtig: Standard ist hier „zeit“ – das Älteste zuerst, die neueren darunter (wer im
       // Verzug ist, sieht das oben, sonst stehen nur Aufträge von heute an in der Liste); wer „Auftragsnummer“ antippt, bekommt die Nummer.
-      const sortMode = () =>
-        session.role === 'dispo'
-          ? listSort === 'rueck'
+      // Die gespeicherte Wahl (Entfernung, Rückmeldung …) gilt nur für Wartungen, Daueraufträge und Meldungen: sonst überstimmte ein einmal
+      // gewähltes „Entfernung“ aus der Wartungsliste für immer den Termin der Reparaturen. Reparaturen/Entstörungen merken sich eine
+      // andere Wahl nur bis zum Neuladen (timedSort).
+      const sortChoice = () => (isTimedKind(viewKind) ? timedSort : listSort);
+      const sortMode = () => {
+        const choice = sortChoice();
+        return session.role === 'dispo'
+          ? choice === 'rueck'
             ? 'rueck'
-            : isTimedKind(viewKind) && listSort !== 'nr'
+            : isTimedKind(viewKind) && choice !== 'nr'
               ? 'zeit'
               : 'nr'
-          : listSort === 'nah'
+          : choice === 'nah'
             ? 'nah'
-            : isTimedKind(viewKind) && listSort !== 'nr'
+            : isTimedKind(viewKind) && choice !== 'nr'
               ? 'zeit'
               : 'nr';
+      };
       // Sortierschlüssel nach Termin: Datum + Uhrzeit (ohne Uhrzeit vor der ersten Uhrzeit des Tages)
       const termKey = r => (isoOfDate(r.start) || '') + ' ' + (r.uhr || '00:00');
       const sortRows = rows => {
@@ -6133,10 +6140,13 @@
               {
                 class: 'chip' + (sortMode() === k ? ' on' : ''),
                 onclick: () => {
-                  listSort = k;
-                  try {
-                    if (k !== 'zeit') localStorage.setItem('lsort', k); // „Termin & Uhrzeit“ ist der Standard der Reparaturen/Entstörungen, nicht merken
-                  } catch (e) {}
+                  if (isTimedKind(viewKind)) timedSort = k === 'zeit' ? '' : k; // (Standard der Reparaturen/Entstörungen: nichts merken)
+                  else {
+                    listSort = k;
+                    try {
+                      localStorage.setItem('lsort', k);
+                    } catch (e) {}
+                  }
                   if (k === 'nah') locateMe(); // auch beim erneuten Antippen: Standort neu bestimmen
                   else render();
                 }
@@ -8399,7 +8409,9 @@
         return {
           zoom: gZoom,
           minBar: G_MIN_BAR[gZoom],
-          rowH: compact ? 44 : 52,
+          // Zeilenhöhe: Polster + eine Bahn je gleichzeitigem Auftrag (rowHeight): mit einem Auftrag schlank, ab zwei gleichzeitigen etwas dicker
+          pad: 8,
+          lane: compact ? 22 : 24,
           headH: compact ? 48 : 52,
           nameW: compact ? 78 : 104,
           pxh,
@@ -8413,8 +8425,11 @@
       }
       // Zeit (ms) -> Pixel in der Zeitachse
       const gX = (g, ms) => ((ms - g.axisMs) / 36e5) * g.pxh;
+      // Höhe einer Teamzeile bei n Bahnen (n = so viele Aufträge laufen dort gleichzeitig, mindestens 1)
+      const rowHeight = (g, lanes) => g.pad + Math.max(1, lanes) * g.lane;
       /**
-       * Verteilt die Balken einer Zeile auf Bahnen: Balken, die sich überschneiden, teilen sich die feste Höhe der Zeile (n Bahnen = je 1/n).
+       * Verteilt die Balken einer Zeile auf Bahnen: Balken, die sich überschneiden, liegen untereinander (jede Bahn gleich hoch); die Zeile
+       * ist so hoch, wie sie Bahnen braucht (rowHeight) – mit einem Auftrag schlank, ab zwei gleichzeitigen etwas dicker.
        * items: [{ s, e }] (ms) – ergänzt um lane, lanes und cf (überschneidet sich mit einem anderen Balken). minMs: so lange belegt ein
        * Balken mindestens (seine kleinste Breite in Zeit): im Monat liegen zwei kurze Aufträge desselben Tages sonst übereinander.
        * `cf` (gelber Rand) gilt nur für echte Überschneidungen in der Zeit.
@@ -8445,7 +8460,7 @@
       // Balken eines Auftrags (disponiert oder Entwurf)
       function ganttBar(g, it) {
         const { o, draft } = it,
-          h = Math.max(10, Math.floor((g.rowH - 8) / it.lanes)),
+          h = g.lane, // (jede Bahn gleich hoch, die Zeile richtet sich nach der Zahl der Bahnen)
           x0 = gX(g, it.s),
           x1 = gX(g, it.e),
           left = Math.max(0, x0),
@@ -8544,13 +8559,20 @@
             );
         }
         inner.append(head);
-        // Wochenenden: leicht getönt hinter den Zeilen
-        for (const d of weekend) inner.append(el('i', { class: 'gt-wk', style: `left:${d * g.dayPx}px;width:${g.dayPx}px;top:${g.headH}px;height:${teams.length * g.rowH}px` }));
+        // Wochenenden: leicht getönt hinter den Zeilen (bis zum unteren Rand des Diagramms: die Zeilen sind unterschiedlich hoch und ändern sich)
+        for (const d of weekend) inner.append(el('i', { class: 'gt-wk', style: `left:${d * g.dayPx}px;width:${g.dayPx}px;top:${g.headH}px;bottom:0` }));
         teams.forEach(team => {
-          const items = byTeam.get(team);
+          const all = byTeam.get(team),
+            // (der blasse Platzhalter des gewählten Auftrags an seiner alten Stelle liegt unter dem Entwurf: er zählt nicht als gleichzeitig –
+            // sonst würde die Zeile dicker, sobald man den Entwurf über seinen alten Platz schiebt)
+            ghosts = all.filter(x => x.ghosted),
+            items = all.filter(x => !x.ghosted);
           layoutLanes(items, (g.minBar / g.pxh) * 36e5);
+          for (const x of ghosts) Object.assign(x, { lane: 0, lanes: 1, cf: false });
+          const lanes = items.reduce((n, x) => Math.max(n, x.lanes), 1),
+            height = rowHeight(g, lanes);
           names.append(
-            el('div', { class: 'gt-name' + (team === sapTeam ? ' sap' : ''), title: team }, el('span', {}, team), items.some(x => !x.draft) && el('span', { class: 'gt-n' }, String(items.filter(x => !x.draft).length)))
+            el('div', { class: 'gt-name' + (team === sapTeam ? ' sap' : ''), title: team, 'data-team': team, style: `height:${height}px` }, el('span', {}, team), items.some(x => !x.draft) && el('span', { class: 'gt-n' }, String(items.filter(x => !x.draft).length)))
           );
           inner.append(
             el(
@@ -8559,6 +8581,7 @@
                 class: 'gt-row',
                 'data-k': 'gr-' + team,
                 'data-team': team,
+                style: `height:${height}px`,
                 ondragover: e => nativeDragOver(e, team),
                 ondrop: e => nativeDrop(e, team),
                 onclick: e => {
@@ -8569,7 +8592,7 @@
                   render();
                 }
               },
-              items.map(it => ganttBar(g, it))
+              [...ghosts, ...items].map(it => ganttBar(g, it))
             )
           );
         });
@@ -8587,7 +8610,7 @@
             ondragleave: e => {
               if (!e.currentTarget.contains(e.relatedTarget)) nativeDropClear();
             },
-            style: `--grh:${g.rowH}px;--gth:${g.headH}px;--gnw:${g.nameW}px;--giw:${g.days * g.dayPx}px;--gdp:${g.dayPx}px;--ghp:${gZoom === 'monat' ? g.dayPx : (gZoom === 'tag' ? 1 : 6) * g.pxh}px`
+            style: `--grh:${rowHeight(g, 1)}px;--gth:${g.headH}px;--gnw:${g.nameW}px;--giw:${g.days * g.dayPx}px;--gdp:${g.dayPx}px;--ghp:${gZoom === 'monat' ? g.dayPx : (gZoom === 'tag' ? 1 : 6) * g.pxh}px`
           },
           el(
             'div',
@@ -8622,13 +8645,15 @@
           r = scroller.getBoundingClientRect();
         return gGeo.axisMs + ((clientX - r.left + scroller.scrollLeft) / gGeo.pxh) * 36e5;
       }
-      // Teamzeile unter der Mausstelle y (nur innerhalb des Diagramms), sonst -1
+      // Teamzeile unter der Mausstelle y (nur innerhalb des Diagramms), sonst -1. Die Zeilen sind unterschiedlich hoch (und können
+      // gerade wachsen oder schrumpfen): gilt, was auf dem Bildschirm steht.
       function laneRow(clientY) {
-        const first = app.querySelector('.gt-row');
-        if (!first) return -1;
-        const top = first.getBoundingClientRect().top,
-          i = Math.floor((clientY - top) / gGeo.rowH);
-        return clientY >= top && i < gGeo.teams.length ? i : -1;
+        const rows = app.querySelectorAll('.gt-row');
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i].getBoundingClientRect();
+          if (clientY >= r.top && clientY < r.bottom) return i;
+        }
+        return -1;
       }
       function gtShift(dir) {
         const from = gGeo ? gGeo.axis : gFrom || today();
@@ -8733,10 +8758,12 @@
           const row = Math.max(0, laneRow(ev.clientY) < 0 ? d.row0 : laneRow(ev.clientY)),
             team = g.teams[row] || d.slot.team;
           next = { team, von: addMinutes(d.slot.von, dMin), bis: addMinutes(d.slot.bis, dMin) };
-          d.node.style.transform = `translate(${(dMin / 60) * g.pxh}px, ${(row - d.row0) * g.rowH}px)`;
-          document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
           const names = app.querySelectorAll('.gt-name'),
             rows = app.querySelectorAll('.gt-row');
+          // andere Zeile: der Balken springt an die oberste Bahn dort (die Zeilen sind unterschiedlich hoch), gleiche Zeile: bleibt in seiner Bahn
+          const dy = row === d.row0 || !rows[row] ? 0 : rows[row].getBoundingClientRect().top - rows[d.row0].getBoundingClientRect().top + 4 - parseFloat(d.node.style.top);
+          d.node.style.transform = `translate(${(dMin / 60) * g.pxh}px, ${dy}px)`;
+          document.querySelectorAll('.gt-row.tgt, .gt-name.tgt').forEach(n => n.classList.remove('tgt'));
           if (rows[row] && team !== d.slot.team) rows[row].classList.add('tgt'), names[row] && names[row].classList.add('tgt');
         }
         d.next = next;
@@ -9554,7 +9581,8 @@
           poolSnap = poolScrollSnap(),
           okBefore = okSnapshot(),
           aokBefore = aokSnapshot(),
-          bannersBefore = bannerSnapshot();
+          bannersBefore = bannerSnapshot(),
+          rowsBefore = ganttRowSnap();
         const scrollBefore = scrollY;
         app.style.paddingBottom = ''; // Platz vom letzten Tippen in der Suche (siehe keepScrollRoom) wieder freigeben
         draw();
@@ -9562,6 +9590,7 @@
         // der halbfertigen, kurzen Seite kappt die Scroll-Stelle auf 0 – ohne Anker bliebe die Seite dann oben hängen
         if (scrollY !== scrollBefore) scrollTo(0, scrollBefore);
         poolScrollRestore(poolSnap); // (vor den Ankern: die Karten der Offen-Liste liegen wieder an ihrer Stelle)
+        ganttRowsAnimate(rowsBefore); // (vor den Ankern, wie aokPrepare: sie messen dann die wirklich gezeigte Höhe)
         if (keepKey) keepScrollRoom(scrollBefore);
         // „Alles OK“ ↔ Rückfrage ↔ weg: Platz vor der Scroll-Korrektur reservieren (sonst springt der Rest der Liste)
         const aokRun = aokPrepare(aokBefore);
@@ -9741,6 +9770,35 @@
           h: r.height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0),
           prev: prev && prev.dataset.k
         };
+      }
+      /**
+       * Teamzeilen des Diagramms: Die Höhe richtet sich nach der Zahl gleichzeitiger Aufträge (rowHeight) und ändert sich damit, wenn man
+       * einen Auftrag verschiebt, den Zeitraum oder die Ansicht wechselt oder ein anderes Gerät etwas ändert. Das gleitet statt zu
+       * springen: ganttRowSnap() merkt sich vor dem Neuzeichnen die SICHTBARE Höhe jeder Zeile (auch mitten in einer Animation), und
+       * ganttRowsAnimate() lässt die neue Zeile samt Teamname von dort zur neuen Höhe wachsen (sanfter Anlauf, AOK_EASE) – noch vor der
+       * Scroll-Korrektur in render(), die so die wirklich gezeigte Höhe misst. Beim ersten Zeichnen oder für ein neues Team gibt es nichts
+       * zu vergleichen (keine Animation). Solange sie läuft, schneidet die Zeile ab (overflow), was unten herausragt.
+       */
+      function ganttRowSnap() {
+        const rows = app.querySelectorAll('.gt-row[data-team]');
+        return rows.length ? new Map([...rows].map(r => [r.dataset.team, r.getBoundingClientRect().height])) : null;
+      }
+      function ganttRowsAnimate(before) {
+        if (!before || !app.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        const names = new Map([...app.querySelectorAll('.gt-name[data-team]')].map(n => [n.dataset.team, n]));
+        for (const row of app.querySelectorAll('.gt-row[data-team]')) {
+          const from = before.get(row.dataset.team),
+            to = parseFloat(row.style.height);
+          if (from == null || !(to > 0) || Math.abs(from - to) < 1) continue;
+          const frames = [
+              { height: from + 'px', overflow: 'hidden' },
+              { height: to + 'px', overflow: 'hidden' }
+            ],
+            timing = { duration: AOK_MS, easing: AOK_EASE };
+          row.animate(frames, timing);
+          const name = names.get(row.dataset.team);
+          if (name) name.animate(frames, timing);
+        }
       }
       // aokGhost: weggefallene Rückfrage, die gerade ausblendet (Kopie, Höhe samt Rändern, Element davor, Startzeit). Nach dem Speichern
       // zeichnet die App meist gleich noch einmal: dann wird der Übergang an derselben Stelle fortgesetzt.
