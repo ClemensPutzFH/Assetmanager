@@ -2034,6 +2034,10 @@
         box-sizing: border-box;
         margin: 0;
       }
+      .gtw-top .gt-pf {
+        flex: 1 1 100%;
+        margin: 0;
+      }
       .gtw-body {
         padding: 12px 14px 0;
       }
@@ -2116,6 +2120,175 @@
         display: flex;
         flex-direction: column;
         gap: 8px;
+      }
+      /* Offen-Liste in der Seite: .gt-pp ist die Zelle im Raster, darin .gt-pps mit Kopf, Filtern und den Karten. Kopf und Filter stehen
+         fest, die Karten rollen darunter (schmal: in einem Bereich von höchstens 34 rem, damit die Liste das Diagramm darunter nicht immer
+         weiter nach unten schiebt; breit: bis zum Bildschirmrand, siehe unten) */
+      .gt-pp {
+        min-height: 0;
+      }
+      .gt-pps {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .gt-pps > * {
+        flex: 0 0 auto;
+      }
+      .gt-pps .gt-pool {
+        flex: 0 1 auto;
+        max-height: min(70vh, 34rem);
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding: 3px;
+        margin: -3px;
+      }
+      /* unsichtbare Marke am Ende der Liste: kommt sie in die Nähe, lädt die Liste die nächste Portion (poolWatchMore) */
+      .gt-more {
+        flex: 0 0 auto;
+        height: 1px;
+        margin-top: -8px;
+        pointer-events: none;
+      }
+      /* Team, Termin (Sortierung) und Zeitraum der Offen-Liste. Jedes Feld ist ein Kasten mit kleiner Beschriftung; die Felder sind immer
+         gleich hoch (der Zeitraum wird mit ✕ aufgehoben, das Feld bleibt). Schmal stehen sie untereinander. */
+      .gt-pf {
+        container-type: inline-size; /* (ein Container formatiert nur seine Kinder: das Raster liegt darum eine Ebene tiefer) */
+        margin: 0 0 8px;
+      }
+      .gt-pfg {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+      .pf {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        box-sizing: border-box;
+        border: 1px solid var(--bd);
+        border-radius: var(--r);
+        background: var(--card);
+        padding: 0 6px 0 10px;
+      }
+      .pf:focus-within {
+        border-color: var(--ac);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--ac) 30%, transparent);
+      }
+      .pf > span {
+        flex: 0 0 auto;
+        color: var(--mu);
+        font-size: 0.75rem;
+      }
+      .pf select,
+      .pf input {
+        flex: 1 1 0;
+        min-width: 0;
+        width: 100%;
+        box-sizing: border-box;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: var(--tx);
+        font: inherit;
+        font-size: 0.8125rem;
+        padding: 7px 0;
+        outline: none;
+      }
+      .pf-range {
+        grid-column: 1 / -1;
+        gap: 8px;
+        padding-right: 4px;
+      }
+      /* „Von“ und „Bis“: je Beschriftung und Datumsfeld */
+      .pf-d {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: 1 1 0;
+        min-width: 0;
+      }
+      .pf-d > span {
+        flex: 0 0 auto;
+        min-width: 1.75rem; /* „Von“ und „Bis“ gleich breit: die Datumsfelder beginnen untereinander an derselben Stelle */
+        color: var(--mu);
+        font-size: 0.75rem;
+      }
+      .pf-d + .pf-d {
+        border-left: 1px solid var(--bd);
+        padding-left: 8px;
+      }
+      .pf-range input {
+        min-width: 5.75rem;
+      }
+      .pf-x {
+        flex: 0 0 auto;
+        padding: 2px 8px;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        color: var(--mu);
+      }
+      .pf-x:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      /* sehr schmal (Handy mit 320 px, große Schrift): „Von“ und „Bis“ untereinander, ✕ rechts daneben */
+      @container (max-width: 21rem) {
+        .pf-range {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 0 8px;
+        }
+        .pf-d + .pf-d {
+          border-left: 0;
+          padding-left: 0;
+        }
+        .pf-x {
+          grid-column: 2;
+          grid-row: 1 / span 2;
+        }
+      }
+      @container (max-width: 19rem) {
+        .gt-pfg {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      /* Touch (Handy, Tablet): die Felder haben 16 px Schrift – mit weniger zoomt iOS beim Antippen in die Seite hinein – und stehen
+         dafür untereinander (sonst ginge das Datum nicht hinein) */
+      @media (pointer: coarse) {
+        .pf select,
+        .pf input {
+          font-size: 1rem;
+          padding: 9px 0;
+        }
+        @container (max-width: 30rem) {
+          .gt-pfg {
+            grid-template-columns: minmax(0, 1fr);
+          }
+          .pf-range {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 0 8px;
+          }
+          .pf-d + .pf-d {
+            border-left: 0;
+            padding-left: 0;
+          }
+          .pf-x {
+            grid-column: 2;
+            grid-row: 1 / span 2;
+          }
+        }
+      }
+      @container (min-width: 48rem) {
+        .gt-pfg {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+        }
+        .pf-range {
+          grid-column: auto;
+        }
       }
       /* Karte „noch offen“, flach: oben Nummer, Art, Team und der Knopf rechts, dann der Kurztext (rechts davon die Statusmarken), dann
          Adresse und SAP-Termin. Die Karte ist ein eigener Container: wie sie sich zusammenzieht, richtet sich nach ihrer Breite, nicht
@@ -2794,12 +2967,30 @@
         .gtp {
           grid-template-columns: 24rem minmax(0, 1fr);
         }
-        .gt-pool {
-          max-height: 72vh;
-          overflow-x: hidden;
-          overflow-y: auto;
-          padding: 3px;
-          margin: -3px;
+        /* Die Offen-Liste klebt neben dem Diagramm und reicht bis zum unteren Bildschirmrand; die Karten rollen in ihr.
+           Unten bleibt Platz für das Bearbeiten-Fenster (es liegt fest über dem Rand): die letzte Karte lässt sich darüber heben. */
+        /* Der Platz für das Bearbeiten-Fenster steckt hier unter dem Diagramm im Raster (nicht im Polster darunter): so ist die Zeile hoch
+           genug, dass die Offen-Liste beim Scrollen mitkleben kann – ein klebender Bereich bewegt sich nur innerhalb seiner Zelle */
+        .gtp {
+          padding-bottom: 0;
+        }
+        .gtp > .gt {
+          margin-bottom: 21rem;
+        }
+        .gt-pp {
+          align-self: stretch;
+        }
+        .gt-pps {
+          position: sticky;
+          top: calc(var(--toph, 52px) + 8px);
+          height: calc(100vh - var(--toph, 52px) - 16px);
+          height: calc(100dvh - var(--toph, 52px) - 16px);
+        }
+        .gt-pps .gt-pool {
+          flex: 1 1 auto;
+          min-height: 0;
+          max-height: none;
+          padding-bottom: 17rem;
         }
       }
     </style>
@@ -3034,7 +3225,10 @@
       // sieht sie kein Monteur. Zustand des Gantt-Diagramms (Beschreibung: Abschnitt „Disposition“ weiter unten)
       // gZoom: 'tag' (3 Tage, Stunden) | 'woche' (7 Tage) | 'monat' (ein Kalendermonat, ein Tag = 36 px) · gFrom: erster angezeigter Tag
       // (JJJJ-MM-TT, '' = heute; bei 'monat' zählt der Monat dieses Tages) · gKind: '' beide | 'rep' | 'ent' ·
-      // gSearch: Suche in der Offen-Liste · gPoolMax: so viele Karten zeigt die Offen-Liste (wächst mit „Weitere anzeigen“) ·
+      // gSearch: Suche in der Offen-Liste · gPoolMax: so viele Karten zeigt die Offen-Liste (wächst beim Scrollen von selbst, siehe
+      // poolLoadMore) · gTeam: Team-Filter der Offen-Liste ('' = alle, Team laut SAP) · gSort: 'auf' älteste Termine zuerst | 'ab' neueste
+      // zuerst · gPoolFrom / gPoolTo: Zeitraum der Offen-Liste (JJJJ-MM-TT, '' = offen; es zählt der SAP-Beginn) · gPoolTop: die Liste
+      // beginnt nach dem nächsten Neuzeichnen wieder oben (Filter oder Sortierung wurden geändert) ·
       // gSel / gDraft: gewählter Auftrag und sein Entwurf { a, team, von, bis } im Bearbeiten-Fenster · gArmAll: „Alle Vorschläge übernehmen“
       // wurde einmal angetippt · gScrollX: Wisch-Stand der Zeitachse · gDrag: laufendes Ziehen · gDragEnd: Zeitpunkt des letzten Ziehens (das
       // folgende click-Ereignis zählt nicht) · gUndo: letzte Disposition für „Rückgängig“ · gSheetStart: Start der Einblendung des
@@ -3044,7 +3238,12 @@
         gFrom = '',
         gKind = '',
         gSearch = '',
-        gPoolMax = 20,
+        gPoolMax = 30,
+        gTeam = '',
+        gSort = 'auf',
+        gPoolFrom = '',
+        gPoolTo = '',
+        gPoolTop = false,
         gSel = '',
         gDraft = null,
         gArmAll = false,
@@ -7927,16 +8126,25 @@
         searchText = keep;
         return ok;
       };
-      // noch nicht disponiert, nach Datum laut SAP (das Älteste zuerst), ohne Datum ans Ende
-      const poolOrders = () =>
-        dispatchOrders()
-          .filter(o => !o.dis && poolMatches(o))
-          .sort((a, b) => {
-            const da = isoOfDate(sapOf(a).start),
-              db = isoOfDate(sapOf(b).start);
-            if (!da || !db) return !da - !db || naturalCompare(a.auftrag, b.auftrag);
-            return da.localeCompare(db) || (sapOf(a).uhr || '').localeCompare(sapOf(b).uhr || '') || naturalCompare(a.auftrag, b.auftrag);
-          });
+      // Zeitraum der Offen-Liste: es zählt der Beginn laut SAP; ohne Datum erscheint ein Auftrag nur, solange kein Zeitraum gewählt ist
+      const poolInPeriod = o => {
+        if (!gPoolFrom && !gPoolTo) return true;
+        const day = isoOfDate(sapOf(o).start);
+        return !!day && (!gPoolFrom || day >= gPoolFrom) && (!gPoolTo || day <= gPoolTo);
+      };
+      // noch nicht disponiert, mit Suche und Zeitraum, aber noch nicht nach Team gefiltert (daraus zählt die Team-Auswahl)
+      const poolBase = () => dispatchOrders().filter(o => !o.dis && poolMatches(o) && poolInPeriod(o));
+      // nach SAP-Beginn (Datum, Uhrzeit): 'auf' = das Älteste zuerst, 'ab' = das Neueste zuerst; Aufträge ohne Datum stehen immer am Ende
+      const poolCompare = (a, b) => {
+        const sa = sapOf(a),
+          sb = sapOf(b),
+          da = isoOfDate(sa.start),
+          db = isoOfDate(sb.start);
+        if (!da || !db) return !da - !db || naturalCompare(a.auftrag, b.auftrag);
+        const c = da.localeCompare(db) || (sa.uhr || '').localeCompare(sb.uhr || '') || naturalCompare(a.auftrag, b.auftrag);
+        return gSort === 'ab' ? -c : c;
+      };
+      const poolOrders = () => poolBase().filter(o => !gTeam || sapOf(o).team === gTeam).sort(poolCompare);
       // Zeilen des Diagramms: alle Teams, auf die disponiert werden kann (Server) plus jedes Team, das schon Aufträge hat
       const gTeams = () =>
         [...new Set([...dispoTeamNames, ...ordersByTeam.keys(), ...(gDraft ? [gDraft.team] : [])])]
@@ -8687,36 +8895,208 @@
           )
         );
       }
-      // Überschrift der Offen-Liste mit „Alle Vorschläge übernehmen“ (erst Rückfrage)
-      const poolHead = (all, withSuggestion) =>
-        el(
+      // Karten je Portion: die Liste wächst von selbst, sobald man ihr Ende fast erreicht hat (poolWatchMore), ein Knopf ist nicht nötig
+      const POOL_CHUNK = 30;
+      // Filter oder Sortierung wurden geändert: die Liste beginnt wieder mit der ersten Portion, oben
+      const poolReset = () => {
+        gArmAll = false;
+        gPoolMax = POOL_CHUNK;
+        gPoolTop = true;
+      };
+      // ohne IntersectionObserver (sehr alter Browser) kann die Liste nicht von selbst wachsen: dann steht sie ganz da
+      const poolShown = all => (typeof IntersectionObserver === 'undefined' ? all : all.slice(0, gPoolMax));
+      // Überschrift der Offen-Liste mit „Alle Vorschläge übernehmen“ (erst Rückfrage). Filtern Suche, Team oder Zeitraum die Liste,
+      // steht dort „3 von 7“
+      const poolHead = (all, withSuggestion) => {
+        const open = dispatchOrders().filter(o => !o.dis).length;
+        return el(
           'div',
           { class: 'gt-ph' },
-          el('b', {}, `Noch nicht disponiert (${all.length})`),
+          el('b', {}, `Noch nicht disponiert (${all.length === open ? all.length : `${all.length} von ${open}`})`),
           withSuggestion.length > 0 &&
             (gArmAll
               ? el('button', { class: 'pri', onclick: () => disposeAll(withSuggestion) }, `Wirklich ${withSuggestion.length} Aufträge disponieren?`)
               : el('button', { onclick: () => { gArmAll = true; render(); } }, `Alle Vorschläge übernehmen (${withSuggestion.length})`))
         );
+      };
       // Text statt Liste: alles disponiert, nichts gefunden oder noch nichts hochgeladen
-      const poolEmpty = () => el('div', { class: 'gt-empty mu' }, dispatchOrders().length ? (gSearch.trim() ? 'Nichts gefunden.' : '✓ Alles disponiert.') : 'Noch keine Reparaturen oder Entstörungen – im Tab „Upload“ hochladen.');
-      const poolMore = (all, shown) => shown.length < all.length && el('button', { class: 'dl', onclick: () => { gPoolMax += 20; render(); } }, `Weitere anzeigen (${all.length - shown.length})`);
+      const poolEmpty = () =>
+        el(
+          'div',
+          { class: 'gt-empty mu' },
+          !dispatchOrders().length
+            ? 'Noch keine Reparaturen oder Entstörungen – im Tab „Upload“ hochladen.'
+            : gPoolFrom && gPoolTo && gPoolFrom > gPoolTo
+              ? '„Von“ liegt nach „Bis“ – es kann nichts gefunden werden.'
+              : gSearch.trim() || gTeam || gPoolFrom || gPoolTo
+                ? 'Nichts gefunden.'
+                : '✓ Alles disponiert.'
+        );
+      /**
+       * Team, Termin (Sortierung) und Zeitraum der Offen-Liste – über der Liste in der Seite bzw. im Kopf des Extra-Fensters.
+       * Die Felder haben immer dieselbe Größe (der Zeitraum wird mit ✕ aufgehoben, das Feld bleibt). Im Extra-Fenster baut sie
+       * poolWinBuild einmal auf, poolFiltersFill gleicht sie dann ab (ein Feld, in dem gerade getippt wird, bleibt stehen).
+       * Ein Datum gilt erst ab dem Jahr 2000: tippt man „2026“, wäre sonst schon „0002“ ein gültiges Datum und die Liste würde nach jeder Ziffer neu gefiltert.
+       */
+      function poolDate(key, label, cls, set) {
+        return el('input', {
+          type: 'date',
+          class: cls,
+          'data-keep': key,
+          'aria-label': label,
+          min: '2000-01-01',
+          max: '2099-12-31',
+          onchange: e => {
+            const v = e.target.value;
+            if (v && v < '2000-01-01') return;
+            set(v);
+            poolReset();
+            render();
+          }
+        });
+      }
+      function poolFilters() {
+        const select = (cls, keep, title, onchange, ...options) => el('select', { class: cls, 'data-keep': keep, title, onchange }, ...options);
+        const root = el(
+          'div',
+          { class: 'gt-pf' },
+          el(
+            'div',
+            { class: 'gt-pfg' },
+            el(
+              'label',
+              { class: 'pf' },
+              el('span', {}, 'Team'),
+              select('pf-team', 'gpt', 'Nur Aufträge dieses Teams (laut SAP) zeigen', e => {
+                gTeam = e.target.value;
+                poolReset();
+                render();
+              })
+            ),
+            el(
+              'label',
+              { class: 'pf' },
+              el('span', {}, 'Termin'),
+              select(
+                'pf-sort',
+                'gps',
+                'Nach SAP-Beginn (Datum und Uhrzeit) sortieren',
+                e => {
+                  gSort = e.target.value;
+                  poolReset();
+                  render();
+                },
+                el('option', { value: 'auf' }, 'Älteste zuerst'),
+                el('option', { value: 'ab' }, 'Neueste zuerst')
+              )
+            ),
+            el(
+              'div',
+              { class: 'pf pf-range', role: 'group', 'aria-label': 'Zeitraum (SAP-Beginn)', title: 'Nur Aufträge, deren SAP-Beginn in diesem Zeitraum liegt' },
+              el('label', { class: 'pf-d' }, el('span', {}, 'Von'), poolDate('gpf', 'Zeitraum von', 'pf-von', v => (gPoolFrom = v))),
+              el('label', { class: 'pf-d' }, el('span', {}, 'Bis'), poolDate('gpb', 'Zeitraum bis', 'pf-bis', v => (gPoolTo = v))),
+              el(
+                'button',
+                {
+                  class: 'pf-x',
+                  'aria-label': 'Zeitraum aufheben',
+                  title: 'Zeitraum aufheben',
+                  onclick: () => {
+                    gPoolFrom = '';
+                    gPoolTo = '';
+                    poolReset();
+                    render();
+                  }
+                },
+                '✕'
+              )
+            )
+          )
+        );
+        poolFiltersFill(root);
+        return root;
+      }
+      // Werte und Teamliste der Filterfelder auf den Stand bringen (Team-Auswahl: jedes Team mit offenen Aufträgen samt Anzahl, auch das
+      // gewählte, wenn es keine mehr hat – so ist immer zu sehen, wonach gefiltert wird)
+      function poolFiltersFill(root) {
+        const base = poolBase(),
+          counts = new Map();
+        for (const o of base) counts.set(sapOf(o).team, (counts.get(sapOf(o).team) || 0) + 1);
+        const teams = [...new Set([...counts.keys(), ...(gTeam ? [gTeam] : [])])].filter(Boolean).sort(naturalCompare),
+          want = [['', `Alle Teams (${base.length})`], ...teams.map(t => [t, `${t} (${counts.get(t) || 0})`])],
+          team = root.querySelector('.pf-team'),
+          have = [...team.options].map(o => [o.value, o.textContent]);
+        if (have.length !== want.length || have.some((h, i) => h[0] !== want[i][0] || h[1] !== want[i][1]))
+          team.replaceChildren(...want.map(([v, t]) => el('option', { value: v }, t)));
+        const active = root.ownerDocument.activeElement,
+          put = (n, v) => {
+            if (n.value !== v && n !== active) n.value = v;
+          };
+        put(team, gTeam);
+        put(root.querySelector('.pf-sort'), gSort);
+        put(root.querySelector('.pf-von'), gPoolFrom);
+        put(root.querySelector('.pf-bis'), gPoolTo);
+        root.querySelector('.pf-x').disabled = !gPoolFrom && !gPoolTo;
+      }
+      /**
+       * Die Liste wächst von selbst: am Ende steht eine unsichtbare Marke (.gt-more), kommt sie in die Nähe des sichtbaren Bereichs
+       * der Liste (600 px davor), kommt die nächste Portion dazu. `root`: der Bereich, in dem die Liste rollt (null = das ganze Fenster).
+       * Wird die Liste neu gezeichnet, steht eine neue Marke da – ihre erste Meldung (sie ist noch zu sehen) lädt weiter, bis der Bereich
+       * gefüllt ist oder alles da steht.
+       */
+      function poolLoadMore() {
+        gPoolMax += POOL_CHUNK;
+        render();
+      }
+      let poolMoreObs = null;
+      function poolWatchMore(root, mark, hasMore) {
+        if (poolMoreObs) poolMoreObs.disconnect();
+        poolMoreObs = null;
+        if (!hasMore || typeof IntersectionObserver === 'undefined') return;
+        poolMoreObs = new IntersectionObserver(entries => entries.some(e => e.isIntersecting) && poolLoadMore(), { root, rootMargin: '0px 0px 600px 0px' });
+        poolMoreObs.observe(mark);
+      }
+      /**
+       * Scroll-Stelle der Liste in der Seite: render() baut die Liste jedes Mal neu auf – dabei stünde sie wieder oben. Darum merkt sich
+       * poolScrollSnap vor dem Neuzeichnen die oberste sichtbare Karte (samt Abstand zum oberen Rand der Liste), poolScrollRestore stellt sie
+       * danach wieder an dieselbe Stelle (verschwindet die Karte, gilt die alte Scroll-Stelle). Nach einer Änderung von Filter oder
+       * Sortierung (gPoolTop) beginnt die Liste oben.
+       */
+      function poolScrollSnap() {
+        const list = app.querySelector('.gt-pool');
+        if (!list || !list.scrollTop) return null;
+        const top = list.getBoundingClientRect().top;
+        for (const c of list.children) {
+          const r = c.getBoundingClientRect();
+          if (c.dataset.k && r.bottom > top) return { key: c.dataset.k, off: r.top - top, y: list.scrollTop };
+        }
+        return { key: '', off: 0, y: list.scrollTop };
+      }
+      function poolScrollRestore(snap) {
+        const list = app.querySelector('.gt-pool');
+        if (!list || gPoolTop || !snap) return;
+        const n = snap.key && list.querySelector('[data-k="' + snap.key + '"]');
+        list.scrollTop = n ? n.getBoundingClientRect().top - list.getBoundingClientRect().top - snap.off : snap.y;
+      }
       function ganttPool() {
         const all = poolOrders(),
-          shown = all.slice(0, gPoolMax),
+          shown = poolShown(all),
           withSuggestion = all.filter(suggestSlot),
-          box = el('div', {});
-        box.append(poolHead(all, withSuggestion));
-        if (!all.length) box.append(poolEmpty());
-        else {
-          box.append(el('div', { class: 'gt-pool', 'data-list': '1' }, shown.map(o => poolCard(o))));
-          const more = poolMore(all, shown);
-          if (more) {
-            more.style.marginTop = '10px';
-            box.append(more);
-          }
+          inner = el('div', { class: 'gt-pps' });
+        inner.append(poolHead(all, withSuggestion), poolFilters());
+        if (!all.length) {
+          inner.append(poolEmpty());
+          poolWatchMore(null, null, false);
+        } else {
+          const more = shown.length < all.length,
+            mark = el('div', { class: 'gt-more', 'aria-hidden': 'true' }),
+            list = el('div', { class: 'gt-pool', 'data-list': '1' }, shown.map(o => poolCard(o)));
+          if (more) list.append(mark);
+          inner.append(list);
+          poolWatchMore(list, mark, more);
         }
-        return box;
+        // (.gt-pp ist die Zelle im Raster, so hoch wie die Zeile; darin klebt .gt-pps – nur so kann die Liste beim Scrollen mitkleben)
+        return el('div', { class: 'gt-pp' }, inner);
       }
       // alle gelisteten Vorschläge auf einmal übernehmen
       function disposeAll(list) {
@@ -8732,7 +9112,8 @@
       }
       // ---- Extra-Fenster für die Offen-Liste (zwei Bildschirme: links die Aufträge, rechts das Diagramm) ----
       // Der Knopf „⧉ Extra-Fenster“ öffnet ein zweites Browserfenster mit der Liste der noch nicht disponierten Aufträge (Auftragsart,
-      // Suche, „Vorschlag übernehmen“, „Alle Vorschläge übernehmen“, Antippen öffnet das Bearbeiten-Fenster im Hauptfenster). Das Hauptfenster
+      // Suche, Team, Termin, Zeitraum, „Vorschlag übernehmen“, „Alle Vorschläge übernehmen“, Antippen öffnet das Bearbeiten-Fenster im Hauptfenster; die
+      // Liste lädt am Fensterrand von selbst nach, siehe poolWatchMore und ui.io). Das Hauptfenster
       // zeigt dann das Diagramm über die ganze Breite. Das Extra-Fenster ist kein zweites Programm: seinen Inhalt baut das Hauptfenster
       // in dessen Dokument (poolWinSync am Ende von render()), alle Knöpfe laufen in der Seite des Hauptfensters – beide zeigen darum immer
       // denselben Stand, ohne Abgleich. Schließt man das Hauptfenster oder meldet sich ab, schließt das Extra-Fenster mit; schließt man das
@@ -8743,6 +9124,9 @@
       const poolWinSupported = () => typeof window.open === 'function' && innerWidth >= 1000 && matchMedia('(hover: hover)').matches;
       function poolWinReset() {
         clearInterval(gPoolTimer);
+        try {
+          if (gPoolUi && gPoolUi.io) gPoolUi.io.disconnect();
+        } catch (e) {}
         gPoolWin = null;
         gPoolUi = null;
         gPoolDirty = false;
@@ -8818,11 +9202,16 @@
           ph: el('div', { class: 'gtw-ph' }),
           chips: el('div', { class: 'gtw-chips' }),
           search: poolSearch(),
+          filters: poolFilters(),
           list: el('div', { class: 'gt-pool', 'data-list': '1' }),
           more: el('div', { class: 'gtw-more' }),
+          mark: el('div', { class: 'gt-more', 'aria-hidden': 'true' }),
+          // (die Marke am Ende der Liste gehört zum Fenster: ihr Beobachter muss aus dem Fenster stammen, sonst misst er das Hauptfenster)
+          io: typeof w.IntersectionObserver === 'function' ? new w.IntersectionObserver(entries => entries.some(e => e.isIntersecting) && poolLoadMore(), { rootMargin: '0px 0px 600px 0px' }) : null,
           toast: el('div', { class: 'gtw-toast', role: 'status' })
         };
-        d.body.append(el('div', { class: 'gtw-top' }, ui.ph, ui.chips, ui.search), el('div', { class: 'gtw-body' }, ui.list, ui.more), ui.toast);
+        if (ui.io) ui.io.observe(ui.mark);
+        d.body.append(el('div', { class: 'gtw-top' }, ui.ph, ui.chips, ui.search, ui.filters), el('div', { class: 'gtw-body' }, ui.list, ui.more), ui.toast);
         gPoolUi = ui;
         gPoolWin = w;
         poolWinSync();
@@ -8843,7 +9232,7 @@
           d = ui.doc,
           root = document.documentElement,
           all = poolOrders(),
-          shown = all.slice(0, gPoolMax),
+          shown = ui.io ? all.slice(0, gPoolMax) : all,
           withSuggestion = all.filter(suggestSlot),
           snap = snapshotList(d.body);
         d.documentElement.className = root.className;
@@ -8853,6 +9242,7 @@
         ui.ph.replaceChildren(poolHead(all, withSuggestion));
         ui.chips.replaceChildren(dispatchKindChips());
         if (ui.search.value !== gSearch) ui.search.value = gSearch;
+        poolFiltersFill(ui.filters);
         const old = new Map([...ui.list.children].filter(n => n.dataset.k).map(n => [n.dataset.k, n]));
         const cards = shown.map(o => {
           const card = poolCard(o, true),
@@ -8860,7 +9250,15 @@
           return prev && prev.outerHTML === card.outerHTML ? prev : card;
         });
         ui.list.replaceChildren(...(all.length ? cards : [poolEmpty()]));
-        ui.more.replaceChildren(...[poolMore(all, shown)].filter(Boolean));
+        // Die Marke steht nur, solange noch Karten fehlen. Auch wenn sie stehen bleibt, schaut der Beobachter neu hin (unobserve/observe):
+        // ist das Fenster höher als die geladenen Karten, kommt gleich die nächste Portion, bis es gefüllt ist.
+        const hasMore = shown.length < all.length;
+        ui.more.replaceChildren(...(hasMore ? [ui.mark] : []));
+        if (ui.io) {
+          ui.io.unobserve(ui.mark);
+          if (hasMore) ui.io.observe(ui.mark);
+        }
+        if (gPoolTop) gPoolWin.scrollTo(0, 0);
         animateRemoved(snap, true, d.body);
         // Hinweis unten (fest, ohne Einfluss auf die Liste): Fehler oder „Rückgängig“ der letzten Disposition
         const note = errorMsg ? { t: errorMsg, er: true } : gUndo ? { t: gUndo.txt } : null;
@@ -8951,8 +9349,7 @@
                 class: 'chip' + (gKind === k ? ' on' : ''),
                 onclick: () => {
                   gKind = k;
-                  gArmAll = false;
-                  gPoolMax = 20;
+                  poolReset();
                   render();
                 }
               },
@@ -8970,8 +9367,7 @@
           value: gSearch,
           oninput: e => {
             gSearch = e.target.value;
-            gArmAll = false;
-            gPoolMax = 20;
+            poolReset();
             render();
           }
         });
@@ -9080,8 +9476,16 @@
       // sichtbare data-k-Elemente (und das angetippte Bedienelement) samt Abstand zum oberen Rand, nach Wichtigkeit sortiert
       // (Grundlage für die Scroll-Stabilität)
       function viewportAnchors() {
-        const marked = app.querySelectorAll('[data-k]'),
-          control = lastTapCtl ? anchorNode(lastTapCtl) : null;
+        // Was sich nicht mit der Seite bewegt, taugt nicht als Anker: das Bearbeiten-Fenster der Disposition (liegt fest am unteren Rand –
+        // ein kurz zuvor darin angetippter Knopf bestimmt sonst noch TAP_MEMORY_MS lang die Anker, und eine Änderung im Fenster scrollte die
+        // Seite) und die Offen-Liste, die breit neben dem Diagramm klebt (position: sticky; erschiene oben ein Hinweis, bliebe sie
+        // stehen, die Seite würde nicht nachgeführt und das Diagramm spränge).
+        const pane = app.querySelector('.gt-pps'),
+          fixedPane = pane && getComputedStyle(pane).position === 'sticky' ? pane : null,
+          still = n => !!n.closest('.gt-sheet') || (!!fixedPane && fixedPane.contains(n)),
+          marked = [...app.querySelectorAll('[data-k]')].filter(n => !still(n)),
+          tappedNode = lastTapCtl ? anchorNode(lastTapCtl) : null,
+          control = tappedNode && still(tappedNode) ? null : tappedNode;
         if (!marked.length && !control) return [];
         const bar = app.querySelector('.bar.stk'),
           barBottom = (bar || topBar).getBoundingClientRect().bottom,
@@ -9147,6 +9551,7 @@
           // würde der Anker die Seite sonst um deren Höhe nach unten schieben. Nur der angetippte Bereich wird auch dort gehalten
           savedAnchors = anchorsToKeep(),
           listSnap = snapshotList(),
+          poolSnap = poolScrollSnap(),
           okBefore = okSnapshot(),
           aokBefore = aokSnapshot(),
           bannersBefore = bannerSnapshot();
@@ -9156,6 +9561,7 @@
         // draw() baut die Seite stückweise auf und misst dabei zwischendurch (z. B. die Tab-Leiste des Disponenten). Dieses Layout
         // der halbfertigen, kurzen Seite kappt die Scroll-Stelle auf 0 – ohne Anker bliebe die Seite dann oben hängen
         if (scrollY !== scrollBefore) scrollTo(0, scrollBefore);
+        poolScrollRestore(poolSnap); // (vor den Ankern: die Karten der Offen-Liste liegen wieder an ihrer Stelle)
         if (keepKey) keepScrollRoom(scrollBefore);
         // „Alles OK“ ↔ Rückfrage ↔ weg: Platz vor der Scroll-Korrektur reservieren (sonst springt der Rest der Liste)
         const aokRun = aokPrepare(aokBefore);
@@ -9190,6 +9596,7 @@
         if (!quietRender) animateBanners(bannersBefore, scrollBefore < 1);
         if (aokRun) aokRun();
         if (gPoolWin) poolWinSync();
+        gPoolTop = false;
         // frisch gespeicherte Zeit: Zeitkarte leuchtet kurz grün auf
         if (timeFlash) {
           timeFlash = false;
