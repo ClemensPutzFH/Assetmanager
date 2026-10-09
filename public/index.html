@@ -1116,6 +1116,10 @@
         padding-top: 10px;
         border-top: 1px solid var(--bd);
       }
+      /* Frage nach „■ Ende“ (Reparatur/Entstörung): die drei Antworten untereinander, die Texte sind fest */
+      .ob.ask {
+        flex-direction: column;
+      }
       /* Endrückmeldung (Reparatur/Entstörung): Schalter mit Hinweis darunter */
       .frow {
         margin: 12px 0 4px;
@@ -3412,7 +3416,10 @@
         // entryKey: Auftrag mit Zeiteinträgen – Schlüssel des Eintrags, der gerade bearbeitet wird ('' = neuer Eintrag) · entriesAll: alle Einträge zeigen
         entryKey = '',
         entriesAll = false,
-        timeFinal = true;
+        timeFinal = true,
+        // stopAsk: Reparatur/Entstörung – „■ Ende“ ist gedrückt, die Zeit steht fest (aufgerundet), gespeichert wird erst nach der Frage
+        // „Endrückmeldung?“ ({ a: Auftrag, minutes, date, time } oder null). Nur im Speicher: der Timer läuft bis zur Antwort weiter.
+        stopAsk = null;
       // Abhaken (Disponent)
       // marks: Auftragsnummer -> { v, at, sq } (siehe markState)
       let marks = new Map(),
@@ -4183,6 +4190,7 @@
         // Auftrag mit Zeiteinträgen (Dauerauftrag, Reparatur, Entstörung): das Formular ist ein neuer Eintrag (die Einträge stehen darüber)
         const existingResult = hasEntries(orderKind(order)) ? null : resultOf(order.auftrag);
         timeFinal = !endReported(order);
+        stopAsk = null;
         // ältere, nicht auf Viertelstunden gerundete Zeiten werden im Formular auf die nächste Viertelstunde aufgerundet vorbelegt
         const shownMin = existingResult && existingResult.min != null ? roundUpQuarter(existingResult.min) : null;
         timeHours = shownMin != null ? String(Math.floor(shownMin / 60)) : '';
@@ -4563,6 +4571,7 @@
         delete doc.go; // die Zeit ersetzt den Start
         if (minutes > 0) {
           delete runningTimers[order.auftrag]; // die Zeit ist jetzt gespeichert: ein laufender Timer ist erledigt
+          if (stopAsk && stopAsk.a === order.auftrag) stopAsk = null;
           saveTimers();
           doc.min = minutes;
           if (finalNow) doc.fin = 1; // Endrückmeldung: der Auftrag ist mit dieser Zeit fertig
@@ -4655,6 +4664,7 @@
       const elapsedMinutes = start => Math.max(0, Math.floor((Date.now() - start) / 60000));
       const startTimer = (order, items) => {
         runningTimers[order.auftrag] = Date.now();
+        stopAsk = null;
         saveTimers();
         timeError = '';
         saveGo(order, items, runningTimers[order.auftrag]);
@@ -4662,6 +4672,7 @@
       };
       const cancelTimer = (order, items) => {
         delete runningTimers[order.auftrag];
+        stopAsk = null;
         saveTimers();
         saveGo(order, items, 0);
         render();
@@ -4679,13 +4690,37 @@
         }
         // Beginn auf die nächste Viertelstunde gerundet (auf- und abrunden), die Dauer wird aufgerundet
         const began = roundQuarterClock(start);
-        timeDate = began.date;
-        timeStart = began.time;
+        // Reparatur/Entstörung: Die Zeit steht jetzt fest, ob es die Endrückmeldung ist, fragt die Karte (answerStop) – erst danach wird gespeichert
+        if (isTimedKind(orderKind(order))) {
+          stopAsk = { a: order.auftrag, minutes, date: began.date, time: began.time };
+          timeError = '';
+          render();
+          return;
+        }
+        saveStopped(order, items, minutes, began.date, began.time);
+      }
+      function saveStopped(order, items, minutes, date, time) {
+        timeDate = date;
+        timeStart = time;
         timeHours = String(Math.floor(minutes / 60));
         timeMinutes = String(minutes % 60);
         timeError = '';
         infoMsg = `⏱ Zeit gespeichert: ab ${timeStart} Uhr, ${formatMinutes(minutes)} (Beginn auf die nächste, Dauer auf die nächsthöhere Viertelstunde gerundet)`;
         storeTime(order, items, minutes, timeDate, timeStart);
+      }
+      // Antwort auf die Frage nach „■ Ende“ (Reparatur/Entstörung): final = Endrückmeldung (Auftrag fertig), sonst Teilrückmeldung; null = zurück,
+      // der Timer läuft weiter
+      function answerStop(order, items, final) {
+        const ask = stopAsk;
+        if (!ask || ask.a !== order.auftrag) return;
+        if (final === null) {
+          stopAsk = null;
+          return render();
+        }
+        if (!items) return;
+        stopAsk = null;
+        timeFinal = final;
+        saveStopped(order, items, ask.minutes, ask.date, ask.time);
       }
       setInterval(() => {
         for (const n of document.querySelectorAll('[data-tmr]')) n.textContent = formatMinutes(elapsedMinutes(+n.dataset.tmr));
@@ -4933,8 +4968,9 @@
           timePanel.append(
             el('b', { class: 'zne', 'data-k': 'zn' }, entry ? `Zeit bearbeiten (${formatIsoDate(performedDate(entry))})` : 'Weitere Zeit eintragen')
           );
-        // Reparatur/Entstörung: Endrückmeldung (der Auftrag ist fertig) oder Teilrückmeldung (die Arbeit geht weiter). Der Hinweis ändert sich
-        // nicht mit der Wahl (eine Zeile mit anderem Umbruch ließe die Karte springen), nur der Haken am Schalter.
+        // Reparatur/Entstörung: Endrückmeldung (der Auftrag ist fertig) oder Teilrückmeldung (die Arbeit geht weiter). Bei Start/Ende fragt die Karte
+        // nach dem Stoppen (stopAsk); der Schalter gehört nur zur Zeit von Hand (vorbelegt, solange der Auftrag nicht endrückgemeldet ist).
+        // Der Hinweis ändert sich nicht mit der Wahl (eine Zeile mit anderem Umbruch ließe die Karte springen), nur der Haken am Schalter.
         const finRow = () =>
           el(
             'div',
@@ -4953,7 +4989,34 @@
             ),
             el('p', { class: 'mu' }, 'Ohne Haken ist es eine Teilrückmeldung: Die Arbeit geht weiter, der Auftrag bleibt in Arbeit.')
           );
-        if (timerStart || !hasTime)
+        // „■ Ende“ ist gedrückt (Reparatur/Entstörung): die Zeit steht fest, gefragt wird nach der Endrückmeldung. Läuft der Timer nicht mehr
+        // (anderswo verworfen), gilt die Frage nicht mehr. Die Frage ersetzt Start/Ende im selben Bereich (`zs`): der angetippte Bereich bleibt stehen.
+        const ask = timerStart && stopAsk && stopAsk.a === order.auftrag ? stopAsk : null;
+        if (ask)
+          timePanel.append(
+            el(
+              'div',
+              { class: 'tmr', 'data-k': 'zs' },
+              el('p', { class: 'mu' }, `■ Gestoppt: ab ${ask.time} Uhr · `, el('b', {}, formatMinutes(ask.minutes))),
+              el('p', {}, el('b', {}, 'Endrückmeldung geben?')),
+              el(
+                'div',
+                { class: 'ob ask' },
+                el(
+                  'button',
+                  { class: 'sv', disabled: items ? null : 'disabled', onclick: () => answerStop(order, items, true) },
+                  '✓ Ja – Endrückmeldung (Auftrag ist fertig)'
+                ),
+                el(
+                  'button',
+                  { disabled: items ? null : 'disabled', onclick: () => answerStop(order, items, false) },
+                  '◐ Nein – Teilrückmeldung (Arbeit geht weiter)'
+                ),
+                el('button', { class: 'er', onclick: () => answerStop(order, items, null) }, 'Zurück – die Zeit läuft weiter')
+              )
+            )
+          );
+        else if (timerStart || !hasTime)
           timePanel.append(
             el(
               'div',
@@ -4981,7 +5044,9 @@
                     el(
                       'p',
                       { class: 'mu' },
-                      'Optional: „Start“ drücken, wenn die Arbeit beginnt, und „Ende“, wenn sie fertig ist – die Zeit wird dann automatisch gespeichert.'
+                      timed
+                        ? 'Optional: „Start“ drücken, wenn die Arbeit beginnt, und „Ende“, wenn sie aufhört – danach wird gefragt, ob es die Endrückmeldung ist.'
+                        : 'Optional: „Start“ drücken, wenn die Arbeit beginnt, und „Ende“, wenn sie fertig ist – die Zeit wird dann automatisch gespeichert.'
                     ),
                     el('div', { class: 'ob' }, el('button', { class: 'sv', onclick: () => startTimer(order, items) }, '▶ Start'))
                   ]
@@ -4990,7 +5055,7 @@
         // Kompakt: Start/Ende und die Kollegen-Auswahl sind immer da (bei neuer Zeit), Datum/Beginn/Dauer erst nach „Zeit von Hand
         // eintragen“ bzw. „Zeit ändern“. Bei einem Fehler oder angefangener Eingabe bleibt das Formular offen.
         const formOpen = timeFormOpen || !!timeError;
-        if (!hasTime) timePanel.append(...(timed ? [finRow()] : []), el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order));
+        if (!hasTime) timePanel.append(el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order));
         if (!formOpen) {
           timePanel.append(
             el(
@@ -5146,7 +5211,8 @@
             ),
             el('span', {}, 'Min')
           ),
-          ...(hasTime ? [...(timed ? [finRow()] : []), el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order)] : []),
+          ...(timed ? [finRow()] : []),
+          ...(hasTime ? [el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order)] : []),
           timeError && el('p', { class: 'mu er' }, timeError),
           el(
             'div',
@@ -8264,6 +8330,11 @@
         ) {
           unsaved = true;
           warnings.unshift(['Die eingegebene Zeit ist noch nicht gespeichert', '[data-zeit]']);
+        }
+        // „■ Ende“ gedrückt, aber die Frage nach der Endrückmeldung ist noch offen: die Zeit ist nicht gespeichert (der Timer läuft weiter)
+        if (stopAsk && stopAsk.a === order.auftrag && timerStartOf(order.auftrag)) {
+          unsaved = true;
+          warnings.unshift(['Die gestoppte Zeit ist noch nicht gespeichert (Endrückmeldung?)', '.tmr']);
         }
         if (editIndex !== null && checklistItems) {
           const m = editText.trim();
