@@ -27,7 +27,8 @@
  *             ist der Eintrag mit `fin` = 1 die Endrückmeldung (Auftrag fertig), die übrigen sind Teilrückmeldungen. `go` (ms) = Start gedrückt,
  *             solange noch keine Zeit gespeichert ist
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
- *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
+ *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo und Push-Status laut Gerät, Abmeldung, letzter Standort). Die Abgleich-Antwort
+ *             sagt Monteur-Geräten in `dev`, ob der Server sie samt Abo kennt – fehlt es, melden sie sich neu an (Datenbank-Wechsel, 404/410)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
  *   dnote     vorgemerkte Änderungen der Disposition je Team und Auftrag (Stand davor, letzte Änderung) – daraus wird nach DISPO_NOTE_S Ruhe eine Meldung
  *   gas       tägliche Bestätigung des Gaswarngeräts je Team (Tag, Team, Uhrzeit, Gerät, Benutzer) – wird nur angefügt, nie geändert
@@ -224,7 +225,9 @@ addColumn('usr', 'team_lock', 'INTEGER NOT NULL DEFAULT 0');
     loc_lon: 'REAL',
     loc_acc: 'REAL',
     loc_at: 'INTEGER',
-    loc_err: 'TEXT'
+    loc_err: 'TEXT',
+    // Push-Status laut Gerät: „Berechtigung|Detail“ (granted | default | denied | unsupported, Detail = Fehlertext), zeigt dem Disponenten, WARUM ein Gerät keine Benachrichtigungen hat
+    pstat: 'TEXT'
   };
   for (const [column, type] of Object.entries(added))
     if (!have.has(column)) db.exec(`ALTER TABLE dev ADD COLUMN ${column} ${type}`);
@@ -345,7 +348,7 @@ const sql = {
   ),
   wipePruef: db.prepare("UPDATE pruef SET items='[]', seq=? WHERE items<>'[]'"),
   getErg: db.prepare('SELECT doc, seq FROM ergebnis WHERE auftrag=?'),
-  getDev: db.prepare('SELECT role, team, sub, kick, usr FROM dev WHERE did=?'),
+  getDev: db.prepare('SELECT role, team, sub, kick, usr, pstat FROM dev WHERE did=?'),
   seenDev: db.prepare('UPDATE dev SET seen=? WHERE did=?'),
   // „zuletzt aktiv“ nur dann schreiben, wenn der letzte Eintrag älter als eine Minute ist (nicht bei jedem Abgleich)
   touchDev: db.prepare('UPDATE dev SET seen=? WHERE did=? AND (seen IS NULL OR seen<?)'),
@@ -354,10 +357,10 @@ const sql = {
   clearKick: db.prepare('UPDATE dev SET kick=0 WHERE did=? AND kick=1'),
   // meldet das Gerät an/um/ab (Rolle, Team, Push-Abo) und hebt eine angeforderte Abmeldung auf; Spitzname bleibt erhalten
   upDev: db.prepare(
-    'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick,usr) VALUES(?,?,?,?,?,?,?,0,?) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0, usr=excluded.usr'
+    'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick,usr,pstat) VALUES(?,?,?,?,?,?,?,0,?,?) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0, usr=excluded.usr, pstat=excluded.pstat'
   ),
   listDevs: db.prepare(
-    "SELECT d.did, d.name, d.role, d.team, d.sub IS NOT NULL AS push, d.seen, d.first, d.ua, d.kick, d.loc_lat, d.loc_lon, d.loc_acc, d.loc_at, d.loc_err, d.usr, trim(u.first || ' ' || u.last) AS uname FROM dev d LEFT JOIN usr u ON u.sap=d.usr WHERE d.seen>? ORDER BY d.seen DESC"
+    "SELECT d.did, d.name, d.role, d.team, d.sub IS NOT NULL AS push, d.pstat, d.seen, d.first, d.ua, d.kick, d.loc_lat, d.loc_lon, d.loc_acc, d.loc_at, d.loc_err, d.usr, trim(u.first || ' ' || u.last) AS uname FROM dev d LEFT JOIN usr u ON u.sap=d.usr WHERE d.seen>? ORDER BY d.seen DESC"
   ),
   // letzter Standort bzw. Fehler (nur das Neueste, kein Verlauf); nur für angemeldete Monteur-Geräte
   setLoc: db.prepare(
@@ -385,6 +388,8 @@ const sql = {
   ),
   // Geräte, die eine Meldung „Auftrag disponiert“ bekommen: angemeldete Monteur-Geräte des Teams mit Push-Abo
   teamPushDevs: db.prepare("SELECT did, sub FROM dev WHERE role='monteur' AND team=? AND sub IS NOT NULL"),
+  // Geräte des Teams, die zuletzt aktiv waren (n), davon mit Push-Abo (p) – für die Zeile im Protokoll, wenn niemand erreichbar ist
+  teamDevCount: db.prepare("SELECT COUNT(*) n, COALESCE(SUM(sub IS NOT NULL), 0) p FROM dev WHERE role='monteur' AND team=? AND seen>?"),
   // noch nicht gemeldete Änderungen der Disposition (Stand davor bleibt, nur der Zeitpunkt der letzten Änderung rückt vor)
   noteDispo: db.prepare(
     'INSERT INTO dnote(team,auftrag,was,von,bis,at) VALUES(?,?,?,?,?,?) ON CONFLICT(team,auftrag) DO UPDATE SET at=excluded.at'
@@ -645,6 +650,14 @@ let locateUntil = 0,
 const LOCATE_WINDOW_MS = 90e3;
 // Feld für die Abgleich-Antwort: `locate: <Runde>` nur, wenn die Abfrage gerade aktiv ist
 const locateField = () => (Date.now() < locateUntil ? { locate: locateRound } : {});
+// Wie kennt der Server dieses Gerät? (Monteur mit Team) 0 = gar nicht bzw. mit anderem Team/anderer Rolle, 1 = angemeldet ohne Push-Abo,
+// 2 = angemeldet mit Push-Abo. Die App meldet sich bei 0 neu an und holt bei 1 das Abo nach, wenn der Browser Push erlaubt: So heilen sich ein
+// Wechsel der Datenbank, ein abgelaufenes Abo (404/410) und eine zwischenzeitliche Abmeldung von selbst. Ohne diese Angabe merkt ein Gerät nicht,
+// dass der Server es nicht (mehr) per Push erreichen kann, und niemand bekommt je wieder eine Benachrichtigung.
+const deviceState = (did, team) => {
+  const d = sql.getDev.get(did);
+  return d && d.role === 'monteur' && d.team === team ? (d.sub ? 2 : 1) : 0;
+};
 // gültige Geräte-ID (32 Hex-Zeichen) oder '' – die ID erzeugt die App einmalig je Gerät
 const validDeviceId = v => (/^[a-f0-9]{32}$/.test(String(v ?? '')) ? String(v) : '');
 // versteht der Client gzip?
@@ -935,7 +948,16 @@ function pushEncrypt(keys, payload, salt = crypto.randomBytes(16), ecdh = null) 
 // topic: gleiches Thema ersetzt beim Push-Dienst eine noch nicht zugestellte Nachricht (Nachrichten des Disponenten und Meldungen zur
 // Disposition dürfen sich nicht gegenseitig ersetzen), hours: so lange hält der Push-Dienst die Nachricht für ein Gerät ohne Netz bereit
 async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESSAGE_HOURS } = {}) {
-  const sub = JSON.parse(device.sub);
+  let sub;
+  try {
+    sub = JSON.parse(device.sub);
+    new URL(sub.endpoint);
+  } catch {
+    // unbrauchbares Abo in der Datenbank: löschen, das Gerät meldet sich neu an (siehe `dev` in der Abgleich-Antwort)
+    console.error(`Push: Abo von Gerät ${String(device.did).slice(0, 8)} ist unbrauchbar – gelöscht`);
+    sql.dropSub.run(device.did);
+    return false;
+  }
   try {
     const response = await fetch(sub.endpoint, {
       method: 'POST',
@@ -951,9 +973,11 @@ async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESS
       }
     });
     if (response.status === 404 || response.status === 410) {
+      // Abo abgelaufen/abgemeldet: am Gerät löschen (es meldet sich beim nächsten Öffnen der App neu an) – und sagen, dass es passiert ist
+      console.error(`Push an ${new URL(sub.endpoint).host}: Abo von Gerät ${String(device.did).slice(0, 8)} abgelaufen (${response.status}) – Push dort aus, bis sich das Gerät neu anmeldet`);
       sql.dropSub.run(device.did);
       return false;
-    } // Abo abgelaufen/abgemeldet
+    }
     if (!response.ok)
       console.error(
         `Push an ${new URL(sub.endpoint).host} fehlgeschlagen: ${response.status} ${(await response.text()).slice(0, 200)}`
@@ -965,30 +989,46 @@ async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESS
     return false;
   }
 }
+// Push an mehrere Geräte zugleich; Rückgabe { ok: zugestellt, total: versucht }. payload: Objekt oder Funktion (Gerät) => Objekt. Mit `label` kommt
+// EINE Zeile ins Protokoll – auch dann, wenn es keinen Empfänger gibt, denn das ist der häufigste Grund für „es kommt nichts an“: kein Gerät des Teams
+// hat Benachrichtigungen erlaubt oder sich nach einem Datenbank-Wechsel neu angemeldet (die Abos stehen in der Datenbank). `team` zählt die Geräte dafür.
+async function pushToDevices(devices, payload, options, label = '', team = '') {
+  const ok = (
+      await Promise.all(devices.map(d => pushToDevice(d, typeof payload === 'function' ? payload(d) : payload, options)))
+    ).filter(Boolean).length,
+    count = n => `${n} ${n === 1 ? 'Gerät' : 'Geräte'}`;
+  if (label && devices.length) console.log(`Push ${label}: ${ok} von ${count(devices.length)} zugestellt`);
+  else if (label) {
+    const known = sql.teamDevCount.get(team, Date.now() - 30 * 864e5);
+    console.log(
+      `Push ${label}: kein Gerät mit Push-Abo (${known.n ? `${count(known.n)} des Teams angemeldet, davon ${known.p} mit Abo` : 'kein Gerät des Teams angemeldet'})`
+    );
+  }
+  return { ok, total: devices.length };
+}
 // Nachricht-ID -> Zeitpunkt der letzten Erinnerung
 const lastNagAt = new Map();
-// Erinnerung an alle Geräte des Teams, die noch nicht bestätigt haben; Rückgabe: Anzahl zugestellter Pushs
-async function sendReminders(message) {
+// Erinnerung an alle Geräte des Teams, die noch nicht bestätigt haben; Rückgabe: { ok: zugestellte Pushs, total: Geräte mit Abo }.
+// first = die erste Zustellung einer neuen Nachricht (die Wiederholungen stehen nicht im Protokoll, nur ihre Fehler)
+async function sendReminders(message, first = false) {
   lastNagAt.set(message.id, Date.now());
   const devs = sql.nagDevs.all(message.team, message.id);
-  const results = await Promise.all(
-    devs.map(d =>
-      pushToDevice(d, {
-        id: message.id,
-        did: d.did,
-        team: message.team,
-        title: 'Nachricht vom Disponenten',
-        body: message.text,
-        at: message.at
-      })
-    )
+  return pushToDevices(
+    devs,
+    d => ({ id: message.id, did: d.did, team: message.team, title: 'Nachricht vom Disponenten', body: message.text, at: message.at }),
+    undefined,
+    first ? `„Nachricht vom Disponenten“ an Team ${message.team}` : '',
+    message.team
   );
-  return results.filter(Boolean).length;
 }
 setInterval(async () => {
   // „nervig“: wiederholen, bis bestätigt (höchstens MESSAGE_HOURS Stunden)
-  for (const m of sql.activeMsgs.all(Date.now() - MESSAGE_HOURS * 3600e3))
-    if (Date.now() - (lastNagAt.get(m.id) || 0) >= NAG_INTERVAL_MIN * 60e3 - 2e3) await sendReminders(m);
+  try {
+    for (const m of sql.activeMsgs.all(Date.now() - MESSAGE_HOURS * 3600e3))
+      if (Date.now() - (lastNagAt.get(m.id) || 0) >= NAG_INTERVAL_MIN * 60e3 - 2e3) await sendReminders(m);
+  } catch (e) {
+    console.error('Erinnerung fehlgeschlagen:', e.message); // ein Fehler darf den Server nicht beenden
+  }
 }, 15e3).unref();
 
 // ---- Meldung an die Monteure: Auftrag disponiert / geändert / entfernt ----
@@ -1083,8 +1123,12 @@ async function flushDispoNotes() {
       const at = Date.now(),
         payload = { t: 'dispo', title: n.title, body: n.body, at, n: n.count };
       announceDispoNote(n.team, { title: n.title, brief: n.brief, at });
-      await Promise.all(
-        sql.teamPushDevs.all(n.team).map(d => pushToDevice(d, payload, { topic: 'dispo', hours: DISPO_NOTE_HOURS }))
+      await pushToDevices(
+        sql.teamPushDevs.all(n.team),
+        payload,
+        { topic: 'dispo', hours: DISPO_NOTE_HOURS },
+        `„${n.title}“ an Team ${n.team}`,
+        n.team
       );
     }
   } catch (e) {
@@ -1650,6 +1694,8 @@ async function handleApi(req, res, url) {
     if (!team && !isDispo(req)) return sendJson(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
     // Gerät bekannt? Dann „zuletzt aktiv“ festhalten
     if (did) sql.touchDev.run(Date.now(), did, Date.now() - 60e3);
+    // wie der Server das Gerät kennt (siehe deviceState) – steht in jeder Antwort, auch wenn sonst nichts Neues da ist
+    const devState = me && did && team !== '-' ? { dev: deviceState(did, team) } : {};
     // festes Team: für ein anderes Team gibt es keine Daten, nur die Angabe des erlaubten Teams (die App wechselt dann dorthin)
     if (me && team !== '-' && !teamAllowed(me, team))
       return sendJson(req, res, 200, {
@@ -1666,6 +1712,7 @@ async function handleApi(req, res, url) {
         ver: appVersion(),
         gday: dayOf(Date.now()),
         ...(me ? { me: meOf(me) } : {}),
+        ...devState,
         ...locateField()
       });
     const full = since === 0 || since > changeSeq || since < minSeq,
@@ -1676,6 +1723,7 @@ async function handleApi(req, res, url) {
       ver: appVersion(),
       gday: dayOf(Date.now()),
       ...(me ? { me: meOf(me) } : {}),
+      ...devState,
       ...locateField(),
       teams: teamsList(),
       meta: { upload: getMeta('upload'), pruef: getMeta('pruef'), vorg: getMeta('vorg'), mel: getMeta('mel') },
@@ -1903,6 +1951,9 @@ async function handleApi(req, res, url) {
       if (!teamAllowed(user, team)) team = user.team; // festes Team gilt immer
     }
     let sub = null;
+    // keep: Das Gerät konnte das Abo gerade nicht prüfen (Fehler, kein Netz, Server-Neustart) – ein bisheriges Abo bleibt dann stehen.
+    // Nur ein ausdrückliches „kein Abo“ (Berechtigung weg, Abmeldung) löscht es; sonst wäre nach jedem Aussetzer beim App-Start kein Push mehr möglich.
+    if (!body.sub && body.keep === true && role === 'monteur') sub = (sql.getDev.get(did) || {}).sub || null;
     if (body.sub) {
       const ep = clipString(body.sub.endpoint, 1000),
         k = body.sub.keys || {};
@@ -1919,7 +1970,19 @@ async function handleApi(req, res, url) {
     }
     const old = sql.getDev.get(did),
       now = Date.now();
-    if (old && old.role === role && old.team === team && old.sub === sub && !old.kick && (old.usr || null) === userSap) {
+    // Push-Status laut Gerät („granted“, „default“, „denied“, „unsupported“, dahinter nach „|“ ein Fehlertext): nur bei Monteur-Geräten; ältere Apps
+    // melden ihn nicht – dann bleibt der bisherige stehen. Der Disponent sieht ihn in der Geräteübersicht und weiß so, WARUM ein Gerät keinen Push hat.
+    const pstat =
+      role !== 'monteur' ? null : body.pstat === undefined ? (old && old.pstat) || null : clipString(body.pstat, 200).trim() || null;
+    if (
+      old &&
+      old.role === role &&
+      old.team === team &&
+      old.sub === sub &&
+      !old.kick &&
+      (old.usr || null) === userSap &&
+      (old.pstat || null) === pstat
+    ) {
       sql.seenDev.run(now, did);
       return sendJson(req, res, 200, { ok: true });
     }
@@ -1928,7 +1991,7 @@ async function handleApi(req, res, url) {
     transaction(() => {
       changeSeq++;
       if (sub) sql.dupSub.run(sub, did);
-      sql.upDev.run(did, role, team, sub, now, clipString(req.headers['user-agent'], 200), now, userSap);
+      sql.upDev.run(did, role, team, sub, now, clipString(req.headers['user-agent'], 200), now, userSap, pstat);
       if (role !== 'monteur') sql.clearLoc.run(did); // abgemeldet oder nicht (mehr) Monteur -> kein Standort
     });
     announce(changeSeq, 'dispo'); // nur der Disponent sieht Geräte und Zähler
@@ -2046,7 +2109,11 @@ async function handleApi(req, res, url) {
       id = Number(sql.addMsg.run(team, text, at, changeSeq).lastInsertRowid);
     });
     announce(changeSeq, { team });
-    return sendJson(req, res, 200, { ok: true, id, pushed: await sendReminders({ id, team, text, at }) });
+    // pushed = Geräte, bei denen der Push-Dienst die Nachricht angenommen hat; of = Geräte des Teams mit Push-Abo; known = alle Geräte des Teams
+    // (angemeldet, zuletzt aktiv in 30 Tagen) – die App sagt dem Disponenten damit gleich, wie viele Monteure per Push erreichbar sind
+    const sent = await sendReminders({ id, team, text, at }, true),
+      known = sql.teamDevCount.get(team, Date.now() - 30 * 864e5);
+    return sendJson(req, res, 200, { ok: true, id, pushed: sent.ok, of: sent.total, known: known.n });
   }
   if (pathname === '/api/msg/close' && method === 'POST') {
     const id = +(await readBody(req, 1e4)).id | 0;
@@ -2078,6 +2145,7 @@ async function handleApi(req, res, url) {
       role: r.role,
       team: r.team,
       push: !!r.push,
+      pstat: r.pstat, // Push-Status laut Gerät (siehe /api/push/sub)
       seen: r.seen,
       first: r.first,
       ua: r.ua,

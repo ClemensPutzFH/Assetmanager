@@ -132,6 +132,17 @@ async function startServer(geocoderUrl, prepareData = null, extraEnv = {}) {
   for (const f of ['data.db', 'data.db-wal', 'data.db-shm'])
     if (fs.existsSync(path.join(ROOT, 'data', f))) fs.copyFileSync(path.join(ROOT, 'data', f), path.join(dir, f));
   if (prepareData) prepareData(dir); // Daten vor dem Start verändern (nur in der Kopie)
+  // Die Kopie enthält die Geräte der echten Daten samt ihren ECHTEN Push-Abos (Edge, Chrome, Handy …). Der Test-Server schickte jedem davon bei jeder
+  // Nachricht und jeder Meldung „Auftrag disponiert“ eine echte Benachrichtigung („2 neue Aufträge disponiert …“ mitten in die Arbeit der Monteure).
+  // Darum die Abos in der KOPIE löschen – die echten Daten bleiben unberührt. (Tests, die Push brauchen, melden eigene Geräte beim Mini-Push-Dienst an.)
+  if (fs.existsSync(path.join(dir, 'data.db'))) {
+    const { DatabaseSync } = require('node:sqlite'),
+      copy = new DatabaseSync(path.join(dir, 'data.db'));
+    try {
+      copy.exec('UPDATE dev SET sub=NULL WHERE sub IS NOT NULL');
+    } catch (e) {} // (sehr alte Datenbank ohne Tabelle `dev`: nichts zu löschen)
+    copy.close();
+  }
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: dir, DISPO_PIN, UPLOAD_PIN: '1025', MONTEUR_PASSWORD: MONTEUR.password, GEOCODER_URL: geocoderUrl, GEOCODER_DELAY_MS: '1', GEOCODER_WIEN_URL: 'off', ...extraEnv },
@@ -142,7 +153,18 @@ async function startServer(geocoderUrl, prepareData = null, extraEnv = {}) {
     child.stdout.on('data', d => /Läuft auf/.test(String(d)) && (clearTimeout(t), resolve()));
     child.on('exit', c => reject(new Error('Server beendet (' + c + ')')));
   });
-  return { port, dir, stop: () => (child.kill(), fs.rmSync(dir, { recursive: true, force: true })) };
+  return {
+    port,
+    dir,
+    stop: () => {
+      child.kill();
+      // Windows: der beendete Server hält die Datenbankdatei noch kurz fest (EPERM/EBUSY) – ein paar Mal erneut versuchen; bleibt der Ordner trotzdem
+      // liegen, ist das nur Müll im Temp-Verzeichnis und darf den Test nicht abbrechen
+      try {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
+      } catch (e) {}
+    }
+  };
 }
 // wartet, bis der Server alle Adressen der Aufträge in Koordinaten umgewandelt hat (sonst hängt die Entfernungs-Prüfung vom Zufall ab)
 async function waitForCoordinates(base) {
@@ -2961,11 +2983,26 @@ async function dispoNoteChecks(browser, mainServer, geocoder, errors) {
       dispatch = (a, team, t) => apiJson(base, 'POST', '/api/dispo', { items: [{ a, team, ...t }] }, H),
       TEAM = 'FW-IH01',
       other = ((await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H)).dteams || []).find(t => t !== TEAM);
+    // Die Kopie der echten Daten kann eine offene Nachricht des Disponenten enthalten – der Server würde sie an das Test-Gerät nachschicken und
+    // der Mini-Push-Dienst zählte sie mit. Offene Nachrichten in der Kopie beenden (die echten Daten bleiben unberührt).
+    for (const m of (await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H)).msgs || [])
+      if (!m.closed) await apiJson(base, 'POST', '/api/msg/close', { id: m.id }, H);
     // Ein „Gerät“ des Teams mit Push-Abo beim Mini-Push-Dienst anmelden
     const did = crypto.randomBytes(16).toString('hex'),
       sub = { endpoint: `http://127.0.0.1:${pushPort}/push/geraet`, keys: { p256dh: deviceKey.getPublicKey().toString('base64url'), auth: deviceAuth.toString('base64url') } },
       reg = await apiJson(base, 'POST', '/api/push/sub', { did, role: 'monteur', team: TEAM, sub }, { 'X-User-Token': login.token });
     report(reg.ok === true, 'Meldung: Gerät mit Push-Abo lässt sich anmelden', JSON.stringify(reg));
+    // Ein Aussetzer beim App-Start (Netz weg, Server startet neu, Abruf scheitert) darf ein funktionierendes Abo nicht löschen:
+    // die App meldet dann „keep“ statt „kein Abo“. Nur ein ausdrückliches „kein Abo“ (Berechtigung weg, Abmeldung) löscht es.
+    const hasPush = async () => ((await apiJson(base, 'GET', '/api/devices', null, H)).devices.find(d => d.did === did) || {}).push;
+    await apiJson(base, 'POST', '/api/push/sub', { did, role: 'monteur', team: TEAM, sub: null, keep: true }, { 'X-User-Token': login.token });
+    report((await hasPush()) === true, 'Push-Abo: ein gescheiterter Abgleich beim App-Start („keep“) lässt das Abo am Server stehen', String(await hasPush()));
+    await apiJson(base, 'POST', '/api/push/sub', { did, role: 'monteur', team: TEAM, sub: null }, { 'X-User-Token': login.token });
+    report((await hasPush()) === false, 'Push-Abo: „kein Abo“ ohne „keep“ (Berechtigung entzogen, Abmeldung) löscht es', String(await hasPush()));
+    await apiJson(base, 'POST', '/api/push/sub', { did, role: 'monteur', team: TEAM, sub: null, keep: true }, { 'X-User-Token': login.token });
+    report((await hasPush()) === false, 'Push-Abo: „keep“ erfindet kein Abo, wo keins war', String(await hasPush()));
+    await apiJson(base, 'POST', '/api/push/sub', { did, role: 'monteur', team: TEAM, sub }, { 'X-User-Token': login.token });
+    report((await hasPush()) === true, 'Push-Abo: erneut anmelden stellt es wieder her', String(await hasPush()));
     // Ausgangslage: nichts disponiert (diese Änderungen werden gemeldet, aber noch ohne Gerät/Seite – dann abwarten und leeren)
     await undispatchAll(base);
     await sleep(5500);
@@ -3063,6 +3100,258 @@ async function dispoNoteChecks(browser, mainServer, geocoder, errors) {
     report(false, 'Meldung: Test-Fehler', e.stack.split('\n').slice(0, 3).join(' | '));
   } finally {
     if (phone) await phone.context().close();
+    server.stop();
+    pushService.close();
+  }
+}
+
+/**
+ * Push-Anmeldung der Geräte: Der Server sagt bei jedem Abgleich, wie er das Gerät kennt (`dev`: 0 unbekannt, 1 ohne Abo, 2 mit Abo), die App meldet
+ * sich bei Bedarf von selbst neu an (Datenbank gewechselt, Abo gelöscht), zeigt bei fehlendem Abo den Ersatz-Hinweis statt gar nichts, und der
+ * Disponent erfährt, bei wie vielen Geräten eine Nachricht per Push angekommen ist und warum ein Gerät keinen Push hat.
+ * Eigener Server mit Kopie der Daten (DISPO_NOTE_S=3), Mini-Push-Dienst statt FCM/WNS und eine Seite mit nachgebildetem Push-Abo
+ * (das Test-Chromium kann kein echtes: PushManager.subscribe wird ersetzt und liefert ein Abo beim Mini-Push-Dienst).
+ */
+async function pushChecks(browser, mainServer, geocoder, errors) {
+  console.log('\n=== Push-Anmeldung: Server kennt das Gerät, Selbstreparatur, Rückmeldung an den Disponenten ===');
+  const crypto = require('crypto'),
+    http = require('http'),
+    pushes = [],
+    devicesByPath = {}, // Pfad am Mini-Push-Dienst -> Schlüssel des „Geräts“
+    answer = {}; // Pfad -> HTTP-Status der Antwort (Standard 201; 410 = Abo abgelaufen)
+  const hmac = (k, d) => crypto.createHmac('sha256', k).update(d).digest();
+  // Gegenstück zu pushEncrypt() im Server (RFC 8291): Nachricht mit dem Schlüssel des jeweiligen „Geräts“ entschlüsseln
+  const decrypt = (dev, buf) => {
+    const salt = buf.subarray(0, 16),
+      idLen = buf[20],
+      serverKey = buf.subarray(21, 21 + idLen),
+      data = buf.subarray(21 + idLen),
+      ikm = hmac(hmac(dev.auth, dev.key.computeSecret(serverKey)), Buffer.concat([Buffer.from('WebPush: info\0'), dev.key.getPublicKey(), serverKey, Buffer.from([1])])),
+      prk = hmac(salt, ikm),
+      d = crypto.createDecipheriv('aes-128-gcm', hmac(prk, Buffer.from('Content-Encoding: aes128gcm\0\x01')).subarray(0, 16), hmac(prk, Buffer.from('Content-Encoding: nonce\0\x01')).subarray(0, 12));
+    d.setAuthTag(data.subarray(data.length - 16));
+    const plain = Buffer.concat([d.update(data.subarray(0, data.length - 16)), d.final()]);
+    return JSON.parse(plain.subarray(0, plain.length - 1).toString());
+  };
+  const pushService = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      const dev = devicesByPath[req.url];
+      try {
+        pushes.push({ at: Date.now(), path: req.url, topic: req.headers.topic, payload: decrypt(dev, Buffer.concat(chunks)) });
+      } catch (e) {
+        pushes.push({ at: Date.now(), path: req.url, error: e.message });
+      }
+      res.writeHead(answer[req.url] || 201).end();
+    });
+  });
+  await new Promise(resolve => pushService.listen(0, '127.0.0.1', resolve));
+  const pushPort = pushService.address().port,
+    // „Gerät“ beim Mini-Push-Dienst: liefert das Abo, wie es der Browser meldet
+    newSub = pathName => {
+      const key = crypto.createECDH('prime256v1'),
+        auth = crypto.randomBytes(16);
+      key.generateKeys();
+      devicesByPath[pathName] = { key, auth };
+      return { endpoint: `http://127.0.0.1:${pushPort}${pathName}`, keys: { p256dh: key.getPublicKey().toString('base64url'), auth: auth.toString('base64url') } };
+    },
+    copyFrom = dir => {
+      for (const f of ['data.db', 'data.db-wal']) if (fs.existsSync(path.join(mainServer.dir, f))) fs.copyFileSync(path.join(mainServer.dir, f), path.join(dir, f));
+      for (const f of ['data.db-shm']) fs.rmSync(path.join(dir, f), { force: true });
+    },
+    server = await startServer(geocoder.url, copyFrom, { DISPO_NOTE_S: '3', PUSH_HOSTS: `^http://127\\.0\\.0\\.1:${pushPort}/` }),
+    base = 'http://127.0.0.1:' + server.port,
+    sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    waitFor = async (fn, ms = 6000) => {
+      for (let t = 0; t < ms; t += 100) {
+        if (await fn()) return true;
+        await sleep(100);
+      }
+      return !!(await fn());
+    };
+  let phone = null,
+    dispo = null;
+  try {
+    const H = await dispoHeaders(base),
+      login = await apiJson(base, 'POST', '/api/user/login', { user: MONTEUR.user, password: MONTEUR.password }),
+      M = { 'X-User-Token': login.token },
+      TEAM = 'FW-IH01',
+      A = '65900002-0010',
+      day = new Date(Date.now() + 864e5).toISOString().slice(0, 10),
+      slot = (hour, minutes = 120) => ({ von: `${day}T${String(hour).padStart(2, '0')}:00`, bis: plusMinutes(`${day}T${String(hour).padStart(2, '0')}:00`, minutes) }),
+      dispatch = (a, team, t) => apiJson(base, 'POST', '/api/dispo', { items: [{ a, team, ...t }] }, H),
+      devicesList = async () => (await apiJson(base, 'GET', '/api/devices', null, H)).devices,
+      deviceOf = async did => (await devicesList()).find(d => d.did === did) || {},
+      register = (did, body) => apiJson(base, 'POST', '/api/push/sub', { did, role: 'monteur', team: TEAM, ...body }, M),
+      // wie der Server das Gerät beim Abgleich meldet (Feld `dev`); since weit in der Zukunft = Gesamtstand, daher immer mit dem aktuellen Stand
+      state = async did => {
+        const seq = (await apiJson(base, 'GET', `/api/sync?since=0&team=-&did=${did}`, null, M)).seq;
+        return (await apiJson(base, 'GET', `/api/sync?since=${seq}&team=${encodeURIComponent(TEAM)}&did=${did}`, null, M)).dev;
+      };
+    // Ausgangslage: keine offene Nachricht, nichts disponiert (diese Änderungen werden gemeldet, aber noch ohne Gerät – dann abwarten und leeren)
+    for (const m of (await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H)).msgs || [])
+      if (!m.closed) await apiJson(base, 'POST', '/api/msg/close', { id: m.id }, H);
+    await undispatchAll(base);
+    await sleep(5500);
+    pushes.length = 0;
+
+    // ---- 1) Der Server sagt dem Gerät, wie er es kennt ----
+    const did1 = crypto.randomBytes(16).toString('hex'),
+      sub1 = newSub('/push/api');
+    report((await state(did1)) === 0, 'Push-Anmeldung: ein dem Server unbekanntes Gerät bekommt im Abgleich dev = 0 (muss sich anmelden)', String(await state(did1)));
+    await register(did1, { sub: null, pstat: 'default' });
+    report((await state(did1)) === 1, 'Push-Anmeldung: angemeldet ohne Abo -> dev = 1', String(await state(did1)));
+    await register(did1, { sub: sub1, pstat: 'granted' });
+    report((await state(did1)) === 2, 'Push-Anmeldung: angemeldet mit Abo -> dev = 2', String(await state(did1)));
+    const dispoSync = await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H);
+    report(dispoSync.dev === undefined, 'Push-Anmeldung: der Disponent bekommt kein dev (nur Monteure melden sich an)', String(dispoSync.dev));
+    // Push-Status laut Gerät: wird gespeichert, ohne Angabe (ältere App) bleibt der bisherige, ein Fehlertext darf „|“ enthalten
+    let dev1 = await deviceOf(did1);
+    report(dev1.pstat === 'granted' && dev1.push === true, 'Push-Status: das Gerät meldet „granted“, der Disponent sieht es in der Geräteliste', JSON.stringify([dev1.pstat, dev1.push]));
+    await register(did1, { sub: sub1 });
+    report((await deviceOf(did1)).pstat === 'granted', 'Push-Status: eine ältere App ohne Angabe lässt den bisherigen stehen');
+    await register(did1, { sub: null, pstat: 'granted|AbortError: Registration failed | push service error' });
+    dev1 = await deviceOf(did1);
+    report(dev1.pstat === 'granted|AbortError: Registration failed | push service error' && dev1.push === false, 'Push-Status: Fehlertext mit „|“ bleibt ganz erhalten (Abo gelöscht)', JSON.stringify(dev1.pstat));
+    await register(did1, { sub: null, pstat: 'denied' });
+    report((await deviceOf(did1)).pstat === 'denied', 'Push-Status: „denied“ (im Browser blockiert)');
+
+    // ---- 2) Nachricht an das Team: Antwort nennt, wie viele Geräte der Push-Dienst erreicht hat ----
+    await register(did1, { sub: sub1, pstat: 'granted' });
+    let sent = await apiJson(base, 'POST', '/api/msg', { team: TEAM, text: 'Testnachricht 1' }, H);
+    report(sent.ok && sent.pushed === 1 && sent.of === 1 && sent.known >= 1, 'Nachricht: Antwort nennt pushed = 1 von of = 1 Geräten mit Abo (known = alle Geräte des Teams)', JSON.stringify(sent));
+    await waitFor(() => pushes.length >= 1);
+    report(pushes.length === 1 && pushes[0].payload && pushes[0].payload.title === 'Nachricht vom Disponenten' && pushes[0].payload.did === did1, 'Nachricht: der Push kommt beim Gerät an, mit Gerätekennung für die Bestätigung', JSON.stringify(pushes[0]).slice(0, 160));
+    answer['/push/api'] = 410; // der Push-Dienst meldet: Abo abgelaufen
+    sent = await apiJson(base, 'POST', '/api/msg', { team: TEAM, text: 'Testnachricht 2' }, H);
+    report(sent.ok && sent.pushed === 0 && sent.of === 1, 'Nachricht: lehnt der Push-Dienst ab (410), steht pushed = 0 von of = 1 in der Antwort', JSON.stringify(sent));
+    report((await state(did1)) === 1 && (await deviceOf(did1)).push === false, 'Nachricht: nach 410 ist das Abo gelöscht – der Abgleich meldet dev = 1, damit sich das Gerät neu anmeldet', String(await state(did1)));
+    delete answer['/push/api'];
+    sent = await apiJson(base, 'POST', '/api/msg', { team: TEAM, text: 'Testnachricht 3' }, H);
+    report(sent.ok && sent.pushed === 0 && sent.of === 0 && sent.known >= 1, 'Nachricht: kein Gerät mit Abo -> pushed = 0, of = 0, known nennt die angemeldeten Geräte', JSON.stringify(sent));
+    for (const m of (await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H)).msgs || [])
+      if (!m.closed) await apiJson(base, 'POST', '/api/msg/close', { id: m.id }, H);
+    pushes.length = 0;
+
+    // ---- 3) Die App: meldet sich selbst an, repariert sich, zeigt den Ersatz-Hinweis, wenn der Server das Abo nicht kennt ----
+    const seitenAbo = newSub('/push/seite'),
+      ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2, permissions: ['notifications', 'geolocation'], geolocation: { ...TEST_POS } });
+    phone = await ctx.newPage();
+    phone.on('pageerror', e => errors.push(e.message));
+    // PushManager nachbilden: getSubscription/subscribe liefern ein Abo beim Mini-Push-Dienst (window.__subHang: Abonnieren hängt, __subFail: Fehler)
+    await phone.addInitScript(({ endpoint, keys }) => {
+      let current = null;
+      const make = () => ({ endpoint, toJSON: () => ({ endpoint, expirationTime: null, keys }), unsubscribe: async () => ((current = null), true) });
+      PushManager.prototype.getSubscription = async () => current;
+      PushManager.prototype.subscribe = async () => {
+        if (window.__subHang) return new Promise(() => {});
+        if (window.__subFail) throw new DOMException('Registration failed - push service error', 'AbortError');
+        current = make();
+        return current;
+      };
+    }, seitenAbo);
+    const posts = [];
+    phone.on('request', r => {
+      if (r.method() === 'POST' && /\/api\/push\/sub$/.test(r.url())) {
+        let body = {};
+        try {
+          body = JSON.parse(r.postData() || '{}');
+        } catch (e) {}
+        posts.push({ at: Date.now(), role: body.role, hasSub: !!body.sub, keep: !!body.keep, pstat: body.pstat });
+      }
+    });
+    await phone.goto(base);
+    await pause(phone, 600);
+    await loginMonteur(phone, 'Reparaturen');
+    const did2 = await phone.evaluate(() => localStorage.getItem('did')),
+      banner = () => phone.evaluate(() => [...document.querySelectorAll('#app > .msg')].map(n => n.textContent.trim()).filter(t => /^🔔/.test(t)).join(' | ')),
+      pushBanner = () => phone.evaluate(() => [...document.querySelectorAll('#app > .msg')].map(n => n.textContent.trim()).filter(t => /Benachrichtigungen/.test(t)).join(' | ')),
+      poll = () => phone.evaluate(() => dispatchEvent(new Event('online'))); // löst einen Abgleich aus
+    report(await waitFor(async () => (await deviceOf(did2)).push === true), 'App: erlaubte Benachrichtigungen -> das Gerät meldet sich mit Abo an (Server: Abo da)', JSON.stringify(await deviceOf(did2)).slice(0, 160));
+    const dev2 = await deviceOf(did2);
+    report(dev2.pstat === 'granted' && dev2.role === 'monteur' && dev2.team === TEAM, 'App: meldet ihren Push-Status mit (granted)', JSON.stringify([dev2.pstat, dev2.role, dev2.team]));
+    report(!(await pushBanner()), 'App: mit Abo kein Hinweis zu Benachrichtigungen', await pushBanner());
+
+    // Nur eine Anmeldung zugleich: drei gleichzeitige Aufrufe (App-Start, Anmeldung, Abgleich) ergeben höchstens zwei Runden hintereinander
+    const before1 = posts.length;
+    await phone.evaluate(() => Promise.all([pushSync(false), pushSync(false), pushSync(false)]));
+    report(posts.length - before1 <= 2, 'App: drei gleichzeitige Aufrufe von pushSync ergeben höchstens zwei Anmeldungen nacheinander', `${posts.length - before1} Meldungen`);
+
+    // Der Server verliert das Abo (andere Datenbank, 410 …): die Seite merkt es beim nächsten Abgleich und meldet sich von selbst neu an
+    // (Die Sperre „höchstens alle 2 Minuten“ ist nur für Wiederholungen da; hier startet der Versuch frisch, darum zurücksetzen.)
+    await phone.evaluate(() => (pushRepairAt = 0));
+    await register(did2, { sub: null });
+    report((await deviceOf(did2)).push === false, 'App: (Ausgangslage) der Server hat das Abo des Geräts nicht mehr');
+    const before2 = posts.length;
+    await poll();
+    report(await waitFor(async () => (await deviceOf(did2)).push === true, 5000), 'App: fehlt dem Server das Abo, meldet sich die Seite beim nächsten Abgleich von selbst neu an', `${posts.length - before2} neue Meldungen`);
+    report(posts.length - before2 === 1 && posts[posts.length - 1].hasSub, 'App: genau eine Meldung mit Abo, kein Dauerfeuer', JSON.stringify(posts.slice(before2)));
+
+    // Mit Abo am Server kommt der Push beim Gerät an – und der Ersatz-Hinweis bleibt aus (er wäre doppelt)
+    await dispatch(A, TEAM, slot(8));
+    report(await waitFor(() => pushes.some(p => p.path === '/push/seite'), 9000), 'App: „Auftrag disponiert“ kommt als Push beim Gerät der Seite an', JSON.stringify(pushes.map(p => p.path)));
+    await pause(phone, 600);
+    report(!(await banner()), 'App: mit funktionierendem Push zeigt die Seite keinen zusätzlichen Hinweis oben', await banner());
+
+    // Rückmeldung beim Senden: der Disponent sieht, bei wie vielen Geräten die Nachricht per Push angenommen wurde
+    dispo = await newPage(browser, base, { width: 390, height: 844 }, errors);
+    await loginDispo(dispo);
+    await dispo.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === 'Fortschritt').click());
+    await pause(dispo, 1100);
+    const openDialog = () => dispo.evaluate(team => document.querySelector(`#app .gmsg[aria-label^="Nachricht an Team ${team} senden"]`).click(), TEAM);
+    await openDialog();
+    await pause(dispo, 400);
+    report(await dispo.evaluate(() => /davon 1 mit Benachrichtigungen/.test(document.querySelector('dialog[open]').textContent)), 'Nachricht: der Dialog nennt, wie viele Geräte des Teams Benachrichtigungen haben', await dispo.evaluate(() => (document.querySelector('dialog[open] .mu') || {}).textContent));
+    await dispo.evaluate(() => document.querySelector('dialog[open] button.sv').click());
+    await pause(dispo, 1200);
+    const feedback = () => dispo.evaluate(() => [...document.querySelectorAll('#app > .msg')].map(n => n.textContent.trim()).filter(t => /^Nachricht gesendet/.test(t)).join(' | '));
+    const fb = await feedback();
+    report(/^Nachricht gesendet – per Push angenommen bei 1 von 1 Gerät/.test(fb), 'Nachricht: nach dem Senden meldet der Disponent „per Push angenommen bei 1 von 1 Gerät“', fb);
+    await apiJson(base, 'POST', '/api/msg/close', { id: (await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H)).msgs.find(m => !m.closed).id }, H);
+    // Hinweis verschwindet nach ein paar Sekunden von selbst
+    report(await waitFor(async () => !(await feedback()), 11000), 'Nachricht: der Hinweis nach dem Senden verschwindet von selbst (blockiert nichts)', await feedback());
+
+    // Verliert der Server das Abo erneut, wartet die Seite mit dem nächsten Versuch (höchstens alle 2 Minuten) – und zeigt bis dahin den
+    // Ersatz-Hinweis, denn „erlaubt“ allein heißt nicht „erreichbar“ (früher kam dann weder Push noch Hinweis: es sah aus, als ginge nichts)
+    await register(did2, { sub: null });
+    const before3 = posts.length;
+    pushes.length = 0;
+    await poll();
+    await sleep(1500);
+    report(posts.length === before3 && (await deviceOf(did2)).push === false, 'App: der nächste Versuch kommt frühestens nach 2 Minuten (kein Dauerfeuer bei dauerhaftem Fehler)', `${posts.length - before3} neue Meldungen`);
+    await dispatch(A, TEAM, slot(9, 90));
+    await waitFor(async () => !!(await banner()), 9000);
+    const hint = await banner();
+    report(/^🔔 Disponierter Auftrag geändert – 65900002/.test(hint), 'App: kennt der Server das Abo nicht, zeigt die Seite die Meldung „Auftrag disponiert“ als Hinweis oben (kein Schweigen)', hint);
+    report(!pushes.some(p => p.path === '/push/seite'), 'App: ohne Abo am Server geht kein Push an dieses Gerät', JSON.stringify(pushes.map(p => p.path)));
+
+    // ---- 4) Geräteübersicht: der Disponent sieht, WARUM ein Gerät keinen Push hat ----
+    const did3 = crypto.randomBytes(16).toString('hex');
+    await register(did3, { sub: null, pstat: 'denied' });
+    await register(did1, { sub: sub1, pstat: 'granted' }); // (hat nach dem 410 oben wieder ein Abo)
+    await dispo.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === 'Geräte').click());
+    await pause(dispo, 1500);
+    const line = await dispo.evaluate(did => {
+      const card = document.querySelector(`#app [data-k="d${did}"]`);
+      return card ? [...card.querySelectorAll('.mu')].map(n => n.textContent).find(t => /Benachrichtigungen/.test(t)) : null;
+    }, did3);
+    report(/^🔕 ohne Benachrichtigungen – im Browser blockiert/.test(line || ''), 'Geräte: ein Gerät ohne Push nennt den Grund (hier: im Browser blockiert)', String(line));
+    const line2 = await dispo.evaluate(did => {
+      const card = document.querySelector(`#app [data-k="d${did}"]`);
+      return card ? [...card.querySelectorAll('.mu')].map(n => n.textContent).find(t => /Benachrichtigungen/.test(t)) : null;
+    }, did1);
+    report(/^🔔 Benachrichtigungen an$/.test(line2 || ''), 'Geräte: ein Gerät mit Push zeigt nur „Benachrichtigungen an“ (ohne Grund)', String(line2));
+
+    // Aufräumen
+    await undispatchAll(base);
+    await sleep(4500);
+    report(errors.length === 0, 'Push-Anmeldung: keine JavaScript-Fehler', errors.slice(0, 2).join(' / '));
+  } catch (e) {
+    report(false, 'Push-Anmeldung: Test-Fehler', e.stack.split('\n').slice(0, 3).join(' | '));
+  } finally {
+    if (phone) await phone.context().close();
+    if (dispo) await dispo.context().close();
     server.stop();
     pushService.close();
   }
@@ -3571,6 +3860,7 @@ function summary(t0) {
       await dispositionNarrowChecks(browser, base, errors);
       await workStateChecks(browser, base, errors);
       await dispoNoteChecks(browser, server, geocoder, errors);
+      await pushChecks(browser, server, geocoder, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
@@ -3578,6 +3868,13 @@ function summary(t0) {
       // schnell: Upload, dann nur die Meldung „Auftrag disponiert“ an die Monteure
       await kindUploadChecks(browser, base, errors);
       await dispoNoteChecks(browser, server, geocoder, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
+    if (process.env.TEST_ONLY === 'push') {
+      // schnell: Upload, dann nur die Push-Anmeldung der Geräte (Server kennt das Gerät, Selbstreparatur, Rückmeldung beim Senden)
+      await kindUploadChecks(browser, base, errors);
+      await pushChecks(browser, server, geocoder, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
@@ -3620,6 +3917,7 @@ function summary(t0) {
       await dispositionNarrowChecks(browser, base, errors);
       await workStateChecks(browser, base, errors);
       await dispoNoteChecks(browser, server, geocoder, errors);
+      await pushChecks(browser, server, geocoder, errors);
       await kindChecks(browser, base, { width: 390, height: 844 }, errors);
       await kindChecksWide(browser, base, { width: 1280, height: 800 }, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
@@ -3637,6 +3935,7 @@ function summary(t0) {
     await dispositionNarrowChecks(browser, base, errors);
     await workStateChecks(browser, base, errors);
     await dispoNoteChecks(browser, server, geocoder, errors);
+    await pushChecks(browser, server, geocoder, errors);
     await kindChecks(browser, base, { width: 390, height: 844 }, errors);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);

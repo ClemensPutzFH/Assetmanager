@@ -3522,6 +3522,15 @@
         // pushConfig: { nag, hours } vom Server (Erinnerungsabstand in Minuten, Gültigkeit in Stunden)
         pushConfig = { nag: 5, hours: 12 },
         pushError = '',
+        // Push-Anmeldung dieses Geräts (siehe pushSync): serverDevState = wie der Server das Gerät kennt (Antwort des Abgleichs, `dev`): 0 gar nicht bzw. mit
+        // anderem Team, 1 ohne Push-Abo, 2 mit Push-Abo, null = noch nicht bekannt · pushRunning / pushAgain = eine Anmeldung läuft (das erste Abonnieren
+        // dauert bis zu einer halben Minute), danach genau eine weitere · pushRepairAt = letzter Versuch, ein fehlendes Abo auf Wunsch des Servers nachzuholen
+        serverDevState = null,
+        pushRunning = false,
+        pushAgain = false,
+        pushRepairAt = 0,
+        // Zeitpunkt der letzten erfolgreichen Anmeldung beim Server: eine Abgleich-Antwort, die VOR ihr abgeschickt wurde, kennt das Gerät noch nicht und sagt nichts
+        pushRegAt = 0,
         // deviceId: zufällige Geräte-ID (im Gerät gespeichert; der Server kennt das Gerät darüber), ackQueue: noch nicht gemeldete Bestätigungen
         deviceId = '',
         ackQueue = [],
@@ -5636,6 +5645,11 @@
           );
           serverReachable = true;
           if (response.ver) checkAppVersion(response.ver);
+          // wie der Server dieses Gerät kennt (nur Monteur mit Team): fehlt das Gerät oder sein Push-Abo, meldet es sich neu an
+          // (eine Antwort auf einen Abgleich, der vor der letzten Anmeldung losging, zählt nicht: sie kennt das Gerät noch nicht)
+          if (response.dev !== undefined) {
+            if (sentAt >= pushRegAt) onDeviceState(response.dev);
+          } else if (session.role !== 'monteur') serverDevState = null;
           if (response.gday) gasDay = response.gday;
           // Disponent: SAP-User -> Name (kommt nur, wenn sich die Liste geändert hat)
           if (response.users) {
@@ -5882,7 +5896,10 @@
       // server.js): Geräte mit funktionierendem Push bekommen sie als Benachrichtigung (Service Worker, sw.js), alle anderen sehen sie kurz oben
       // als Hinweis (infoMsg, verschwindet nach INFO_MS von selbst). Nichts wird gesperrt. Das „…“ ersetzt: ein Hinweis mit „…“ gilt als
       // Fortschrittsmeldung und bliebe stehen.
-      const pushWorks = () => pushSupported() && Notification.permission === 'granted' && !pushError;
+      // Push zählt nur, wenn auch der Server das Gerät samt Abo kennt (serverDevState 2; null = noch unbekannt): erlaubte Benachrichtigungen allein
+      // helfen nicht, wenn das Abo dort fehlt (andere Datenbank, abgelaufen) – dann käme weder Push noch dieser Hinweis, und es sähe aus, als ginge es nicht.
+      const pushWorks = () =>
+        pushSupported() && Notification.permission === 'granted' && !pushError && (serverDevState === null || serverDevState === 2);
       function onDispoNote(n) {
         if (session.role !== 'monteur' || pushWorks()) return;
         infoMsg = ('🔔 ' + n.title + ' – ' + n.brief).replace(/…/g, '...');
@@ -7413,6 +7430,25 @@
           '📣'
         );
       };
+      /**
+       * Rückmeldung nach dem Senden (Antwort von POST /api/msg: pushed = Geräte, bei denen der Push-Dienst die Nachricht angenommen hat, of = Geräte des
+       * Teams mit Push-Abo, known = alle Geräte des Teams): der Disponent sieht sofort, ob und bei wie vielen Monteuren sie als Benachrichtigung ankommt.
+       * Ohne „…“: ein Hinweis mit „…“ gilt als Fortschrittsmeldung und bliebe stehen.
+       */
+      function messageFeedback(sent) {
+        if (!sent || typeof sent.pushed !== 'number') return '';
+        const devices = n => `${n} ${n === 1 ? 'Gerät' : 'Geräten'}`;
+        if (!sent.known) return 'Nachricht gesendet – im Team ist noch kein Gerät angemeldet.';
+        if (!sent.of)
+          return 'Nachricht gesendet – kein Gerät dieses Teams hat Benachrichtigungen aktiviert, sie erscheint erst beim Öffnen der App.';
+        const without = sent.known - sent.of;
+        return (
+          `Nachricht gesendet – per Push angenommen bei ${sent.pushed} von ${devices(sent.of)}` +
+          (sent.pushed < sent.of ? ' (der Grund steht im Protokoll des Servers)' : '') +
+          (without > 0 ? `; ${without === 1 ? '1 weiteres Gerät hat' : without + ' weitere Geräte haben'} keine Benachrichtigungen` : '') +
+          '.'
+        );
+      }
       // Dialog des Disponenten: Nachricht senden / Erinnerung beenden
       const sendDialog = el('dialog', { class: 'dlg' });
       document.body.append(sendDialog);
@@ -7435,9 +7471,10 @@
           sendButton.textContent = 'Sende …';
           errorLine.textContent = '';
           try {
-            await api('POST', '/api/msg', { team: stats.team, text }, 30000);
+            const sent = await api('POST', '/api/msg', { team: stats.team, text }, 30000);
             sendDialog.close();
             errorMsg = '';
+            infoMsg = messageFeedback(sent);
             poll();
             render();
           } catch (e) {
@@ -7853,12 +7890,43 @@
         s = s.replace(/-/g, '+').replace(/_/g, '/');
         return Uint8Array.from(atob(s + '='.repeat((4 - (s.length % 4)) % 4)), c => c.charCodeAt(0));
       };
+      // wartet höchstens ms auf ein Versprechen, danach Fehler mit dieser Meldung (das Versprechen läuft im Browser weiter)
+      const withTimeout = (promise, ms, message) =>
+        Promise.race([promise, new Promise((_, no) => setTimeout(() => no(new Error(message)), ms))]);
       /**
        * Meldet Gerät, Rolle (Monteur/Disponent/abgemeldet), Team und (wenn erlaubt) das Push-Abo beim Server
        * (POST /api/push/sub) – so merkt sich der Server, welches Gerät wo angemeldet ist (Geräteübersicht). Mit
        * ask = true wird die Berechtigung abgefragt. Gibt es neue Server-Schlüssel, wird neu abonniert. Fehler landen in pushError (Banner).
+       * Es läuft immer nur EINE Anmeldung zugleich (das erste Abonnieren dauert bis zu einer halben Minute; zwei gleichzeitige würden einander
+       * die Antwort „kein Abo“ unterschieben): kommt währenddessen ein weiterer Aufruf, wird danach genau eine weitere Runde nachgeholt.
+       * Außerdem ruft die App sie von selbst auf, wenn der Server das Gerät oder sein Abo nicht (mehr) kennt (onDeviceState).
        */
       async function pushSync(ask) {
+        // Die Berechtigung wird als Allererstes abgefragt, solange der Tipp noch gilt (der Browser verlangt das) – und vor der Sperre unten,
+        // denn die Antwort des Nutzers kann dauern und soll die übrigen Anmeldungen nicht aufhalten
+        if (ask && pushSupported()) {
+          pushError = '';
+          try {
+            if (Notification.permission === 'default') await Notification.requestPermission();
+          } catch (e) {
+            pushError = errorMessageOf(e) || 'unbekannter Fehler';
+          }
+        }
+        if (pushRunning) {
+          pushAgain = true;
+          return;
+        }
+        pushRunning = true;
+        try {
+          do {
+            pushAgain = false;
+            await pushSyncOnce();
+          } while (pushAgain);
+        } finally {
+          pushRunning = false;
+        }
+      }
+      async function pushSyncOnce() {
         const team = session.role === 'monteur' && session.team ? session.team : null,
           // Der Disponent zählt erst als angemeldet, wenn die PIN eingegeben wurde (nach dem Neuladen also wieder abgemeldet)
           role =
@@ -7868,16 +7936,18 @@
                 ? 'dispo'
                 : null;
         if (!team && !role && !registeredTeam && !registeredRole) return;
-        let sub = null;
-        pushError = '';
+        let sub = null,
+          // Das Abo ließ sich gerade nicht prüfen (Fehler, Netz weg, Server startet neu): dem Server NICHT „kein Abo“ melden – er würde ein
+          // funktionierendes Abo löschen, und das Gerät bekäme bis zum nächsten erfolgreichen Start keine Benachrichtigung mehr
+          keepSub = false,
+          // das alte Abo ist ungültig (neue Server-Schlüssel) und wurde bereits abgemeldet
+          oldDropped = false,
+          // Fehler dieser Runde; ersetzt erst am Ende pushError (ein Hinweis, der schon steht, verschwindet nicht für die Dauer des nächsten Versuchs)
+          error = '';
         if (team && pushSupported()) {
           try {
-            if (ask && Notification.permission === 'default') await Notification.requestPermission();
             if (Notification.permission === 'granted') {
-              const reg = await Promise.race([
-                navigator.serviceWorker.ready,
-                new Promise((_, no) => setTimeout(() => no(new Error('Service Worker nicht bereit')), 10000))
-              ]);
+              const reg = await withTimeout(navigator.serviceWorker.ready, 10000, 'Service Worker nicht bereit');
               const key = (await api('GET', '/api/push/key')).key;
               let pk = '';
               try {
@@ -7888,30 +7958,71 @@
               if (sub && pk !== key) {
                 await sub.unsubscribe();
                 sub = null;
+                oldDropped = true;
               }
               if (!sub)
-                sub = await reg.pushManager.subscribe({
-                  userVisibleOnly: true,
-                  applicationServerKey: base64UrlToBytes(key)
-                });
+                sub = await withTimeout(
+                  reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(key) }),
+                  60000,
+                  'Zeitüberschreitung: Der Push-Dienst des Browsers hat nicht geantwortet'
+                );
               try {
                 localStorage.setItem('pk', key);
               } catch (e) {}
             }
           } catch (e) {
-            if (!e.net) pushError = errorMessageOf(e) || 'unbekannter Fehler';
+            if (!e.net) error = errorMessageOf(e) || 'unbekannter Fehler';
+            keepSub = !oldDropped;
           }
         }
+        // Push-Status für den Disponenten (Geräteübersicht): „Berechtigung|Detail“ – Detail = Fehlertext bzw. warum der Browser keinen Push kann
+        const supported = pushSupported(),
+          detail = supported
+            ? error
+            : window.isSecureContext === false
+              ? 'insecure'
+              : /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone
+                ? 'ios-home'
+                : '';
         try {
-          await api('POST', '/api/push/sub', { did: deviceId, role, team, sub: sub ? sub.toJSON() : null });
+          await api('POST', '/api/push/sub', {
+            did: deviceId,
+            role,
+            team,
+            sub: sub ? sub.toJSON() : null,
+            keep: keepSub && !sub,
+            ...(team ? { pstat: (supported ? Notification.permission : 'unsupported') + (detail ? '|' + detail : '') } : {})
+          });
           registeredTeam = team;
           registeredRole = role;
+          // jetzt weiß das Gerät selbst, wie der Server es kennt (die nächste Abgleich-Antwort bestätigt es)
+          serverDevState = role === 'monteur' && team ? (sub ? 2 : 1) : null;
+          pushRegAt = Date.now();
           try {
             team ? localStorage.setItem('regteam', team) : localStorage.removeItem('regteam');
             role ? localStorage.setItem('regrole', role) : localStorage.removeItem('regrole');
           } catch (e) {}
-        } catch (e) {}
+        } catch (e) {
+          // das Abo selbst wurde abgelehnt (z. B. Push-Dienst nicht erlaubt): das gehört in den Hinweis, sonst bliebe es für immer unsichtbar
+          if (!e.net && sub && e.status !== 401) error = errorMessageOf(e) || 'unbekannter Fehler';
+        }
+        pushError = error;
         render();
+      }
+      /**
+       * Der Server sagt bei jedem Abgleich, wie er dieses Gerät kennt (Antwort `dev`, siehe deviceState in server.js): 0 gar nicht (oder mit anderem
+       * Team), 1 ohne Push-Abo, 2 mit Push-Abo. Fehlt ihm das Gerät – oder bei erlaubten Benachrichtigungen das Abo (andere Datenbank, Abo abgelaufen
+       * und gelöscht, zwischendurch abgemeldet) –, meldet sich das Gerät von selbst neu an: der erste Versuch gleich, weitere höchstens alle 2 Minuten.
+       * Ohne das bliebe ein solches Gerät bis zum nächsten App-Start stumm, und die App hielte sich dabei auch noch für „erreichbar“ (pushWorks).
+       */
+      function onDeviceState(state) {
+        serverDevState = state;
+        if (state === 2 || session.role !== 'monteur' || !session.team || pushRunning) return;
+        const canSubscribe = pushSupported() && Notification.permission === 'granted';
+        if ((state === 0 || canSubscribe) && Date.now() - pushRepairAt > 120000) {
+          pushRepairAt = Date.now();
+          pushSync(false);
+        }
       }
       // Hinweise zu Benachrichtigungen lassen sich wegklicken; sie kommen erst mit der nächsten neuen Nachricht vom
       // Disponenten wieder (bannerHiddenUpTo = höchste Nachrichten-ID, bei der ausgeblendet wurde)
@@ -7996,7 +8107,7 @@
             hints.push(
               'Brave: Einstellungen → Datenschutz und Sicherheit → „Google-Dienste für Push-Messaging verwenden“ einschalten und Brave neu starten.'
             );
-          else if (/push service|AbortError|network/i.test(pushError)) {
+          else if (/push service|AbortError|network|Zeitüberschreitung/i.test(pushError)) {
             hints.push(
               'Der Push-Dienst des Browsers (bei Chrome/Android: Google) ist nicht erreichbar. Häufig sperrt ein Firmen-WLAN oder Proxy ihn – mit mobilen Daten erneut versuchen.'
             );
@@ -12271,6 +12382,23 @@
       }
 
       // ---- Geräteübersicht (Disponent) ----
+      // Warum ein Gerät keine Benachrichtigungen bekommt, aus seinem Push-Status („Berechtigung|Detail“, siehe pushSyncOnce); leer, wenn unbekannt
+      function pushReason(pstat) {
+        const text = String(pstat || ''),
+          cut = text.indexOf('|'),
+          permission = cut < 0 ? text : text.slice(0, cut),
+          detail = cut < 0 ? '' : text.slice(cut + 1);
+        if (permission === 'default') return 'noch nicht aktiviert – der Monteur muss „Aktivieren“ tippen';
+        if (permission === 'denied') return 'im Browser blockiert (Freigabe in den Einstellungen von Browser bzw. Handy)';
+        if (permission === 'granted') return detail ? 'Einrichtung fehlgeschlagen: ' + detail : 'erlaubt, das Abo kommt gleich';
+        if (permission === 'unsupported')
+          return detail === 'insecure'
+            ? 'der Browser verlangt eine sichere Verbindung (HTTPS)'
+            : detail === 'ios-home'
+              ? 'iPhone/iPad: die App muss erst zum Home-Bildschirm hinzugefügt werden'
+              : 'der Browser kann keine Benachrichtigungen';
+        return '';
+      }
       // Kurzbeschreibung des Geräts aus dem User-Agent des Browsers: „Android · Chrome“
       function deviceKind(ua) {
         const text = String(ua || ''),
@@ -12554,7 +12682,9 @@
                   el(
                     'div',
                     { class: 'mu' },
-                    device.push ? '🔔 Benachrichtigungen an' : '🔕 ohne Benachrichtigungen'
+                    device.push
+                      ? '🔔 Benachrichtigungen an'
+                      : '🔕 ohne Benachrichtigungen' + (pushReason(device.pstat) ? ' – ' + pushReason(device.pstat) : '')
                   ),
                 device.role === 'monteur' && locationLine(device, now),
                 device.first &&
