@@ -18,7 +18,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -344,6 +344,8 @@ const btn = (re, scope = '#app') =>
   `() => { const b = [...document.querySelectorAll('${scope} button')].find(b => ${re}.test(b.textContent.trim())); if (!b) throw new Error('Knopf fehlt: ${re.replace(/'/g, '')}'); return b; }`;
 const nthBtn = (re, n) => `() => { const b = [...document.querySelectorAll('#app button')].filter(b => ${re}.test(b.textContent.trim()))[${n}]; if (!b) throw new Error('Knopf fehlt: ${re}'); return b; }`;
 const pause = (page, ms = 500) => page.waitForTimeout(ms);
+// TEST_SHOTS=<Ordner>: ausgewählte Prüfungen speichern Bildschirmfotos dorthin (zum Ansehen, kein Teil der Prüfung)
+const shot = (page, name) => (process.env.TEST_SHOTS ? page.screenshot({ path: path.join(process.env.TEST_SHOTS, name + '.png') }) : null);
 
 // ---------- Anmeldung ----------
 async function newPage(browser, base, viewport, errorsOut, { geolocation = true, denyLocation = false, accuracy = TEST_POS.accuracy } = {}) {
@@ -2365,6 +2367,370 @@ async function poolListChecks(browser, base, errors) {
 
 // Disposition auf dem schmalsten Handy (320 px): nichts ragt über den Rand, das Bearbeiten-Fenster liegt im Bild, Dunkelmodus lesbar.
 // Endet wie dispositionChecks mit „Alle Vorschläge übernehmen“ (die Monteur-Prüfungen danach rechnen mit diesen Zeiten).
+// ---------- Disposition: Zoom-Balken und Vollbild des Gantt-Diagramms ----------
+// Zoom-Balken über dem Diagramm (stufenlos von „Monat“ bis zu den Viertelstunden, − / + / Strg + Mausrad / Pfeiltasten / „Anpassen“): die Stelle in
+// der Mitte (bzw. unter dem Zeiger) bleibt stehen, nichts ragt über den Rand. Vollbild („⤢“): das Diagramm liegt fest über der Seite, die Seite
+// dahinter behält Höhe und Scroll-Stelle, Teamzeilen rollen darin, Bearbeiten-Fenster und Ziehen funktionieren weiter.
+async function ganttZoomChecks(browser, base, errors) {
+  const viewport = { width: 1800, height: 900 },
+    label = '1800px Zoom/Vollbild:',
+    dayIso = n => new Date(Date.now() + n * 864e5).toLocaleDateString('sv-SE');
+  console.log('\n=== Disposition: Zoom-Balken und Vollbild (1800px, 320px) ===');
+  await undispatchAll(base);
+  const H = await dispoHeaders(base);
+  await apiJson(base, 'POST', '/api/dispo', {
+    items: [
+      { a: '65900003', team: 'FW-IH01', von: dayIso(0) + 'T08:30', bis: dayIso(0) + 'T10:15' },
+      { a: '65900001-0010', team: 'FW-IH01', von: dayIso(0) + 'T09:00', bis: dayIso(0) + 'T11:00' },
+      { a: '65900004', team: 'FW-IH02', von: dayIso(0) + 'T09:00', bis: dayIso(0) + 'T11:00' },
+      { a: '65900002-0010', team: 'FW-IH02', von: dayIso(1) + 'T13:30', bis: dayIso(1) + 'T17:30' }
+    ]
+  }, H);
+  const page = await newPage(browser, base, viewport, errors);
+  await loginDispo(page);
+  const settle = ms => pause(page, ms);
+  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => /^Disposition/.test(b.textContent.trim())).click());
+  await page.waitForFunction(() => document.querySelectorAll('#app .gt-bar').length >= 4, null, { timeout: 15000 });
+  await page.waitForFunction(() => !document.querySelector('#app .msg'), null, { timeout: 20000 }).catch(() => {});
+  await settle(900);
+  // Zustand des Diagramms · Zeit (ms, Ortszeit als UTC) in der Mitte der Zeitachse bzw. unter der Stelle x
+  const st = () =>
+    page.evaluate(() => {
+      const sc = document.querySelector('#app .gt-scroll'),
+        r = sc.getBoundingClientRect(),
+        zt = document.querySelector('#app .gt-zt');
+      return {
+        pxh: gPxh,
+        mode: gZoom,
+        full: gFull,
+        w: parseFloat(getComputedStyle(document.querySelector('#app .gt-in')).width),
+        days: document.querySelectorAll('#app .gt-day').length,
+        hours: document.querySelectorAll('#app .gt-hr').length,
+        sl: sc.scrollLeft,
+        max: sc.scrollWidth - sc.clientWidth,
+        vis: sc.clientWidth,
+        center: gGeo.axisMs + ((sc.scrollLeft + sc.clientWidth / 2) / gGeo.pxh) * 36e5,
+        now: zt && +zt.getAttribute('aria-valuenow'),
+        txt: (document.querySelector('#app .gt-zl') || {}).textContent,
+        on: [...document.querySelectorAll('#app .gt-seg button.on')].map(b => b.textContent).join(),
+        left: r.left
+      };
+    });
+  const edge = x => x.sl <= 1 || x.sl >= x.max - 1; // (am Rand der Zeitachse kann die Mitte nicht stehen bleiben)
+  const hoursApart = (a, b) => Math.abs(a - b) / 36e5;
+
+  // ---- Aufbau: Balken über dem Diagramm ----
+  const bar0 = await page.evaluate(() => {
+    const zb = document.querySelector('#app .gt-zb'),
+      card = document.querySelector('#app .gt').getBoundingClientRect(),
+      r = zb.getBoundingClientRect(),
+      wrap = document.querySelector('#app .gt-wrap').getBoundingClientRect(),
+      btns = [...zb.querySelectorAll('button')].map(b => b.textContent.trim()),
+      sl = zb.querySelector('[role="slider"]');
+    return {
+      above: r.bottom <= wrap.top + 1 && r.top >= document.querySelector('#app .gt-top').getBoundingClientRect().bottom - 1,
+      btns,
+      role: sl && sl.getAttribute('aria-label'),
+      inside: [...zb.querySelectorAll('button, [role="slider"]')].every(n => { const b = n.getBoundingClientRect(); return b.left >= card.left - 0.5 && b.right <= card.right + 0.5; }),
+      h: Math.round(r.height),
+      marks: zb.querySelectorAll('.gt-zk').length
+    };
+  });
+  report(bar0.above && bar0.btns.join() === '−,+,↔ Anpassen,⤢ Vollbild' && /Zoom/.test(bar0.role) && bar0.inside && bar0.marks === 3, `${label} Zoom-Balken sitzt über dem Diagramm (−, Regler mit Marken für Monat/Woche/Tag, +, ↔ Anpassen, ⤢ Vollbild), nichts ragt über den Rand`, JSON.stringify(bar0));
+  await shot(page, 'zoom-1-start');
+  let s0 = await st();
+  report(s0.mode === 'tag' && s0.pxh === 48 && s0.now === Math.round((Math.log(48) / Math.log(150)) * 100) && /^Sichtbar: \d+ Std$/.test(s0.txt) && s0.on === 'Tag', `${label} Start: Ansicht „Tag“ (48 px je Stunde), Regler an der passenden Stelle, Beschriftung nennt den sichtbaren Ausschnitt`, JSON.stringify({ pxh: s0.pxh, now: s0.now, txt: s0.txt }));
+
+  // ---- − / + : die Mitte bleibt stehen ----
+  await probe(page, `${label} „+“ (hineinzoomen: Balken werden breiter, Leiste bleibt stehen)`, btn('/^\\+$/', '#app .gt-zb'), { at: 300, ms: 700 });
+  let s1 = await st();
+  report(Math.abs(s1.pxh - 48 * 1.3) < 0.01 && s1.w > s0.w * 1.29 && (edge(s1) || hoursApart(s0.center, s1.center) < 0.3), `${label} „+“: 48 → ${s1.pxh.toFixed(1)} px je Stunde, Zeitachse ${s0.w} → ${s1.w} px, die Mitte bleibt auf derselben Uhrzeit`, `Mitte ${hoursApart(s0.center, s1.center).toFixed(2)} Std verschoben`);
+  report(s1.now > s0.now && /^Sichtbar: \d+ Std$/.test(s1.txt) && +/\d+/.exec(s1.txt)[0] < +/\d+/.exec(s0.txt)[0], `${label} „+“: Regler rückt nach rechts, die Beschriftung zeigt weniger Stunden`, `${s0.now}% ${s0.txt} → ${s1.now}% ${s1.txt}`);
+  const geo1 = await page.evaluate(() => { const b = document.querySelector('#app .gt-bar[data-k="gb-65900003"]'); return b && { left: parseFloat(b.style.left), width: parseFloat(b.style.width) }; });
+  report(geo1 && Math.abs(geo1.left - 8.5 * 48 * 1.3) < 1 && Math.abs(geo1.width - 1.75 * 48 * 1.3) < 1, `${label} „+“: der Balken 08:30–10:15 sitzt auf dem neuen Maßstab`, JSON.stringify(geo1));
+  await probe(page, `${label} „−“ (herauszoomen)`, btn('/^−$/', '#app .gt-zb'), { at: 300, ms: 700 });
+  await probe(page, `${label} „−“ nochmal`, btn('/^−$/', '#app .gt-zb'), { at: 300, ms: 700 });
+  const s2 = await st();
+  report(Math.abs(s2.pxh - 48 / 1.3) < 0.05 && s2.mode === 'tag', `${label} „−“ zweimal: ${s2.pxh.toFixed(1)} px je Stunde, noch Ansicht „Tag“`);
+
+  // ---- Wechsel der Ansicht beim Herauszoomen: Tag → Woche → Monat, Mitte bleibt ----
+  let prev = s2;
+  const modes = [];
+  for (let i = 0; i < 12 && prev.mode !== 'monat'; i++) {
+    await page.evaluate(() => [...document.querySelectorAll('#app .gt-zb button')].find(b => b.textContent.trim() === '−').click());
+    await settle(180);
+    const cur = await st();
+    modes.push(cur.mode);
+    if (!edge(prev) && !edge(cur)) {
+      if (hoursApart(prev.center, cur.center) > 0.5) report(false, `${label} Herauszoomen: Mitte springt (${prev.mode} ${prev.pxh.toFixed(1)} → ${cur.mode} ${cur.pxh.toFixed(1)})`, `${hoursApart(prev.center, cur.center).toFixed(2)} Std`);
+    }
+    prev = cur;
+  }
+  await shot(page, 'zoom-2-monat');
+  const sMo = await st();
+  report(modes.includes('woche') && sMo.mode === 'monat' && sMo.pxh >= 1 && sMo.pxh < 6 && sMo.hours === 0 && sMo.days >= 28 && sMo.on === 'Monat', `${label} Herauszoomen: Tag → Woche → Monat (Kopf wechselt auf Wochentage/Tage, Knopf „Monat“ leuchtet)`, `${modes.join('>')} · ${sMo.pxh.toFixed(2)} px · ${sMo.days} Tage`);
+  const noOverflow = () => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+  report(await noOverflow(), `${label} Monat herausgezoomt: Seite nicht breiter als der Bildschirm`);
+  // Grenzen: ganz links 1 px je Stunde, ganz rechts 150; „−“ am Anschlag tut nichts
+  await page.focus('#app .gt-zt');
+  await page.keyboard.press('Home');
+  await settle(250);
+  const sMin = await st();
+  report(sMin.pxh === 1 && sMin.now === 0 && sMin.mode === 'monat' && (await noOverflow()), `${label} Taste „Pos1“: kleinster Maßstab (1 px je Stunde), Regler ganz links`, JSON.stringify({ pxh: sMin.pxh, now: sMin.now }));
+  await page.keyboard.press('End');
+  await settle(250);
+  const sMax = await st();
+  report(sMax.pxh === 150 && sMax.now === 100 && sMax.mode === 'tag' && (await noOverflow()), `${label} Taste „Ende“: größter Maßstab (150 px je Stunde), Regler ganz rechts`, JSON.stringify({ pxh: sMax.pxh, now: sMax.now }));
+  report(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute('role') === 'slider'), `${label} Tastatur: der Regler behält den Fokus, obwohl die Seite neu gezeichnet wird`);
+  await page.keyboard.press('ArrowLeft');
+  await settle(250);
+  const sKey = await st();
+  report(sKey.pxh < 150 && sKey.pxh > 120, `${label} Pfeiltaste ←: ein kleiner Schritt zurück (${sKey.pxh.toFixed(1)} px je Stunde)`);
+
+  // ---- Regler mit der Maus ziehen: bleibt beim Neuzeichnen im Griff ----
+  await page.click('#app .gt-seg button:has-text("Tag")');
+  await settle(500);
+  const track = await page.evaluate(() => { const r = document.querySelector('#app .gt-zt').getBoundingClientRect(); return { l: r.left, w: r.width, y: r.top + r.height / 2 }; });
+  const thumbX = p => track.l + 9 + (track.w - 18) * p;
+  const p0 = Math.log(48) / Math.log(150);
+  await page.mouse.move(thumbX(p0), track.y);
+  await page.mouse.down();
+  const seen = [];
+  for (const p of [0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.02]) {
+    await page.mouse.move(thumbX(p), track.y, { steps: 3 });
+    await settle(90);
+    seen.push((await st()).pxh);
+  }
+  await page.mouse.up();
+  await shot(page, 'zoom-3-regler');
+  const sDrag = await st();
+  const dec = seen.every((v, i) => i === 0 || v < seen[i - 1]);
+  report(dec && sDrag.mode === 'monat' && sDrag.pxh < 2, `${label} Regler ziehen: der Maßstab folgt der Maus Schritt für Schritt (auch wenn der Regler dabei neu gezeichnet wird)`, seen.map(v => v.toFixed(1)).join(' → '));
+  await page.mouse.move(thumbX(0.9), track.y);
+  await settle(200);
+  report((await st()).pxh === sDrag.pxh, `${label} Regler loslassen: danach folgt nichts mehr der Maus`);
+  // Klick auf die Spur springt dorthin
+  await page.mouse.click(thumbX(0.8), track.y);
+  await settle(300);
+  const sClick = await st();
+  report(Math.abs(Math.log(sClick.pxh) / Math.log(150) - 0.8) < 0.02 && sClick.mode === 'tag', `${label} Klick auf die Spur: springt an die Stelle (${sClick.pxh.toFixed(1)} px je Stunde)`);
+
+  // ---- Strg + Mausrad: die Stelle unter dem Zeiger bleibt ----
+  await page.click('#app .gt-seg button:has-text("Woche")');
+  await settle(500);
+  const rowPt = await page.evaluate(() => { const r = document.querySelector('#app .gt-row[data-team="FW-IH02"]').getBoundingClientRect(), sc = document.querySelector('#app .gt-scroll').getBoundingClientRect(); return { x: sc.left + sc.width * 0.7, y: r.top + r.height - 3 }; });
+  const timeAt = x => page.evaluate(x => { const sc = document.querySelector('#app .gt-scroll'); return gGeo.axisMs + ((sc.scrollLeft + x - sc.getBoundingClientRect().left) / gGeo.pxh) * 36e5; }, x);
+  await page.mouse.move(rowPt.x, rowPt.y);
+  const tUnder0 = await timeAt(rowPt.x),
+    w0 = await st();
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -300);
+  await page.keyboard.up('Control');
+  await settle(350);
+  const w1 = await st(),
+    tUnder1 = await timeAt(rowPt.x);
+  report(w1.pxh > w0.pxh * 1.2 && (edge(w1) || hoursApart(tUnder0, tUnder1) < 0.5), `${label} Strg + Mausrad nach oben zoomt hinein (${w0.pxh.toFixed(1)} → ${w1.pxh.toFixed(1)}), die Uhrzeit unter dem Zeiger bleibt`, `${hoursApart(tUnder0, tUnder1).toFixed(2)} Std verschoben`);
+  const wheelNoCtrl = await page.evaluate(() => gPxh);
+  await page.mouse.wheel(0, 120);
+  await settle(250);
+  report((await st()).pxh === wheelNoCtrl, `${label} Mausrad ohne Strg zoomt nicht (Seite rollt wie gewohnt)`);
+
+  // ---- Knöpfe Tag/Woche/Monat setzen den Zoom zurück, der Regler folgt ----
+  await probe(page, `${label} Knopf „Monat“ (Regler springt zur Marke)`, btn('/^Monat$/', '#app .gt-seg'), { at: 300, ms: 800 });
+  const sPre = await st();
+  report(sPre.pxh === 1.5 && sPre.now === Math.round((Math.log(1.5) / Math.log(150)) * 100) && sPre.w === sPre.days * 36 && sPre.mode === 'monat', `${label} Knopf „Monat“: 1,5 px je Stunde (36 px je Tag), Regler an der Marke`, JSON.stringify({ pxh: sPre.pxh, now: sPre.now, w: sPre.w }));
+  await probe(page, `${label} Knopf „Woche“ nach dem Zoomen`, btn('/^Woche$/', '#app .gt-seg'), { at: 300, ms: 800 });
+  report((await st()).pxh === 14, `${label} Knopf „Woche“: wieder 14 px je Stunde`);
+
+  // ---- Anpassen: der Zeitraum füllt genau die Breite ----
+  for (const z of ['Woche', 'Monat', 'Tag']) {
+    await page.click(`#app .gt-seg button:has-text("${z}")`);
+    await settle(400);
+    await probe(page, `${label} „↔ Anpassen“ in der Ansicht ${z}`, btn('/Anpassen/', '#app .gt-zb'), { at: 300, ms: 700 });
+    const f = await st();
+    // (die Ansicht „Tag“ geht nicht unter 16 px je Stunde: in der schmalen Seite neben der Offen-Liste bleibt sie dann etwas breiter als der Platz)
+    const lo = { Tag: 16, Woche: 4, Monat: 1 }[z],
+      limited = f.pxh <= lo;
+    report((limited ? f.w >= f.vis : f.w >= f.vis && f.w <= f.vis + f.days * 24 * 0.01 + 1) && f.mode === z.toLowerCase() && f.sl === 0, `${label} Anpassen (${z}): Zeitachse ${f.w} px bei ${f.vis} px sichtbar (${f.pxh.toFixed(2)} px je Stunde), Ansicht bleibt`, JSON.stringify({ w: f.w, vis: f.vis, pxh: f.pxh }));
+  }
+
+  // ---- Zoom bleibt im Gerät erhalten ----
+  await page.click('#app .gt-seg button:has-text("Woche")');
+  await settle(300);
+  await page.focus('#app .gt-zt');
+  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
+  await settle(300);
+  const keep = await st();
+  const saved = await page.evaluate(() => [localStorage.getItem('gz'), localStorage.getItem('gzp')]);
+  report(saved[0] === keep.mode && Math.abs(+saved[1] - keep.pxh) < 0.01, `${label} Zoom wird im Gerät gemerkt (${saved.join(' / ')})`);
+
+  // ---- Vollbild ----
+  await page.click('#app .gt-top button:has-text("Heute")');
+  await settle(300);
+  await page.click('#app .gt-seg button:has-text("Tag")');
+  await settle(500);
+  await page.evaluate(() => scrollTo(0, 140));
+  await settle(300);
+  const before = await page.evaluate(() => ({ y: scrollY, h: document.documentElement.scrollHeight, top: document.querySelector('#app .gt').getBoundingClientRect().top, w: document.querySelector('#app .gt').getBoundingClientRect().width, scx: document.querySelector('#app .gt-scroll').scrollLeft }));
+  report(before.y > 100 && before.w < 1800 - 300, `${label} Vorher: die Seite ist gerollt (${before.y} px) und das Diagramm hat nicht die ganze Breite (${Math.round(before.w)} px von 1800 – Seite und Offen-Liste engen es ein)`);
+  const fullTrace = await page.evaluate(
+    () =>
+      new Promise(resolve => {
+        const btn = [...document.querySelectorAll('#app .gt-zb button')].find(b => /Vollbild/.test(b.textContent));
+        btn.click();
+        const frames = [],
+          t0 = performance.now(),
+          loop = () => {
+            const c = document.querySelector('#app .gt'),
+              r = c.getBoundingClientRect();
+            frames.push({ o: +getComputedStyle(c).opacity, c: Math.min(...[...c.children].map(n => +getComputedStyle(n).opacity)), top: Math.round(r.top), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height), y: scrollY, anim: document.getAnimations().filter(a => a.effect && a.effect.target && a.effect.target.closest && a.effect.target.closest('#app') && !a.transitionProperty).length });
+            if (performance.now() - t0 < 700) requestAnimationFrame(loop);
+            else resolve(frames);
+          };
+        requestAnimationFrame(loop);
+      })
+  );
+  const fin = fullTrace[fullTrace.length - 1];
+  const inner = await page.evaluate(() => ({ iw: innerWidth, ih: innerHeight, cw: document.documentElement.clientWidth, y: scrollY, h: document.documentElement.scrollHeight, cls: document.documentElement.classList.contains('gt-full'), card: document.querySelector('#app .gt').classList.contains('full'), parent: document.querySelector('#app .gt').parentElement.id, btn: [...document.querySelectorAll('#app .gt-zb button')].map(b => b.textContent.trim()).pop() }));
+  report(fin.top === 0 && fin.left === 0 && fin.w === inner.cw && fin.h === inner.ih && inner.cls && inner.card && inner.parent === 'app', `${label} Vollbild: das Diagramm liegt fest über der ganzen Seite (${fin.w}×${fin.h} px, Fenster ${inner.cw}×${inner.ih}), Seite gesperrt`, JSON.stringify(inner));
+  report(fullTrace.some(f => f.c < 0.98) && fin.c === 1 && fullTrace.every(f => f.top === 0 && f.left === 0 && f.w === fin.w && f.o === 1) && fullTrace.every(f => f.y === before.y), `${label} Vollbild: deckt die Seite sofort ab (von Anfang an am Rand, nicht durchsichtig), der Inhalt blendet weich ein (Deckkraft ${fullTrace.map(f => f.c.toFixed(2)).filter((v, i) => i < 8).join(' ')} …), die Seite dahinter rollt nicht`);
+  report(inner.y === before.y && Math.abs(inner.h - before.h) <= 1, `${label} Vollbild: die Seite dahinter behält Scroll-Stelle (${before.y} → ${inner.y}) und Höhe (${before.h} → ${inner.h})`);
+  const fullInfo = await page.evaluate(() => {
+    const sc = document.querySelector('#app .gt-scroll').getBoundingClientRect(),
+      zb = document.querySelector('#app .gt-zb').getBoundingClientRect(),
+      top = document.querySelector('#app .gt-top').getBoundingClientRect(),
+      leg = document.querySelector('#app .gt-leg').getBoundingClientRect();
+    return { scw: Math.round(sc.width), topTop: top.top, zbTop: Math.round(zb.top), legBottom: Math.round(leg.bottom), ih: innerHeight, txt: document.querySelector('#app .gt-zl').textContent };
+  });
+  report(fullInfo.scw > 1440 - 120 && fullInfo.topTop === 0 && fullInfo.legBottom === fullInfo.ih && /Sichtbar/.test(fullInfo.txt), `${label} Vollbild: die Zeitachse ist ${fullInfo.scw} px breit (Seite sonst höchstens 1440), Leiste ganz oben, Legende ganz unten`, JSON.stringify(fullInfo));
+  await page.mouse.move(900, 400);
+  await page.mouse.wheel(0, 300);
+  await page.keyboard.press('PageDown');
+  await settle(250);
+  report((await page.evaluate(() => scrollY)) === before.y, `${label} Vollbild: Mausrad und Bild-ab-Taste bewegen die Seite dahinter nicht`);
+  report(await noOverflow(), `${label} Vollbild: Seite nicht breiter als der Bildschirm`);
+  const ctl = await page.evaluate(() => [...document.querySelectorAll('#app .gt-top button, #app .gt-zb button')].map(b => b.textContent.trim()).join('|'));
+  report(/‹/.test(ctl) && /Heute/.test(ctl) && /Schließen/.test(ctl) && /Tag\|Woche\|Monat/.test(ctl), `${label} Vollbild: Navigation, Ansichten, Zoom und „✕ Schließen“ stehen im Vollbild`, ctl);
+  // Zoomen im Vollbild
+  await probe(page, `${label} Vollbild: „+“ (Leiste und Diagramm bleiben stehen)`, btn('/^\\+$/', '#app .gt-zb'), { ms: 600, tapTol: 1 });
+  await shot(page, 'zoom-4-vollbild');
+  // Bearbeiten-Fenster im Vollbild: liegt über dem Diagramm
+  await page.click('#app .gt-bar[data-k="gb-65900004"]');
+  await settle(700);
+  const sheetTop = await page.evaluate(() => {
+    const sh = document.querySelector('#app .gt-sheet');
+    if (!sh) return null;
+    const r = sh.getBoundingClientRect(),
+      hit = document.elementFromPoint(r.left + r.width / 2, r.top + 12);
+    return { on: !!hit && !!hit.closest('.gt-sheet'), full: gFull, gsel: document.querySelector('#app .gt').classList.contains('gsel') };
+  });
+  report(sheetTop && sheetTop.on && sheetTop.full && sheetTop.gsel, `${label} Vollbild: der Auftrag öffnet das Bearbeiten-Fenster, es liegt über dem Diagramm`, JSON.stringify(sheetTop));
+  await shot(page, 'zoom-5-vollbild-fenster');
+  // Esc: zuerst schließt das Fenster, dann das Vollbild
+  await page.keyboard.press('Escape');
+  await settle(500);
+  report((await page.evaluate(() => !document.querySelector('#app .gt-sheet') && gFull)) === true, `${label} Vollbild: erstes Esc schließt nur das Bearbeiten-Fenster`);
+  // Zoom im Vollbild bei kleiner Höhe: Teamzeilen rollen, der Stand bleibt
+  await page.setViewportSize({ width: 1800, height: 260 });
+  await settle(500);
+  const rollInfo = await page.evaluate(() => { const w = document.querySelector('#app .gt-wrap'); w.scrollTop = 40; return { can: w.scrollHeight > w.clientHeight, st: w.scrollTop }; });
+  await settle(200);
+  await page.evaluate(() => [...document.querySelectorAll('#app .gt-zb button')].find(b => b.textContent.trim() === '−').click());
+  await settle(500);
+  const rolled = await page.evaluate(() => document.querySelector('#app .gt-wrap').scrollTop);
+  report(rollInfo.can && rollInfo.st > 0 && Math.abs(rolled - rollInfo.st) <= 2, `${label} Vollbild (niedriges Fenster): die Teamzeilen rollen, der Stand bleibt beim Zoomen erhalten (${rollInfo.st} → ${rolled})`, JSON.stringify(rollInfo));
+  await page.setViewportSize(viewport);
+  await settle(400);
+  // Zurück: mit dem Knopf
+  const exitTrace = await page.evaluate(
+    () =>
+      new Promise(resolve => {
+        [...document.querySelectorAll('#app .gt-zb button')].find(b => /Schließen/.test(b.textContent)).click();
+        const frames = [],
+          t0 = performance.now(),
+          loop = () => {
+            frames.push({ y: scrollY, w: Math.round(document.querySelector('#app .gt').getBoundingClientRect().width), full: document.querySelector('#app .gt').classList.contains('full') });
+            if (performance.now() - t0 < 600) requestAnimationFrame(loop);
+            else resolve(frames);
+          };
+        requestAnimationFrame(loop);
+      })
+  );
+  const after = await page.evaluate(() => ({ y: scrollY, h: document.documentElement.scrollHeight, top: document.querySelector('#app .gt').getBoundingClientRect().top, w: document.querySelector('#app .gt').getBoundingClientRect().width, cls: document.documentElement.classList.contains('gt-full'), full: gFull, pool: !!document.querySelector('#app .gtp .gt-pps'), inGrid: !!document.querySelector('#app .gtp > .gt') }));
+  report(!after.full && !after.cls && after.inGrid && exitTrace.every(f => f.y === before.y) && after.y === before.y && Math.abs(after.h - before.h) <= 1 && Math.abs(after.top - before.top) <= 1.5 && Math.abs(after.w - before.w) <= 1, `${label} „✕ Schließen“: das Diagramm steht wieder an seiner Stelle in der Seite, Scroll-Stelle und Höhe wie vorher (${before.y}/${Math.round(before.top)} → ${after.y}/${Math.round(after.top)})`, JSON.stringify(after));
+  // Vollbild noch einmal: Balken ziehen, Hinweis, dann mit Esc beenden
+  await page.click('#app .gt-zb button:has-text("Vollbild")');
+  await settle(600);
+  // Balken im Vollbild verschieben (Ziehen)
+  const dragBar = await page.evaluate(() => {
+    const b = document.querySelector('#app .gt-bar[data-k="gb-65900004"]');
+    document.querySelector('#app .gt-scroll').scrollLeft = parseFloat(b.style.left) - 300; // (der Balken soll im Bild liegen, nicht unter der Teamspalte)
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, pxh: gGeo.pxh };
+  });
+  await page.mouse.move(dragBar.x, dragBar.y);
+  await page.mouse.down();
+  await page.mouse.move(dragBar.x + dragBar.pxh * 2, dragBar.y, { steps: 6 });
+  await page.mouse.up();
+  await settle(900);
+  const moved = (await dispatchOrders(base)).find(o => o.auftrag === '65900004');
+  report(moved && moved.uhr === '11:00' && moved.uhr2 === '13:00', `${label} Vollbild: Balken um 2 Stunden ziehen speichert 11:00–13:00 (war 09:00–11:00)`, JSON.stringify(moved && { uhr: moved.uhr, uhr2: moved.uhr2 }));
+  // Hinweis „Rückgängig“ liegt im Vollbild über dem Diagramm (nicht unter ihm in der Seite), der Knopf funktioniert
+  await shot(page, 'zoom-6-vollbild-hinweis');
+  const toast = await page.evaluate(() => {
+    const m = document.querySelector('#app .gt-toast .msg');
+    if (!m) return null;
+    const r = m.getBoundingClientRect(),
+      hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { txt: m.textContent.trim(), onTop: !!hit && !!hit.closest('.gt-toast'), inView: r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth, inFlow: document.querySelectorAll('#app > .msg').length };
+  });
+  report(toast && /65900004/.test(toast.txt) && /Rückgängig/.test(toast.txt) && toast.onTop && toast.inView && toast.inFlow === 0, `${label} Vollbild: der Hinweis „Rückgängig“ schwebt über dem Diagramm (nicht darunter in der Seite)`, JSON.stringify(toast));
+  await page.click('#app .gt-toast .msg button');
+  await settle(900);
+  const undone = (await dispatchOrders(base)).find(o => o.auftrag === '65900004');
+  report(undone && undone.uhr === '09:00' && undone.uhr2 === '11:00' && (await page.evaluate(() => !document.querySelector('#app .gt-toast') && gFull)), `${label} Vollbild: „Rückgängig“ stellt 09:00–11:00 wieder her, das Vollbild bleibt`, JSON.stringify(undone && { uhr: undone.uhr, uhr2: undone.uhr2 }));
+  await page.keyboard.press('Escape');
+  await settle(500);
+  report(await page.evaluate(() => !gFull && !document.documentElement.classList.contains('gt-full') && !document.querySelector('#app .gt.full')), `${label} Esc beendet das Vollbild`);
+  // Vollbild bleibt nicht hängen, wenn man den Tab wechselt
+  await page.click('#app .gt-zb button:has-text("Vollbild")');
+  await settle(400);
+  await page.evaluate(() => { dispoTab = 'ue'; render(); });
+  await settle(400);
+  report(await page.evaluate(() => !gFull && !document.documentElement.classList.contains('gt-full')), `${label} Anderer Tab: das Vollbild ist beendet, die Seite lässt sich wieder rollen`);
+  await page.evaluate(() => { dispoTab = 'di'; render(); });
+  await settle(400);
+
+  // ---- Handy (320 px): Balken und Vollbild ragen nicht über den Rand ----
+  await page.setViewportSize({ width: 320, height: 640 });
+  await settle(500);
+  const narrow = () =>
+    page.evaluate(() => {
+      const card = document.querySelector('#app .gt').getBoundingClientRect(),
+        bad = [...document.querySelectorAll('#app .gt-zb button, #app .gt-zb [role="slider"], #app .gt-top button, #app .gt-seg')].filter(n => { const b = n.getBoundingClientRect(); return b.left < card.left - 0.5 || b.right > card.right + 0.5; }).map(n => n.textContent.trim() || n.getAttribute('role')),
+        zt = document.querySelector('#app .gt-zt').getBoundingClientRect();
+      return { bad, wide: document.documentElement.scrollWidth > document.documentElement.clientWidth, zt: Math.round(zt.width), zh: Math.round(document.querySelector('#app .gt-zb').getBoundingClientRect().height) };
+    });
+  await shot(page, 'zoom-7-handy');
+  let nr = await narrow();
+  report(!nr.bad.length && !nr.wide && nr.zt >= 80, `${label} 320 px: Zoom-Balken ragen nicht über den Rand, der Regler ist ${nr.zt} px breit (Balken ${nr.zh} px hoch)`, JSON.stringify(nr));
+  await page.evaluate(() => { document.querySelector('#app .gt-zt').scrollIntoView({ block: 'center' }); });
+  for (const z of ['Monat', 'Tag']) {
+    await page.click(`#app .gt-seg button:has-text("${z}")`);
+    await settle(300);
+  }
+  await page.click('#app .gt-zb button:has-text("Vollbild")');
+  await settle(500);
+  nr = await narrow();
+  const fullN = await page.evaluate(() => { const r = document.querySelector('#app .gt').getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), iw: innerWidth, ih: innerHeight }; });
+  report(!nr.bad.length && !nr.wide && fullN.w === fullN.iw && fullN.h === fullN.ih, `${label} 320 px Vollbild: füllt das Fenster (${fullN.w}×${fullN.h}), nichts ragt über den Rand`, JSON.stringify({ ...nr, ...fullN }));
+  await page.keyboard.press('Escape');
+  await settle(400);
+  await page.setViewportSize(viewport);
+  // Aufräumen
+  await undispatchAll(base);
+  await page.close();
+}
 async function dispositionNarrowChecks(browser, base, errors) {
   console.log('\n=== Disposition: schmales Handy (320 px) und Dunkelmodus ===');
   await undispatchAll(base);
@@ -3001,9 +3367,17 @@ function summary(t0) {
       await poolWindowChecks(browser, base, errors);
       await infoWindowChecks(browser, base, errors);
       await poolListChecks(browser, base, errors);
+      await ganttZoomChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
       await workStateChecks(browser, base, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
+    if (process.env.TEST_ONLY === 'zoom') {
+      // schnell: Upload, dann nur Zoom-Balken und Vollbild des Gantt-Diagramms
+      await kindUploadChecks(browser, base, errors);
+      await ganttZoomChecks(browser, base, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
@@ -3034,6 +3408,7 @@ function summary(t0) {
       await poolWindowChecks(browser, base, errors);
       await infoWindowChecks(browser, base, errors);
       await poolListChecks(browser, base, errors);
+      await ganttZoomChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
       await workStateChecks(browser, base, errors);
@@ -3049,6 +3424,7 @@ function summary(t0) {
     await poolWindowChecks(browser, base, errors);
     await infoWindowChecks(browser, base, errors);
     await poolListChecks(browser, base, errors);
+    await ganttZoomChecks(browser, base, errors);
     await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
     await dispositionNarrowChecks(browser, base, errors);
     await workStateChecks(browser, base, errors);
