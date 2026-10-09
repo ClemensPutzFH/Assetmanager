@@ -960,7 +960,8 @@ async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESS
       );
     return response.ok;
   } catch (e) {
-    console.error('Push fehlgeschlagen:', e.message);
+    // „fetch failed“ allein sagt nichts: die Ursache (ENOTFOUND, ETIMEDOUT, Zertifikat …) steckt in `cause` (geoReason, weiter unten)
+    console.error(`Push an ${new URL(sub.endpoint).host} fehlgeschlagen: ${geoReason(e)}`);
     return false;
   }
 }
