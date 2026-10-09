@@ -2563,8 +2563,9 @@ async function kindChecks(browser, base, viewport, errors) {
   const late = await page.evaluate(() => ({ tag: (document.querySelector('#app [data-k="o65900008-0010"] .tag.st-nok') || {}).textContent, cls: document.querySelector('#app [data-k="o65900008-0010"]').className, others: ['o65900002-0010', 'o65900001-0010', 'o65900009'].filter(k => /Verzug/.test(document.querySelector(`#app [data-k="${k}"]`).textContent) || /\bdue\b/.test(document.querySelector(`#app [data-k="${k}"]`).className)) }));
   report(/im Verzug · 3 Tage/.test(late.tag || '') && /\bdue\b/.test(late.cls) && !late.others.length, `${label} Reparaturen: Termin in der Vergangenheit ist als „im Verzug“ hervorgehoben (Etikett mit Tagen, Kante), kommende nicht`, JSON.stringify(late));
   // Fortschritt, Status-Filter (Offen/Erledigt), Status-Etiketten und der Umschalter zwischen den Auftragsarten gibt es hier nicht
-  const noStatus = await page.evaluate(() => ({ prg: !!document.querySelector('#app .prg'), fc: !!document.querySelector('#app [data-k="fc"]'), ksw: !!document.querySelector('#app .ksw'), tags: [...document.querySelectorAll('#app [data-list] .tag')].map(t => t.textContent).filter(t => /Erledigt|offen|Nicht OK|geprüft/.test(t)) }));
-  report(!noStatus.prg && !noStatus.fc && !noStatus.ksw && !noStatus.tags.length, `${label} Reparaturen: kein Fortschritt, keine Status-Filter und -Etiketten, kein Umschalter`, JSON.stringify(noStatus));
+  const noStatus = await page.evaluate(() => ({ prg: !!document.querySelector('#app .prg'), fc: [...document.querySelectorAll('#app [data-k="fc"] button')].map(b => b.textContent.trim() + (b.classList.contains('on') ? '*' : '')).join(','), ksw: !!document.querySelector('#app .ksw'), tags: [...document.querySelectorAll('#app [data-list] .tag')].map(t => t.textContent).filter(t => /Erledigt|offen|Nicht OK|geprüft/.test(t)) }));
+  // Filter Alle / Offen / Erledigt (erledigt = endrückgemeldet), Standard „Offen“; kein „Nicht OK“, kein Fortschritt, keine Status-Etiketten, kein Umschalter
+  report(!noStatus.prg && noStatus.fc === 'Alle (4),Offen (4)*,Erledigt (0)' && !noStatus.ksw && !noStatus.tags.length, `${label} Reparaturen: Filter Alle/Offen/Erledigt mit „Offen“ vorgewählt; kein Fortschritt, kein „Nicht OK“, keine Status-Etiketten, kein Umschalter`, JSON.stringify(noStatus));
   const extTags = await page.evaluate(() => ({
     mixed: /Externe Firma/.test(document.querySelector('#app [data-k="o65900001-0010"]').textContent),
     only: /Externe Firma/.test(document.querySelector('#app [data-k="o65900009"]').textContent),
@@ -2595,13 +2596,34 @@ async function kindChecks(browser, base, viewport, errors) {
   // (die Wahl „Auftragsnummer“ in der Reparaturen-Liste wird nicht gemerkt, und die gemerkte „Entfernung“ der Wartungen wieder aufräumen)
   report(await page.evaluate(() => { try { return localStorage.getItem('lsort') === 'nah'; } catch (e) { return false; } }), `${label} Reparaturen: die gemerkte Sortierung der Wartungen („Entfernung“) bleibt unverändert, die Wahl hier wird nicht gespeichert`);
   await page.evaluate(() => { listSort = ''; try { localStorage.removeItem('lsort'); } catch (e) {} });
-  // ist für den Auftrag im Verzug eine Zeit zurückgemeldet, gilt er als bearbeitet: keine Hervorhebung mehr (die Zeit steht auf der Karte)
+  // Filter: Meldet ein anderes Gerät (hier per Server) die Endrückmeldung, ist der Auftrag erledigt und seine Karte verschwindet live aus „Offen“;
+  // ohne die Endrückmeldung ist er wieder offen
+  const chipsText = () => page.evaluate(() => [...document.querySelectorAll('#app [data-k="fc"] button')].map(b => b.textContent.trim() + (b.classList.contains('on') ? '*' : '')).join(','));
+  {
+    const user = await (await fetch(base + '/api/user/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: MONTEUR.user, password: MONTEUR.password }) })).json(),
+      putMain = async (a, doc) => (await fetch(`${base}/api/ergebnis/${a}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': user.token }, body: JSON.stringify({ a, team: 'FW-IH01', n: 0, s: '', nok: [], ...doc }) })).status;
+    const st0 = await putMain('65900002-0010', { min: 60, dat: new Date().toLocaleDateString('sv-SE'), von: '13:30' });
+    await pause(page, 1500);
+    const o4 = await order();
+    report(st0 === 200 && o4.join() === 'o65900008-0010,o65900001-0010,o65900009' && (await chipsText()) === 'Alle (4),Offen (3)*,Erledigt (1)', `${label} Reparaturen: ein endrückgemeldeter Auftrag verschwindet live aus „Offen“ (die Zahlen der Filter stimmen)`, `${o4.join()} · ${await chipsText()}`);
+    await probe(page, `${label} Reparaturen: Filter „Erledigt“`, btn('/^Erledigt \\(/', '#app [data-k="fc"]'), { at: 300, ms: 900, anim: true });
+    report((await order()).join() === 'o65900002-0010' && (await chipsText()) === 'Alle (4),Offen (3),Erledigt (1)*', `${label} Reparaturen: „Erledigt“ zeigt die endrückgemeldeten Aufträge`, `${(await order()).join()} · ${await chipsText()}`);
+    await putMain('65900002-0010', {}); // Zeit wieder weg: der Auftrag ist offen, „Erledigt“ ist leer
+    await pause(page, 1500);
+    report((await order()).length === 0 && (await chipsText()) === 'Alle (4),Offen (4),Erledigt (0)*', `${label} Reparaturen: ohne Endrückmeldung ist der Auftrag wieder offen (live)`, `${(await order()).join()} · ${await chipsText()}`);
+    await probe(page, `${label} Reparaturen: Filter „Alle“`, btn('/^Alle \\(/', '#app [data-k="fc"]'), { at: 300, ms: 900, anim: true });
+    report((await order()).join() === o1.join(), `${label} Reparaturen: „Alle“ zeigt alle Aufträge`, (await order()).join());
+  }
+  // ist für den Auftrag im Verzug eine Zeit zurückgemeldet (Endrückmeldung), gilt er als bearbeitet: keine Hervorhebung mehr (die Zeit steht auf der Karte)
   {
     const user = await (await fetch(base + '/api/user/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: MONTEUR.user, password: MONTEUR.password }) })).json();
     const st = (await fetch(base + '/api/ergebnis/65900008-0010', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': user.token }, body: JSON.stringify({ a: '65900008-0010', team: 'FW-IH01', n: 0, s: '', nok: [], min: 60, dat: new Date().toLocaleDateString('sv-SE'), von: '08:00' }) })).status;
     await pause(page, 1500);
     const done = await page.evaluate(() => { const c = document.querySelector('#app [data-k="o65900008-0010"]'); return { verzug: /Verzug/.test(c.textContent), due: /\bdue\b/.test(c.className), zeit: /⏱ 1 Std/.test(c.textContent), pos: [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join() }; });
     report(st === 200 && !done.verzug && !done.due && done.zeit && done.pos.startsWith('o65900008-0010'), `${label} Reparaturen: mit zurückgemeldeter Zeit ist der Verzug nicht mehr hervorgehoben (live)`, JSON.stringify(done));
+    // „Offen“ zeigt ihn nun nicht mehr, „Erledigt“ schon
+    await probe(page, `${label} Reparaturen: Filter „Offen“`, btn('/^Offen \\(/', '#app [data-k="fc"]'), { at: 300, ms: 900, anim: true });
+    report((await order()).join() === 'o65900002-0010,o65900001-0010,o65900009' && (await chipsText()) === 'Alle (4),Offen (3)*,Erledigt (1)', `${label} Reparaturen: „Offen“ ohne den endrückgemeldeten Auftrag`, `${(await order()).join()} · ${await chipsText()}`);
   }
   // zurück zur Startseite und die nächste Auftragsart öffnen (einen Umschalter in der Liste gibt es nicht)
   await probe(page, `${label} Reparaturen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
@@ -2634,7 +2656,13 @@ async function kindChecks(browser, base, viewport, errors) {
   report(!saved.status && saved.time, `${label} Entstörung: nach dem Speichern steht die Zeit auf der Karte, kein Status`, JSON.stringify(saved));
   await probe(page, `${label} Entstörung schließen (← Zurück)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
   const bothLeft = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
-  report(bothLeft === 'o65900004,o65900003', `${label} Entstörungen: alle bleiben in der Liste (kein Offen/Erledigt-Filter)`, bothLeft);
+  // Filter: die endrückgemeldete Entstörung (Haken „Endrückmeldung“ ist vorbelegt) ist erledigt und aus „Offen“ verschwunden; „Alle“ zeigt beide
+  report(bothLeft === 'o65900004' && (await chipsText()) === 'Alle (2),Offen (1)*,Erledigt (1)', `${label} Entstörungen: die endrückgemeldete Entstörung ist nicht mehr in „Offen“`, `${bothLeft} · ${await chipsText()}`);
+  await probe(page, `${label} Entstörungen: Filter „Alle“`, btn('/^Alle \\(/', '#app [data-k="fc"]'), { at: 300, ms: 900, anim: true });
+  report((await order()).join() === 'o65900004,o65900003', `${label} Entstörungen: „Alle“ zeigt beide`, (await order()).join());
+  await probe(page, `${label} Entstörungen: Filter „Erledigt“`, btn('/^Erledigt \\(/', '#app [data-k="fc"]'), { at: 300, ms: 900, anim: true });
+  report((await order()).join() === 'o65900003', `${label} Entstörungen: „Erledigt“ zeigt die endrückgemeldete`, (await order()).join());
+  await probe(page, `${label} Entstörungen: Filter „Offen“`, btn('/^Offen \\(/', '#app [data-k="fc"]'), { at: 300, ms: 900, anim: true });
   // ---- mehrere Zeiten: erst Teilrückmeldung, dann Endrückmeldung ----
   // Reparatur/Entstörung: Der Monteur kann mehrere Zeiten zurückmelden. „Endrückmeldung (Auftrag ist fertig)“ ist vorbelegt (ein Auftrag mit einer
   // Zeit war bisher fertig); nimmt er den Haken weg, ist es eine Teilrückmeldung: der Auftrag ist „in Arbeit“ (blau) und bleibt es, bis eine
@@ -2653,6 +2681,10 @@ async function kindChecks(browser, base, viewport, errors) {
   const part = await page.evaluate(() => { const o = document.querySelector('#app [data-k="oc"]'); return { cls: o.className, tags: [...o.querySelectorAll('.tag')].map(t => t.textContent), zc: document.querySelector('#app [data-k="zc"]').textContent.replace(/\s+/g, ' '), rows: document.querySelectorAll('#app .zrow').length, chip: document.querySelector('#app .frow .chip').getAttribute('aria-pressed') }; });
   report(/\brun\b/.test(part.cls) && !/\bfin\b/.test(part.cls) && part.tags.includes('◐ Teilrückmeldung') && part.tags.includes('⏱ 1 Std') && !part.tags.some(t => /Endrückmeldung|Erledigt/.test(t)), `${label} Teilrückmeldung: der Auftrag ist „in Arbeit“ (blau, ◐ Teilrückmeldung), nicht fertig`, JSON.stringify({ cls: part.cls, tags: part.tags }));
   report(/Gesamt 1 Std in 1 Eintrag · Teilrückmeldung/.test(part.zc) && part.rows === 1 && /◐ Teilrückmeldung/.test(part.zc) && part.chip === 'true', `${label} Teilrückmeldung: die Karte „Zeit“ zeigt den Eintrag; der Schalter steht für die nächste Zeit wieder auf „Endrückmeldung“`, part.zc.slice(0, 200));
+  // eine Teilrückmeldung ist noch offen: der Auftrag bleibt in der Liste „Offen“
+  await probe(page, `${label} Teilrückmeldung: ← Zurück (der Auftrag bleibt in „Offen“)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
+  report((await order()).join() === 'o65900004' && (await chipsText()) === 'Alle (2),Offen (1)*,Erledigt (1)', `${label} Teilrückmeldung: der Auftrag ist noch offen (bleibt in „Offen“, zählt nicht als erledigt)`, `${(await order()).join()} · ${await chipsText()}`);
+  await probe(page, `${label} Entstörung (Nachtschicht) erneut öffnen`, `() => document.querySelector('#app [data-k="o65900004"]')`, { reflow: true, ms: 900, anim: true });
   await probe(page, `${label} Endrückmeldung: weitere Zeit von Hand eintragen öffnen`, btn('/Weitere Zeit von Hand/'), { at: A, ms: 800 });
   await probe(page, `${label} Endrückmeldung: Beginn „Jetzt“`, btn('/^Jetzt$/'), { at: A });
   await probe(page, `${label} Endrückmeldung: Schnellwahl 30 Min`, btn('/^30 Min$/'), { at: A });
@@ -2678,6 +2710,9 @@ async function kindChecks(browser, base, viewport, errors) {
   await page.reload();
   await pause(page, 1500);
   await chooseKind(page, 'Entstörungen');
+  report((await order()).length === 0 && (await chipsText()) === 'Alle (2),Offen (0)*,Erledigt (2)', `${label} Endrückmeldung: nach dem Neuladen (Server-Stand) sind beide Entstörungen erledigt, „Offen“ ist leer`, `${(await order()).join()} · ${await chipsText()}`);
+  await page.evaluate(() => [...document.querySelectorAll('#app [data-k="fc"] button')].find(b => /^Alle \(/.test(b.textContent.trim())).click());
+  await pause(page, 700);
   await page.evaluate(() => document.querySelector('#app [data-k="o65900004"]').click());
   await pause(page, 900);
   const after = await page.evaluate(() => { const o = document.querySelector('#app [data-k="oc"]'); return { cls: o.className, tags: [...o.querySelectorAll('.tag')].map(t => t.textContent), rows: document.querySelectorAll('#app .zrow').length }; });
@@ -2759,7 +2794,8 @@ async function kindChecks(browser, base, viewport, errors) {
   // zurück zur Startseite (Knopf), erneut öffnen, Zurück-Taste des Geräts
   await probe(page, `${label} Meldungen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
   const t1 = await tiles();
-  report(/2 Aufträge/.test(t1.Entstörungen) && /📅 1 heute/.test(t1.Entstörungen) && !/offen/.test(t1.Entstörungen), `${label} Startseite: Entstörungen zählen alle Aufträge (kein offen/erledigt), „heute“ bleibt`, t1.Entstörungen);
+  // (beide Entstörungen sind endrückgemeldet: „heute“ zählt nur Offenes, die Liste zeigt zuerst „Offen“)
+  report(/2 Aufträge/.test(t1.Entstörungen) && !/heute/.test(t1.Entstörungen) && !/offen/.test(t1.Entstörungen), `${label} Startseite: Entstörungen zählen alle Aufträge, „heute“ nur offene`, t1.Entstörungen);
   await probe(page, `${label} Startseite: Entstörungen öffnen`, `() => document.querySelector('#app [data-k="kd-ent"]')`, { reflow: true, ms: 900, anim: true });
   await page.goBack();
   await pause(page, 700);
@@ -2916,6 +2952,9 @@ async function overflowChecks(browser, base, errors) {
   report(!w.length, 'Startseite (Auftragsarten) ragt nicht über den Rand', w.join(', '));
   for (const k of ['Reparaturen', 'Entstörungen', 'Meldungen']) {
     await chooseKind(page, k);
+    // (Reparatur/Entstörung: die Liste zeigt zuerst „Offen“ – „Alle“ wählen, damit es einen Auftrag zum Öffnen gibt)
+    await page.evaluate(() => { const b = [...document.querySelectorAll('#app [data-k="fc"] button')].find(b => /^Alle \(/.test(b.textContent.trim())); if (b) b.click(); });
+    await pause(page, 600);
     w = await wide();
     report(!w.length, `Liste ${k} ragt nicht über den Rand`, w.join(', '));
     if (k !== 'Meldungen') {

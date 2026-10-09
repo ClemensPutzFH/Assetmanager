@@ -10990,11 +10990,11 @@
             continue;
           }
           const list = ordersOfKind(teamRows, k);
-          // offen/erledigt gibt es nur bei Wartungen; Reparatur und Entstörung zählen, was heute ansteht
+          // Wartungen zählen offene Aufträge; Reparatur und Entstörung zählen, was heute ansteht (nur Offenes: die Liste zeigt zuerst „Offen“)
           out[k] = {
             n: list.length,
             open: k === 'war' ? list.filter(r => !isFinished(r)).length : list.length,
-            today: isTimedKind(k) ? list.filter(r => isoOfDate(r.start) === today()).length : 0,
+            today: isTimedKind(k) ? list.filter(r => isoOfDate(r.start) === today() && !isFinished(r)).length : 0,
             late: isTimedKind(k) ? list.filter(lateInfo).length : 0
           };
         }
@@ -11137,10 +11137,12 @@
           drawMeldungenView();
           return;
         }
-        const withList = viewKind === 'war';
-        // Filter (Offen/Erledigt/Nicht OK) und Fortschritt gibt es nur bei Wartungen; die anderen Auftragsarten zeigen alle Aufträge
+        const withList = viewKind === 'war',
+          // Filter Alle / Offen (Standard) / Erledigt gibt es bei Wartungen (zusätzlich „Nicht OK“) und bei Reparatur/Entstörung (erledigt =
+          // endrückgemeldet; eine Teilrückmeldung ist noch offen); Fortschritt nur bei Wartungen, Daueraufträge zeigen immer alle
+          withFilter = withList || isTimedKind(viewKind);
         const view = () =>
-          withList
+          withFilter
             ? rows.filter(
                 r =>
                   !monteurFilter ||
@@ -11162,13 +11164,13 @@
         const controls = el(
           'div',
           { class: 'ctl' },
-          withList &&
+          withFilter &&
             filterChips(
               [
                 ['', 'Alle', rows.length],
                 ['open', 'Offen', rows.length - doneCount],
                 ['done', 'Erledigt', doneCount],
-                ['nok', 'Nicht OK', nokCount]
+                ...(withList ? [['nok', 'Nicht OK', nokCount]] : [])
               ],
               monteurFilter,
               k => {

@@ -123,7 +123,8 @@ Die Oberfläche startet auch ohne Netz (nach dem ersten Öffnen mit Netz). Einga
 
 ## Auftragsarten
 Die App kennt fünf Auftragsarten. Der Monteur wählt sie auf der **Startseite** (große Flächen mit der Zahl der Aufträge, bei Reparatur/Entstörung auch „heute“). In der Liste gibt es keinen Umschalter: Zurück zur Startseite geht mit „← Auftragsarten“ oder der Zurück-Taste des Geräts. Der Disponent hat in der Übersicht einen Umschalter zwischen den Auftragsarten. **Reparaturen und Entstörungen sieht der Monteur erst nach der Disposition** (Abschnitt „Disposition“).
-- **Status** (offen/erledigt, „Nicht OK“, Filter, Etiketten, Fortschritt) gibt es nur bei **Wartungen**. Alle anderen Auftragsarten zeigen ihre Aufträge ohne Status (Karte: Termin, Zeit, Meldung, externe Firma), der Monteur sieht sie alle, sortiert nach Termin.
+- **Status** („Nicht OK“, Status-Etiketten, Fortschritt) gibt es nur bei **Wartungen**. Reparaturen und Entstörungen zeigen ihre Aufträge ohne Status-Etiketten (Karte: Termin, Zeit, Meldung, externe Firma, „✓ Endrückmeldung“/„◐ Teilrückmeldung“), sortiert nach Termin.
+- **Filter in der Liste des Monteurs:** **Alle / Offen / Erledigt** mit der Zahl je Filter – **vorgewählt ist „Offen“** (bei jedem Öffnen der Liste). Bei **Wartungen** gilt ein Auftrag als erledigt, wenn alle Prüfobjekte bewertet sind und die Zeit eingetragen ist (dort gibt es zusätzlich „Nicht OK“); bei **Reparaturen und Entstörungen** ist er **erledigt, sobald er endrückgemeldet ist** – eine Teilrückmeldung (Zeit ohne Endrückmeldung) ist noch offen. Meldet jemand die Endrückmeldung (auch ein anderes Gerät), verschwindet die Karte live aus „Offen“ und steht unter „Erledigt“; nimmt man sie zurück, ist der Auftrag wieder offen. Daueraufträge haben keinen Filter (sie laufen weiter). Auf der Startseite zählt „📅 n heute“ bei Reparatur/Entstörung nur noch offene Aufträge.
 
 | Auftragsart | Quelle (SAP) | Besonderheiten |
 |---|---|---|
