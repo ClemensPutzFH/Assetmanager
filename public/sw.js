@@ -4,6 +4,7 @@
  *      die gemerkte Version). Daten laufen über /api und werden von der App selbst im Gerät gesichert.
  *   2) Push: Nachrichten des Disponenten erscheinen als Benachrichtigung, die stehen bleibt und nach dem
  *      Wegwischen wiederkommt, bis „Bestätigen“ getippt wird.
+ *   3) Push „Auftrag disponiert / geändert“: gewöhnliche Benachrichtigung (nichts gesperrt, keine Bestätigung); Tipp öffnet die App.
  * ================================================================================================= */
 // Name des Caches; ändert sich die Dateiliste, hochzählen – alte Caches werden beim Aktivieren gelöscht
 const CACHE_NAME = 'auftraege-v4';
@@ -79,6 +80,20 @@ const notificationOptions = d => ({
 });
 // zeigt die Benachrichtigung zu den Push-Daten d
 const showMessage = d => self.registration.showNotification(d.title || DEFAULT_TITLE, notificationOptions(d));
+// Meldung „Auftrag disponiert / geändert“ (Push-Daten { t: 'dispo', title, body, at, n }): eine ganz gewöhnliche Benachrichtigung – sperrt nichts,
+// bleibt nicht „nervig“ stehen und braucht keine Bestätigung. Tag „dispo“: eine neuere ersetzt die ältere (und meldet sich mit Ton/Vibration).
+const showDispo = d =>
+  self.registration.showNotification(d.title || 'Disposition geändert', {
+    body: d.body || '',
+    tag: 'dispo',
+    renotify: true,
+    silent: false,
+    vibrate: [250, 100, 250],
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    timestamp: d.at || Date.now(),
+    data: { t: 'dispo' }
+  });
 // sagt allen offenen App-Fenstern, dass es Neues gibt (die App gleicht dann sofort ab)
 const notifyApp = () =>
   self.clients
@@ -93,7 +108,7 @@ self.addEventListener('push', e => {
   } catch {
     d = { body: e.data ? e.data.text() : '' };
   }
-  e.waitUntil(Promise.all([showMessage(d), notifyApp()]));
+  e.waitUntil(Promise.all([d.t === 'dispo' ? showDispo(d) : showMessage(d), notifyApp()]));
 });
 
 // Bestätigung direkt aus der Benachrichtigung an den Server melden (POST /api/msg/ack); true bei Erfolg

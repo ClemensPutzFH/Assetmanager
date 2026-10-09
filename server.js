@@ -7,6 +7,7 @@
  *   · Abgleich der Geräte per fortlaufender Änderungsnummer (`changeSeq`): jede Änderung bekommt die nächste Nummer,
  *     Geräte holen nur, was neuer ist als ihr letzter Stand; Live-Hinweis an alle offenen Geräte per SSE
  *   · Push-Nachrichten des Disponenten an Monteur-Geräte (Web Push, VAPID, ohne Fremdbibliothek)
+ *   · Meldung an die Monteure eines Teams, wenn ihnen ein Auftrag disponiert oder die Disposition geändert wurde (flushDispoNotes)
  *
  * TABELLEN
  *   orders    Aufträge (del = 1: gelöscht/verschoben, bleibt als Markierung, damit Geräte es erfahren). kind = Auftragsart der App:
@@ -28,6 +29,7 @@
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
  *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
+ *   dnote     vorgemerkte Änderungen der Disposition je Team und Auftrag (Stand davor, letzte Änderung) – daraus wird nach DISPO_NOTE_S Ruhe eine Meldung
  *   gas       tägliche Bestätigung des Gaswarngeräts je Team (Tag, Team, Uhrzeit, Gerät, Benutzer) – wird nur angefügt, nie geändert
  *   usr       Benutzer der Monteure (SAP-User, Name, Team, Passwort als scrypt-Hash); beim ersten Start aus users.json befüllt
  *   act       Protokoll: wer (Benutzer, Gerät) hat wann was getan (Anmeldung, Ergebnis, Gaswarngerät, Bestätigung, Benutzerverwaltung)
@@ -42,7 +44,7 @@
  *
  * EINSTELLUNGEN (Umgebungsvariablen)
  *   MONTEUR_PASSWORD (Startpasswort aller Monteur-Benutzer, Standard siehe unten) · DB_SYNC=FULL (Festschreiben wie bisher, siehe unten) ·
- *   PORT, HOST · DATA_DIR · TIMEZONE (bestimmt, wann für die Gaswarngerät-Bestätigung ein neuer Tag beginnt) · DISPO_PIN, UPLOAD_PIN (unbedingt ändern!) · NAG_MIN, MSG_HOURS · PUSH_CONTACT, PUSH_HOSTS ·
+ *   PORT, HOST · DATA_DIR · TIMEZONE (bestimmt, wann für die Gaswarngerät-Bestätigung ein neuer Tag beginnt) · DISPO_PIN, UPLOAD_PIN (unbedingt ändern!) · NAG_MIN, MSG_HOURS · DISPO_NOTE_S (Sekunden Ruhe, bis die Monteure die Meldung „Auftrag disponiert“ bekommen, Standard 120) · PUSH_CONTACT, PUSH_HOSTS ·
  *   TRUST_PROXY=1 (hinter Proxy: echte Client-IP) · DB_JOURNAL=DELETE · TLS_CERT + TLS_KEY oder TLS_PFX (+ TLS_PASS) ·
  *   HTTP_REDIRECT_PORT · Koordinaten der Adressen: GEOCODER_WIEN_URL (Adressdienst der Stadt Wien, Standard data.wien.gv.at, "off" = nicht
  *   verwenden), GEOCODER_URL (Nominatim, Standard OpenStreetMap; "wien" = nur der Wiener Dienst, "off" = gar nichts abfragen),
@@ -85,6 +87,10 @@ const dayFormat = new Intl.DateTimeFormat('sv-SE', {
 const dayOf = t => dayFormat.format(t);
 const NAG_INTERVAL_MIN = Math.max(1, +process.env.NAG_MIN || 5); // Push-Erinnerung alle X Minuten wiederholen, bis bestätigt
 const MESSAGE_HOURS = Math.max(1, +process.env.MSG_HOURS || 12); // spätestens nach X Stunden hört die Erinnerung auf
+// Meldung „Auftrag disponiert“ an die Monteure: erst X Sekunden nach der letzten Änderung des Disponenten für das Team (Standard 2 Minuten –
+// er bearbeitet den Auftrag vielleicht noch); die Push-Nachricht bleibt höchstens DISPO_NOTE_HOURS Stunden beim Push-Dienst liegen
+const DISPO_NOTE_MS = (process.env.DISPO_NOTE_S !== undefined && +process.env.DISPO_NOTE_S >= 0 ? +process.env.DISPO_NOTE_S : 120) * 1000;
+const DISPO_NOTE_HOURS = 6;
 const PUSH_CONTACT = process.env.PUSH_CONTACT || 'mailto:admin@example.com'; // Kontakt für die Push-Dienste (VAPID "sub")
 // IP des Clients (für die Begrenzung von PIN-Fehlversuchen); hinter einem Proxy (TRUST_PROXY=1) aus X-Forwarded-For
 const clientIp = req =>
@@ -139,6 +145,10 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS dev(did TEXT PRIMARY KEY, team TEXT, sub TEXT, seen INTEGER, role TEXT, name TEXT, ua TEXT, first INTEGER, kick INTEGER NOT NULL DEFAULT 0, kick_at INTEGER, loc_lat REAL, loc_lon REAL, loc_acc REAL, loc_at INTEGER, loc_err TEXT);
 CREATE TABLE IF NOT EXISTS msg(id INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, closed INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS mack(id INTEGER NOT NULL, did TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(id, did));
+-- Meldung „Auftrag disponiert / geändert“ an die Monteure (siehe flushDispoNotes): je Team und Auftrag der Stand, den das Team vor den noch nicht
+-- gemeldeten Änderungen des Disponenten kannte (was = 1: der Auftrag war beim Team, von/bis = damalige Zeiten), at = letzte Änderung.
+-- Ist die letzte Änderung des Teams DISPO_NOTE_S Sekunden her, wird mit dem heutigen Stand verglichen und gemeldet; die Zeilen sind dann erledigt.
+CREATE TABLE IF NOT EXISTS dnote(team TEXT NOT NULL, auftrag TEXT NOT NULL, was INTEGER NOT NULL, von TEXT, bis TEXT, at INTEGER NOT NULL, PRIMARY KEY(team, auftrag));
 -- Gaswarngerät: ein Team bestätigt es vor der Arbeit jeden Tag. at = Zeitpunkt der Bestätigung am Gerät, rec = Eingang beim Server
 -- (weicht ab, wenn ohne Netz bestätigt wurde), did = bestätigendes Gerät. Je Tag und Team zählt die erste Bestätigung.
 CREATE TABLE IF NOT EXISTS gas(day TEXT NOT NULL, team TEXT NOT NULL, at INTEGER NOT NULL, rec INTEGER NOT NULL, did TEXT, seq INTEGER NOT NULL, PRIMARY KEY(day, team));
@@ -373,6 +383,15 @@ const sql = {
   nagDevs: db.prepare(
     'SELECT did, sub FROM dev WHERE team=? AND sub IS NOT NULL AND did NOT IN (SELECT did FROM mack WHERE id=?)'
   ),
+  // Geräte, die eine Meldung „Auftrag disponiert“ bekommen: angemeldete Monteur-Geräte des Teams mit Push-Abo
+  teamPushDevs: db.prepare("SELECT did, sub FROM dev WHERE role='monteur' AND team=? AND sub IS NOT NULL"),
+  // noch nicht gemeldete Änderungen der Disposition (Stand davor bleibt, nur der Zeitpunkt der letzten Änderung rückt vor)
+  noteDispo: db.prepare(
+    'INSERT INTO dnote(team,auftrag,was,von,bis,at) VALUES(?,?,?,?,?,?) ON CONFLICT(team,auftrag) DO UPDATE SET at=excluded.at'
+  ),
+  dueNoteTeams: db.prepare('SELECT team FROM dnote GROUP BY team HAVING MAX(at)<=?'),
+  notesOfTeam: db.prepare('SELECT auftrag, was, von, bis FROM dnote WHERE team=? ORDER BY at, auftrag'),
+  delNotesOfTeam: db.prepare('DELETE FROM dnote WHERE team=?'),
   hasTeam: db.prepare('SELECT 1 FROM orders WHERE eteam=? LIMIT 1'),
   getGas: db.prepare('SELECT day, team, at, rec, seq FROM gas WHERE day=? AND team=?'),
   addGas: db.prepare('INSERT OR IGNORE INTO gas(day,team,at,rec,did,seq,usr) VALUES(?,?,?,?,?,?,?)'),
@@ -912,8 +931,10 @@ function pushEncrypt(keys, payload, salt = crypto.randomBytes(16), ecdh = null) 
   head[20] = serverPublicKey.length;
   return Buffer.concat([head, serverPublicKey, body]);
 }
-// Push an ein Gerät senden; false, wenn nicht zugestellt (404/410 = Abo abgelaufen -> Abo am Gerät löschen)
-async function pushToDevice(device, payload) {
+// Push an ein Gerät senden; false, wenn nicht zugestellt (404/410 = Abo abgelaufen -> Abo am Gerät löschen).
+// topic: gleiches Thema ersetzt beim Push-Dienst eine noch nicht zugestellte Nachricht (Nachrichten des Disponenten und Meldungen zur
+// Disposition dürfen sich nicht gegenseitig ersetzen), hours: so lange hält der Push-Dienst die Nachricht für ein Gerät ohne Netz bereit
+async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESSAGE_HOURS } = {}) {
   const sub = JSON.parse(device.sub);
   try {
     const response = await fetch(sub.endpoint, {
@@ -923,9 +944,9 @@ async function pushToDevice(device, payload) {
       headers: {
         'Content-Encoding': 'aes128gcm',
         'Content-Type': 'application/octet-stream',
-        TTL: String(MESSAGE_HOURS * 3600),
+        TTL: String(hours * 3600),
         Urgency: 'high',
-        Topic: 'nachricht',
+        Topic: topic,
         Authorization: vapidAuth(sub.endpoint)
       }
     });
@@ -968,6 +989,110 @@ setInterval(async () => {
   for (const m of sql.activeMsgs.all(Date.now() - MESSAGE_HOURS * 3600e3))
     if (Date.now() - (lastNagAt.get(m.id) || 0) >= NAG_INTERVAL_MIN * 60e3 - 2e3) await sendReminders(m);
 }, 15e3).unref();
+
+// ---- Meldung an die Monteure: Auftrag disponiert / geändert / entfernt ----
+// Nur eine Benachrichtigung, die nichts sperrt und nicht bestätigt werden muss (anders als Nachricht und Gaswarngerät). Der Disponent ändert oft
+// mehrere Male hintereinander: POST /api/dispo merkt sich je Team und Auftrag den Stand davor (dnote); erst wenn das Team DISPO_NOTE_MS lang
+// keine Änderung mehr hatte, wird der Stand verglichen und EINE Meldung geschickt – neue Aufträge, geänderte Zeiten, entfernte Aufträge. Wurde
+// alles wieder zurückgesetzt, gibt es keine Meldung. Dieselbe Meldung geht als Push an die Geräte des Teams und, solange die App offen ist,
+// als Live-Nachricht { dn: { title, brief, at } }: Geräte ohne Push (nicht erlaubt, nicht möglich) zeigen sie als kurzen Hinweis oben.
+const WEEKDAYS = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+// Zeitraum lesbar: „Mo 12.10. 07:30–09:00“, über Mitternacht „Mo 12.10. 22:00 – Di 13.10. 05:30“ (Eingabe „JJJJ-MM-TTTHH:MM“)
+function slotText(von, bis) {
+  const part = s => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})$/.exec(s || '');
+    return m && { day: m[1] + m[2] + m[3], date: `${WEEKDAYS[new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay()]} ${+m[3]}.${+m[2]}.`, time: m[4] };
+  };
+  const a = part(von),
+    b = part(bis);
+  if (!a) return '';
+  if (!b) return `${a.date} ${a.time}`;
+  return a.day === b.day ? `${a.date} ${a.time}–${b.time}` : `${a.date} ${a.time} – ${b.date} ${b.time}`;
+}
+/**
+ * Setzt aus den vorgemerkten Änderungen (dnote) eines Teams die Meldung zusammen. items: [{ type: 'new' | 'chg' | 'gone', o: Auftrag }].
+ * Titel nennt Art und Anzahl, der Text die ersten Aufträge (Nummer, Kurztext, Zeitraum); brief ist die kurze Fassung für den Hinweis oben in
+ * der App (ein Auftrag: dieselbe Zeile, mehrere: nur die Nummern); null, wenn es nichts zu melden gibt.
+ */
+function composeDispoNote(items) {
+  if (!items.length) return null;
+  const count = type => items.filter(i => i.type === type).length,
+    TITLES = {
+      new: ['Neuer Auftrag disponiert', k => `${k} neue Aufträge disponiert`],
+      chg: ['Disponierter Auftrag geändert', k => `${k} disponierte Aufträge geändert`],
+      gone: ['Auftrag entfernt', k => `${k} Aufträge entfernt`]
+    },
+    PREFIX = { new: 'Neu: ', chg: 'Geändert: ', gone: 'Entfernt: ' },
+    types = Object.keys(TITLES).filter(type => count(type)),
+    mixed = types.length > 1;
+  const title = mixed
+    ? 'Disposition geändert: ' + types.map(type => `${count(type)} ${{ new: 'neu', chg: 'geändert', gone: 'entfernt' }[type]}`).join(', ')
+    : count(types[0]) === 1
+      ? TITLES[types[0]][0]
+      : TITLES[types[0]][1](count(types[0]));
+  const MAX_LINES = 4,
+    sorted = types.flatMap(type => items.filter(i => i.type === type)),
+    lines = sorted.slice(0, MAX_LINES).map(({ type, o }) => {
+      const what = [o.nr || o.auftrag, clipString(o.kurz, 50).trim()];
+      if (o.vtxt && o.vtxt !== o.kurz) what.push(clipString(o.vtxt, 40).trim());
+      if (type !== 'gone') what.push(slotText(o.dvon, o.dbis));
+      return (mixed ? PREFIX[type] : '') + what.filter(Boolean).join(' · ');
+    });
+  const more = sorted.length - MAX_LINES,
+    brief = sorted.length === 1 ? lines[0] : sorted.slice(0, MAX_LINES).map(({ o }) => o.nr || o.auftrag).join(', ') + (more > 0 ? ` und ${more} weitere` : '');
+  if (more > 0) lines.push(`und ${more} weitere`);
+  return { title, body: lines.join('\n'), brief };
+}
+/**
+ * Meldungen, die jetzt fällig sind: Teams, deren letzte Änderung mindestens DISPO_NOTE_MS her ist. Die vorgemerkten Zeilen werden dabei
+ * entfernt (in einem Zug, bevor irgendetwas gesendet wird – Änderungen währenddessen fangen eine neue Runde an). Stand davor gegen heute:
+ * war nicht beim Team, ist es jetzt -> neu · war beim Team, ist es nicht mehr -> entfernt · war und ist beim Team, Zeitraum anders -> geändert.
+ * Rückgabe: [{ team, title, body, count }]
+ */
+function dueDispoNotes(now = Date.now()) {
+  const out = [];
+  for (const { team } of sql.dueNoteTeams.all(now - DISPO_NOTE_MS)) {
+    const rows = sql.notesOfTeam.all(team);
+    sql.delNotesOfTeam.run(team);
+    const items = [];
+    for (const r of rows) {
+      const o = sql.getOrderDispo.get(r.auftrag);
+      if (!o) continue;
+      const has = !o.del && o.mteam === team;
+      if (!r.was && has) items.push({ type: 'new', o });
+      else if (r.was && !has) items.push({ type: 'gone', o });
+      else if (r.was && has && (o.dvon !== r.von || o.dbis !== r.bis)) items.push({ type: 'chg', o });
+    }
+    const note = composeDispoNote(items);
+    if (note) out.push({ team, ...note, count: items.length });
+  }
+  return out;
+}
+// Live-Nachricht an die offenen Apps der Monteure dieses Teams (ohne Änderungsnummer: nichts zum Abgleichen, nur zum Anzeigen)
+function announceDispoNote(team, note) {
+  const data = `data: ${JSON.stringify({ dn: note })}\n\n`;
+  for (const c of sseClients) if (c.kind === 'team' && c.team === team) c.res.write(data);
+}
+let flushingNotes = false;
+async function flushDispoNotes() {
+  if (flushingNotes) return;
+  flushingNotes = true;
+  try {
+    for (const n of dueDispoNotes()) {
+      const at = Date.now(),
+        payload = { t: 'dispo', title: n.title, body: n.body, at, n: n.count };
+      announceDispoNote(n.team, { title: n.title, brief: n.brief, at });
+      await Promise.all(
+        sql.teamPushDevs.all(n.team).map(d => pushToDevice(d, payload, { topic: 'dispo', hours: DISPO_NOTE_HOURS }))
+      );
+    }
+  } catch (e) {
+    console.error('Meldung zur Disposition fehlgeschlagen:', e.message);
+  } finally {
+    flushingNotes = false;
+  }
+}
+setInterval(flushDispoNotes, Math.min(10e3, Math.max(250, DISPO_NOTE_MS / 4))).unref();
 
 // Ergebnis-Dokument prüfen und bereinigen (Whitelist)
 function cleanResultDoc(orderNo, doc) {
@@ -2187,6 +2312,12 @@ async function handleApi(req, res, url) {
         if (x.off) sql.clearDispo.run(changeSeq, x.a);
         else sql.setDispo.run(x.team, x.von, x.bis, now, changeSeq, x.a);
         changed.push({ a: x.a, from: cur.mteam, to: x.off ? null : x.team });
+        // den Monteuren beider Teams später melden (erst wenn der Disponent DISPO_NOTE_MS lang nichts mehr ändert): Stand davor merken
+        for (const team of new Set([cur.mteam, x.off ? null : x.team]))
+          if (team) {
+            const was = team === cur.mteam;
+            sql.noteDispo.run(team, x.a, was ? 1 : 0, was ? cur.dvon : null, was ? cur.dbis : null, now);
+          }
       }
       // Die Geräte des Teams holen den Auftrag jetzt erst: ohne neue Nummer bekämen sie seine Meldungen nicht mit (die haben eine ältere)
       sql.touchMeldungOfOrders.run(changeSeq, changeSeq);

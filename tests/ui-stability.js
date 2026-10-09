@@ -18,7 +18,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=dispomeldung (nur Upload und die Meldung „Auftrag disponiert“ an die Monteure), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -2897,6 +2897,177 @@ async function workStateChecks(browser, base, errors) {
   await dispo.context().close();
 }
 
+/**
+ * Meldung „Auftrag disponiert / geändert“ an die Monteure: Push (nichts gesperrt) bzw. kurzer Hinweis oben in der App.
+ * Eigener Server mit Kopie der Daten und kurzer Wartezeit (DISPO_NOTE_S=3 statt 2 Minuten) und ein Mini-Push-Dienst, der die verschlüsselten
+ * Nachrichten annimmt und mit dem Schlüssel des „Geräts“ entschlüsselt. Der Haupt-Server meldet nie (DISPO_NOTE_S sehr groß), damit unerwartete
+ * Hinweise keine anderen Messungen stören.
+ */
+async function dispoNoteChecks(browser, mainServer, geocoder, errors) {
+  console.log('\n=== Meldung „Auftrag disponiert“: erst nach Ruhe, nur Push bzw. kurzer Hinweis, nichts gesperrt ===');
+  const crypto = require('crypto'),
+    http = require('http'),
+    pushes = [],
+    deviceKey = crypto.createECDH('prime256v1'),
+    deviceAuth = crypto.randomBytes(16);
+  deviceKey.generateKeys();
+  const hmac = (k, d) => crypto.createHmac('sha256', k).update(d).digest();
+  // Gegenstück zu pushEncrypt() im Server (RFC 8291): Nachricht mit dem Schlüssel des Geräts entschlüsseln
+  const decrypt = buf => {
+    const salt = buf.subarray(0, 16),
+      idLen = buf[20],
+      serverKey = buf.subarray(21, 21 + idLen),
+      data = buf.subarray(21 + idLen),
+      ikm = hmac(hmac(deviceAuth, deviceKey.computeSecret(serverKey)), Buffer.concat([Buffer.from('WebPush: info\0'), deviceKey.getPublicKey(), serverKey, Buffer.from([1])])),
+      prk = hmac(salt, ikm),
+      d = crypto.createDecipheriv('aes-128-gcm', hmac(prk, Buffer.from('Content-Encoding: aes128gcm\0\x01')).subarray(0, 16), hmac(prk, Buffer.from('Content-Encoding: nonce\0\x01')).subarray(0, 12));
+    d.setAuthTag(data.subarray(data.length - 16));
+    const plain = Buffer.concat([d.update(data.subarray(0, data.length - 16)), d.final()]);
+    return JSON.parse(plain.subarray(0, plain.length - 1).toString()); // letztes Byte = Ende-Marke 0x02
+  };
+  const pushService = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      try {
+        pushes.push({ at: Date.now(), url: req.url, topic: req.headers.topic, ttl: req.headers.ttl, payload: decrypt(Buffer.concat(chunks)) });
+      } catch (e) {
+        pushes.push({ at: Date.now(), url: req.url, error: e.message });
+      }
+      res.writeHead(201).end();
+    });
+  });
+  await new Promise(resolve => pushService.listen(0, '127.0.0.1', resolve));
+  const pushPort = pushService.address().port,
+    copyFrom = dir => {
+      for (const f of ['data.db', 'data.db-wal']) if (fs.existsSync(path.join(mainServer.dir, f))) fs.copyFileSync(path.join(mainServer.dir, f), path.join(dir, f));
+      for (const f of ['data.db-shm']) fs.rmSync(path.join(dir, f), { force: true });
+    },
+    server = await startServer(geocoder.url, copyFrom, { DISPO_NOTE_S: '3', PUSH_HOSTS: `^http://127\\.0\\.0\\.1:${pushPort}/` }),
+    base = 'http://127.0.0.1:' + server.port,
+    sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    waitPushes = async (n, ms = 9000) => {
+      for (let t = 0; t < ms && pushes.length < n; t += 100) await sleep(100);
+      return pushes.length >= n;
+    };
+  let phone = null;
+  try {
+    const H = await dispoHeaders(base),
+      login = await apiJson(base, 'POST', '/api/user/login', { user: MONTEUR.user, password: MONTEUR.password }),
+      A = '65900002-0010',
+      B = '65900001-0010',
+      day = new Date(Date.now() + 864e5).toISOString().slice(0, 10),
+      slot = (hour, minutes = 120) => ({ von: `${day}T${String(hour).padStart(2, '0')}:00`, bis: plusMinutes(`${day}T${String(hour).padStart(2, '0')}:00`, minutes) }),
+      dispatch = (a, team, t) => apiJson(base, 'POST', '/api/dispo', { items: [{ a, team, ...t }] }, H),
+      TEAM = 'FW-IH01',
+      other = ((await apiJson(base, 'GET', '/api/sync?since=0&team=', null, H)).dteams || []).find(t => t !== TEAM);
+    // Ein „Gerät“ des Teams mit Push-Abo beim Mini-Push-Dienst anmelden
+    const did = crypto.randomBytes(16).toString('hex'),
+      sub = { endpoint: `http://127.0.0.1:${pushPort}/push/geraet`, keys: { p256dh: deviceKey.getPublicKey().toString('base64url'), auth: deviceAuth.toString('base64url') } },
+      reg = await apiJson(base, 'POST', '/api/push/sub', { did, role: 'monteur', team: TEAM, sub }, { 'X-User-Token': login.token });
+    report(reg.ok === true, 'Meldung: Gerät mit Push-Abo lässt sich anmelden', JSON.stringify(reg));
+    // Ausgangslage: nichts disponiert (diese Änderungen werden gemeldet, aber noch ohne Gerät/Seite – dann abwarten und leeren)
+    await undispatchAll(base);
+    await sleep(5500);
+    pushes.length = 0;
+
+    phone = await newPage(browser, base, { width: 320, height: 640 }, errors);
+    await loginMonteur(phone, 'Reparaturen');
+    const banner = () => phone.evaluate(() => [...document.querySelectorAll('#app > .msg')].map(n => n.textContent.trim()).filter(t => /^🔔/.test(t)).join(' | '));
+    const cards = () => phone.evaluate(() => document.querySelectorAll('#app [data-list] > [data-k]').length);
+
+    // 1) zwei Aufträge kurz hintereinander: noch nichts, solange der Disponent arbeitet – danach EINE Meldung für beide
+    const t0 = Date.now();
+    await dispatch(A, TEAM, slot(8));
+    await sleep(1500);
+    await dispatch(B, TEAM, slot(11));
+    const lastChange = Date.now();
+    await pause(phone, 600);
+    report((await cards()) === 2, 'Meldung: die Aufträge erscheinen sofort in der Liste (die Meldung kommt später)', `${await cards()} Karten`);
+    await sleep(1700); // 3,3 s nach dem ersten, aber erst 1,8 s nach dem zweiten Auftrag
+    report(pushes.length === 0 && !(await banner()), 'Meldung: solange die letzte Änderung weniger als die Wartezeit her ist, kommt nichts (Push und Hinweis)', `${pushes.length} Pushs, Hinweis: ${await banner()}`);
+    await phone.evaluate(() => {
+      new MutationObserver(() => {
+        if (!window.__noteAt && [...document.querySelectorAll('#app > .msg')].some(n => /^🔔/.test(n.textContent))) window.__noteAt = Date.now();
+      }).observe(document.getElementById('app'), { childList: true, subtree: true });
+    });
+    // Hinweis erscheint oben: der Inhalt rückt weich nach (nichts springt), die Seite wird nicht breiter (320 px)
+    const probeStart = Math.max(0, lastChange + 2500 - Date.now());
+    await sleep(Math.min(probeStart, 800));
+    const res = await probe(phone, 'Meldung: Hinweis erscheint oben (320 px), Inhalt rückt weich nach', `() => document.querySelector('#app [data-list] > [data-k]')`, {
+      scroll: 0,
+      ms: 3500,
+      act: '() => {}',
+      tapTol: 400,
+      smooth: '#app [data-list] > [data-k]'
+    });
+    const shownAt = (await phone.evaluate(() => window.__noteAt || 0)) || Date.now();
+    const note = await banner();
+    report(note === '🔔 2 neue Aufträge disponiert – 65900002, 65900001', 'Meldung: Hinweis oben ist kurz – Titel und nur die Auftragsnummern', note.slice(0, 160));
+    report(await waitPushes(1), 'Meldung: Push kommt beim Gerät an', `${pushes.length} Pushs`);
+    const p1 = pushes[0] || {};
+    report(pushes.length === 1 && !p1.error && p1.payload && p1.payload.t === 'dispo' && p1.payload.title === '2 neue Aufträge disponiert' && p1.topic === 'dispo', 'Meldung: genau EIN Push für beide Aufträge, eigenes Thema „dispo“ (ersetzt keine Nachricht des Disponenten)', JSON.stringify(p1).slice(0, 220));
+    const lines = ((p1.payload && p1.payload.body) || '').split('\n');
+    report(lines.length === 2 && lines.every(l => /^\d{8} · .+ · (So|Mo|Di|Mi|Do|Fr|Sa) \d{1,2}\.\d{1,2}\. \d{2}:00–\d{2}:00$/.test(l)), 'Meldung: jede Zeile = Auftrag · Kurztext · Wochentag Datum von–bis', JSON.stringify(lines));
+    report(p1.at - lastChange >= 2900 && p1.at - t0 >= 4400, 'Meldung: frühestens die Wartezeit (hier 3 s) nach der LETZTEN Änderung', `${p1.at - lastChange} ms nach der letzten, ${p1.at - t0} ms nach der ersten`);
+    // Der Hinweis verschwindet nach 8 s von selbst und gleitet dabei weich
+    report(Date.now() - shownAt < 7000, 'Meldung: der Hinweis steht noch (verschwindet erst nach 8 s)', `${Date.now() - shownAt} ms seit dem Erscheinen`);
+    await sleep(Math.max(0, shownAt + 7500 - Date.now()));
+    await probe(phone, 'Meldung: Hinweis verschwindet nach kurzer Zeit weich (Inhalt rückt weich nach oben)', `() => document.querySelector('#app [data-list] > [data-k]')`, { ms: 1800, act: '() => {}', tapTol: 400, smooth: '#app [data-list] > [data-k]' });
+    report(!(await banner()), 'Meldung: der Hinweis ist nach ein paar Sekunden weg (blockiert nichts)');
+
+    // 2) nur ein Zeitraum geändert -> „geändert“ mit dem neuen Zeitraum
+    pushes.length = 0;
+    await dispatch(A, TEAM, slot(9, 90));
+    await waitPushes(1, 9000);
+    const p2 = pushes[0] || {};
+    report(pushes.length === 1 && p2.payload && p2.payload.title === 'Disponierter Auftrag geändert' && /^65900002 · .+ · .+ 09:00–10:30$/.test(p2.payload.body), 'Meldung: geänderter Zeitraum -> „Disponierter Auftrag geändert“ mit neuer Zeit', JSON.stringify(p2.payload));
+
+    await pause(phone, 300);
+    const n2 = await banner();
+    report(/^🔔 Disponierter Auftrag geändert – 65900002 · .+ 09:00–10:30$/.test(n2), 'Meldung: bei nur einem Auftrag nennt der Hinweis Kurztext und Zeit', n2);
+
+    // 3) wieder zurückgesetzt, bevor gemeldet wird -> keine Meldung (und für das andere Team auch nicht)
+    pushes.length = 0;
+    const was = slot(9, 90);
+    await dispatch(A, TEAM, slot(14));
+    await sleep(500);
+    await dispatch(A, TEAM, was);
+    if (other) {
+      await dispatch(B, other, slot(11));
+      await sleep(300);
+      await dispatch(B, TEAM, slot(11));
+    }
+    await sleep(6500);
+    report(pushes.length === 0, 'Meldung: wird alles vor Ablauf der Wartezeit zurückgesetzt, gibt es keine Meldung', `${pushes.length} Pushs`);
+
+    // 4) Disposition aufgehoben -> „Auftrag entfernt“
+    await apiJson(base, 'POST', '/api/dispo', { items: [{ a: A, off: true }] }, H);
+    await waitPushes(1, 9000);
+    const p3 = pushes[0] || {};
+    report(pushes.length === 1 && p3.payload && p3.payload.title === 'Auftrag entfernt' && /^65900002 · /.test(p3.payload.body), 'Meldung: aufgehobene Disposition -> „Auftrag entfernt“', JSON.stringify(p3.payload));
+
+    // 5) neu und entfernt zugleich: eine Meldung mit Zählung, die Zeilen nennen die Art
+    pushes.length = 0;
+    await apiJson(base, 'POST', '/api/dispo', { items: [{ a: A, team: TEAM, ...slot(8) }, { a: B, off: true }] }, H);
+    await waitPushes(1, 9000);
+    const p4 = pushes[0] || {},
+      l4 = ((p4.payload && p4.payload.body) || '').split('\n');
+    report(pushes.length === 1 && p4.payload && p4.payload.title === 'Disposition geändert: 1 neu, 1 entfernt' && /^Neu: 65900002 · /.test(l4[0]) && /^Entfernt: 65900001 · /.test(l4[1]) && !/\d{2}:\d{2}/.test(l4[1]), 'Meldung: neu + entfernt -> „Disposition geändert: 1 neu, 1 entfernt“, Zeilen mit Art', JSON.stringify(p4.payload));
+
+    // Aufräumen
+    await undispatchAll(base);
+    await sleep(5000);
+    report(errors.length === 0, 'Meldung: keine JavaScript-Fehler', errors.slice(0, 2).join(' / '));
+  } catch (e) {
+    report(false, 'Meldung: Test-Fehler', e.stack.split('\n').slice(0, 3).join(' | '));
+  } finally {
+    if (phone) await phone.context().close();
+    server.stop();
+    pushService.close();
+  }
+}
+
 async function kindChecks(browser, base, viewport, errors) {
   const label = `${viewport.width}px`,
     page = await newPage(browser, base, viewport, errors);
@@ -3345,7 +3516,8 @@ function summary(t0) {
 (async () => {
   const pw = loadPlaywright(),
     geocoder = await startGeocoder(),
-    server = await startServer(geocoder.url),
+    // (Meldung „Auftrag disponiert“ gibt es hier nie – sie bekäme ein Hinweis mitten in fremde Messungen; sie hat ihren eigenen Server: dispoNoteChecks)
+    server = await startServer(geocoder.url, null, { DISPO_NOTE_S: '1000000' }),
     base = 'http://127.0.0.1:' + server.port,
     errors = [];
   const browser = await pw.chromium.launch({ executablePath: findChrome() });
@@ -3371,6 +3543,14 @@ function summary(t0) {
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
       await workStateChecks(browser, base, errors);
+      await dispoNoteChecks(browser, server, geocoder, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
+    if (process.env.TEST_ONLY === 'dispomeldung') {
+      // schnell: Upload, dann nur die Meldung „Auftrag disponiert“ an die Monteure
+      await kindUploadChecks(browser, base, errors);
+      await dispoNoteChecks(browser, server, geocoder, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
@@ -3412,6 +3592,7 @@ function summary(t0) {
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
       await workStateChecks(browser, base, errors);
+      await dispoNoteChecks(browser, server, geocoder, errors);
       await kindChecks(browser, base, { width: 390, height: 844 }, errors);
       await kindChecksWide(browser, base, { width: 1280, height: 800 }, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
@@ -3428,6 +3609,7 @@ function summary(t0) {
     await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
     await dispositionNarrowChecks(browser, base, errors);
     await workStateChecks(browser, base, errors);
+    await dispoNoteChecks(browser, server, geocoder, errors);
     await kindChecks(browser, base, { width: 390, height: 844 }, errors);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);

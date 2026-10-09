@@ -5878,8 +5878,20 @@
         liveSaveTimer = null,
         liveDirty = false,
         liveRenderDelay = 80;
+      // Meldung „Auftrag disponiert / geändert“ (Live-Nachricht { dn: { title, brief, at } }, ohne Änderungsnummer; siehe flushDispoNotes in
+      // server.js): Geräte mit funktionierendem Push bekommen sie als Benachrichtigung (Service Worker, sw.js), alle anderen sehen sie kurz oben
+      // als Hinweis (infoMsg, verschwindet nach INFO_MS von selbst). Nichts wird gesperrt. Das „…“ ersetzt: ein Hinweis mit „…“ gilt als
+      // Fortschrittsmeldung und bliebe stehen.
+      const pushWorks = () => pushSupported() && Notification.permission === 'granted' && !pushError;
+      function onDispoNote(n) {
+        if (session.role !== 'monteur' || pushWorks()) return;
+        infoMsg = ('🔔 ' + n.title + ' – ' + n.brief).replace(/…/g, '...');
+        liveDirty = true;
+        if (!liveRenderTimer) liveRenderTimer = setTimeout(renderLive, liveRenderDelay);
+      }
       // Ankündigung vom Server (siehe announce() in server.js): { s: Nummer, d?: Daten, n?: 1 = bitte abgleichen }
       function onLive(m) {
+        if (m.dn) return onDispoNote(m.dn);
         if (!(m.s > syncSeq)) return; // schon bekannt (z. B. durch einen Abgleich)
         if (m.s !== syncSeq + 1 || m.n || isPolling) return poll(); // Lücke, größere Änderung oder Abgleich läuft: normal abgleichen
         syncSeq = m.s;
