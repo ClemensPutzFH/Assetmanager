@@ -1,4 +1,4 @@
-# Aufträge nach Team – eigener Server
+# Heiz-Hawara – eigener Server
 
 Läuft mit **Node.js 22.13 oder neuer** (SQLite ist eingebaut), ohne weitere Pakete. Alle Daten liegen in **einer SQLite-Datei: `data/data.db`**.
 

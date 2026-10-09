@@ -1,5 +1,5 @@
 {
-  "name": "auftraege-nach-team",
+  "name": "heiz-hawara",
   "version": "1.0.0",
   "description": "Aufträge, Prüfobjekte und Rückmeldungen für Monteure und Disponenten – Daten in SQLite",
   "main": "server.js",

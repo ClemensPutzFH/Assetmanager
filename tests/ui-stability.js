@@ -18,7 +18,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=dispomeldung (nur Upload und die Meldung „Auftrag disponiert“ an die Monteure), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=dispomeldung (nur Upload und die Meldung „Auftrag disponiert“ an die Monteure), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=name (nur der Name der App), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -3068,6 +3068,24 @@ async function dispoNoteChecks(browser, mainServer, geocoder, errors) {
   }
 }
 
+// Name der App: Seitentitel, Überschrift der Startseite (einzeilig, ragt nicht über den Rand) und Manifest (Name auf dem Startbildschirm)
+async function appNameChecks(browser, base, errors) {
+  console.log('\n=== Name der App: „Heiz-Hawara“ ===');
+  const manifest = await (await fetch(base + '/manifest.webmanifest')).json();
+  report(manifest.name === 'Heiz-Hawara' && manifest.short_name === 'Heiz-Hawara', 'Name: Manifest (Name auf dem Startbildschirm) heißt „Heiz-Hawara“', `${manifest.name} / ${manifest.short_name}`);
+  for (const width of [320, 1280]) {
+    const page = await newPage(browser, base, { width, height: 700 }, errors, { geolocation: false }),
+      r = await page.evaluate(() => {
+        const h = document.querySelector('#app h1'),
+          box = h && h.getBoundingClientRect();
+        return { title: document.title, h1: h && h.textContent, lines: h && Math.round(box.height / parseFloat(getComputedStyle(h).lineHeight === 'normal' ? parseFloat(getComputedStyle(h).fontSize) * 1.2 : getComputedStyle(h).lineHeight)), wide: document.documentElement.scrollWidth > document.documentElement.clientWidth, right: box && Math.round(box.right), cw: document.documentElement.clientWidth };
+      });
+    report(r.title === 'Heiz-Hawara' && r.h1 === 'Heiz-Hawara', `Name ${width}px: Seitentitel und Überschrift der Startseite heißen „Heiz-Hawara“`, `${r.title} / ${r.h1}`);
+    report(r.lines === 1 && !r.wide && r.right <= r.cw, `Name ${width}px: die Überschrift steht in einer Zeile und ragt nicht über den Rand`, JSON.stringify(r));
+    await page.context().close();
+  }
+}
+
 async function kindChecks(browser, base, viewport, errors) {
   const label = `${viewport.width}px`,
     page = await newPage(browser, base, viewport, errors);
@@ -3204,6 +3222,10 @@ async function kindChecks(browser, base, viewport, errors) {
   // Reparatur/Entstörung: Der Monteur kann mehrere Zeiten zurückmelden. „Endrückmeldung (Auftrag ist fertig)“ ist vorbelegt (ein Auftrag mit einer
   // Zeit war bisher fertig); nimmt er den Haken weg, ist es eine Teilrückmeldung: der Auftrag ist „in Arbeit“ (blau) und bleibt es, bis eine
   // spätere Zeit die Endrückmeldung ist (grün). Der Schalter ändert die Höhe der Karte nicht.
+  // (Der Hinweis „✓ Zeit gespeichert“ von oben läuft nach 8 s von selbst ab – sein Ausgleiten fiele je nach Tempo des Rechners in diese Messung
+  // und liefe noch am Ende. Darum erst abwarten; die Prüfung selbst bleibt unverändert streng.)
+  await page.waitForFunction(() => !document.querySelector('#app > .msg'), null, { timeout: 15000 });
+  await pause(page, 400);
   await probe(page, `${label} Entstörung (Nachtschicht) öffnen`, `() => document.querySelector('#app [data-k="o65900004"]')`, { reflow: true, ms: 900, anim: true });
   const fin0 = await page.evaluate(() => { const c = document.querySelector('#app .frow .chip'); return { on: c && c.getAttribute('aria-pressed'), text: c && c.textContent, hint: (document.querySelector('#app .frow p') || {}).textContent }; });
   report(fin0.on === 'true' && /Endrückmeldung/.test(fin0.text || '') && /Teilrückmeldung/.test(fin0.hint || ''), `${label} Endrückmeldung: Schalter ist vorbelegt (gesetzt) und erklärt die Teilrückmeldung`, JSON.stringify(fin0));
@@ -3523,6 +3545,11 @@ function summary(t0) {
   const browser = await pw.chromium.launch({ executablePath: findChrome() });
   const t0 = Date.now();
   try {
+    if (process.env.TEST_ONLY === 'name') {
+      await appNameChecks(browser, base, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
     if (process.env.TEST_ONLY === 'tabs') {
       await dispoTabBarChecks(browser, base, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
@@ -3620,6 +3647,7 @@ function summary(t0) {
     await dispoChecks(browser, base, { width: 390, height: 844 }, errors);
     await dispoTabBarChecks(browser, base, errors);
     await overflowChecks(browser, base, errors);
+    await appNameChecks(browser, base, errors);
     // Desktop (breit): dieselben Grundabläufe
     await monteurChecks(browser, base, { width: 1280, height: 800 }, errors);
     await kindChecksWide(browser, base, { width: 1280, height: 800 }, errors);

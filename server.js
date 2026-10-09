@@ -1,5 +1,5 @@
 /* =================================================================================================
- * Aufträge nach Team – eigenständiger Server (Node.js 22.13+, eingebautes SQLite, keine weiteren Pakete)
+ * Heiz-Hawara – eigenständiger Server (Node.js 22.13+, eingebautes SQLite, keine weiteren Pakete)
  *
  * AUFGABEN
  *   · liefert die Oberfläche aus public/ (gzip + ETag) und die JSON-API unter /api/
@@ -1394,7 +1394,7 @@ async function wienQuery(plz, street) {
   const url = new URL(WIEN_URL);
   url.search = new URLSearchParams({ crs: 'EPSG:4326', Address: street });
   const response = await fetch(url, {
-    headers: { 'User-Agent': `Auftraege-nach-Team/1.0 (${GEOCODER_CONTACT})`, Accept: 'application/json' },
+    headers: { 'User-Agent': `Heiz-Hawara/1.0 (${GEOCODER_CONTACT})`, Accept: 'application/json' },
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) throw new Error('HTTP ' + response.status + (await bodySnippet(response)));
@@ -1431,7 +1431,7 @@ async function nominatimQuery(plz, street) {
     ...(/^mailto:/i.test(GEOCODER_CONTACT) ? { email: GEOCODER_CONTACT.replace(/^mailto:/i, '') } : {})
   });
   const response = await fetch(url, {
-    headers: { 'User-Agent': `Auftraege-nach-Team/1.0 (${GEOCODER_CONTACT})`, Accept: 'application/json' },
+    headers: { 'User-Agent': `Heiz-Hawara/1.0 (${GEOCODER_CONTACT})`, Accept: 'application/json' },
     signal: AbortSignal.timeout(15000)
   });
   if (response.status === 403 || response.status === 429 || response.status >= 500)
