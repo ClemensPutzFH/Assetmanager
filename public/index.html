@@ -2846,10 +2846,25 @@
         align-items: flex-start;
         justify-content: space-between;
       }
-      .gt-sheet .gt-x {
+      .gt-sheet .gt-x,
+      .gt-sheet .gt-i {
         flex: 0 0 auto;
         padding: 4px 10px;
         box-shadow: none;
+      }
+      .gt-sheet .gt-hb {
+        flex: 0 0 auto;
+        display: flex;
+        gap: 4px;
+      }
+      /* ---- Details-Fenster zu einem Auftrag (eigenes Dokument, Stile kopiert) ---- */
+      body.giw main {
+        max-width: 44rem;
+        padding-top: 12px;
+      }
+      .giw .bar h1 {
+        font-size: 1.25rem;
+        min-width: 0;
       }
       .gt-f {
         display: grid;
@@ -3263,6 +3278,10 @@
         gPoolUi = null,
         gPoolTimer = 0,
         gPoolDirty = false,
+        // gInfoWin: Details-Fenster zu einem Auftrag (Doppelklick, siehe openInfoWin) · gInfoUi: dessen Bausteine · gInfoA: dessen Auftrag
+        gInfoWin = null,
+        gInfoUi = null,
+        gInfoA = '',
         dispoTeamNames = [];
       try {
         const saved = localStorage.getItem('gz');
@@ -8266,6 +8285,27 @@
         gSheetStart = performance.now();
         render();
       }
+      // Das Bearbeiten-Fenster liegt fest am unteren Rand – oft genau über dem Auftrag, den man eben angeklickt hat. Direkt nach dem Öffnen
+      // lässt es darum Zeigerereignisse durch (so lange wie ein Doppelklick dauern darf): der zweite Klick landet auf dem Auftrag (→ Details-
+      // Fenster) und nicht im Bearbeiten-Fenster. render() baut das Fenster jedes Mal neu: die Sperre rechnet ab dem Öffnen (gSheetStart).
+      const SHEET_LOCK_MS = 520;
+      function lockFreshSheet() {
+        const sheet = app.querySelector('.gt-sheet'),
+          left = SHEET_LOCK_MS - (performance.now() - gSheetStart);
+        if (!sheet || left <= 0) return;
+        sheet.style.pointerEvents = 'none';
+        setTimeout(() => {
+          sheet.style.pointerEvents = '';
+        }, left);
+      }
+      // Doppelklick: der erste Klick hat den Auftrag gewählt (oder, war er schon gewählt, das Bearbeiten-Fenster geschlossen) – der Auftrag
+      // bleibt danach gewählt, und seine Details öffnen sich im eigenen Fenster
+      function openAndShow(a, ev) {
+        const o = ordersMap.get(a);
+        if (!o) return;
+        if (gSel !== a) selectOrder(a);
+        openInfoWin(a, ev);
+      }
       // schließt das Fenster; eine Kopie gleitet aus (das Fenster liegt fest am Rand, die Kopie beeinflusst das Layout nicht).
       // dismissSheet() zeichnet nicht neu (der Aufrufer tut es gleich danach), closeSheet() schon.
       function dismissSheet() {
@@ -8340,7 +8380,12 @@
               el('div', { class: 'kt' }, (orderKind(o) === 'rep' && o.vtxt ? o.vtxt : o.kurz) || '–'),
               el('div', { class: 'mu' }, [[o.plz, o.str].filter(Boolean).join(' '), `SAP: ${sap.team}${isoOfDate(sap.start) ? ', ' + termText({ start: sap.start, ende: sap.ende, uhr: sap.uhr, uhr2: sap.uhr2 }) : ', kein Termin'}`].filter(Boolean).join(' · '))
             ),
-            el('button', { class: 'gt-x', 'aria-label': 'Schließen', onclick: () => closeSheet() }, '✕')
+            el(
+              'div',
+              { class: 'gt-hb' },
+              el('button', { class: 'gt-i', 'aria-label': 'Details in neuem Fenster', title: 'Details in neuem Fenster (auch: Doppelklick auf den Auftrag)', onclick: e => openInfoWin(o.auftrag, e) }, 'ⓘ'),
+              el('button', { class: 'gt-x', 'aria-label': 'Schließen', onclick: () => closeSheet() }, '✕')
+            )
           ),
           el(
             'div',
@@ -8497,6 +8542,7 @@
               onclick: e => {
                 e.stopPropagation();
                 if (performance.now() - gDragEnd < 350) return;
+                if (e.detail >= 2) return openAndShow(o.auftrag, e); // Doppelklick: Details im eigenen Fenster
                 selectOrder(o.auftrag);
               },
               onkeydown: e => {
@@ -8870,8 +8916,9 @@
             role: 'button',
             tabindex: '0',
             ...(native ? { draggable: 'true', ondragstart: e => startNativeDrag(e, o), ondragend: endNativeDrag } : { onpointerdown: e => startPoolDrag(e, o) }),
-            onclick: () => {
+            onclick: e => {
               if (performance.now() - gDragEnd < 350) return;
+              if (e.detail >= 2) return openAndShow(o.auftrag, e); // Doppelklick: Details im eigenen Fenster
               selectOrder(o.auftrag);
             },
             onkeydown: e => {
@@ -9297,6 +9344,146 @@
         if (!note) delete ui.toast.dataset.t;
       }
 
+      // ---- Details-Fenster: Doppelklick auf einen Auftrag (Karte der Offen-Liste, Balken im Diagramm) oder „ⓘ“ im Bearbeiten-Fenster ----
+      // Öffnet ein eigenes Browserfenster mit allem zum Auftrag: Auftragsdaten, Disposition (Team, Zeitraum, Überschneidung, SAP-Termin und
+      // -Team), Zeitrückmeldung, Meldungen, externe Firmen. Es ist EIN Fenster für alle Aufträge (ein weiterer Doppelklick zeigt den nächsten
+      // darin) und wie das Extra-Fenster kein zweites Programm: das Hauptfenster baut den Inhalt in dessen Dokument (infoWinSync am Ende von
+      // render()), es bleibt also aktuell (Disposition, Zeitrückmeldung, Meldungen, Dunkelmodus). Es ist nur zum Ansehen; „Im Diagramm
+      // bearbeiten“ holt den Auftrag ins Bearbeiten-Fenster des Hauptfensters. Der Zweite Klick eines Doppelklicks wählt den Auftrag nur aus
+      // (sonst schlösse er das Bearbeiten-Fenster, das der erste Klick geöffnet hat).
+      function infoWinReset() {
+        gInfoWin = null;
+        gInfoUi = null;
+      }
+      // Ist das Fenster noch da (nicht geschlossen und nicht auf eine andere Seite gewechselt)? Sonst wird es vergessen.
+      function infoWinAlive() {
+        if (gInfoWin) {
+          let gone = true;
+          try {
+            gone = gInfoWin.closed || !gInfoUi || gInfoWin.document !== gInfoUi.doc;
+          } catch (e) {}
+          if (gone) infoWinReset();
+        }
+        return !!gInfoWin;
+      }
+      function closeInfoWin() {
+        const w = gInfoWin;
+        infoWinReset();
+        try {
+          if (w) w.close();
+        } catch (e) {}
+      }
+      addEventListener('pagehide', closeInfoWin);
+      // ev: das auslösende Ereignis – das Fenster muss von dem Fenster aus geöffnet werden, in dem geklickt wurde (Extra-Fenster oder Hauptfenster),
+      // sonst hält der Browser es für ein Pop-up ohne Anlass und blockt es
+      function openInfoWin(a, ev) {
+        if (!ordersMap.get(a)) return;
+        gInfoA = a;
+        if (infoWinAlive()) {
+          infoWinSync();
+          try {
+            gInfoWin.focus();
+          } catch (e) {}
+          return;
+        }
+        let w = null;
+        try {
+          w = ((ev && ev.view && typeof ev.view.open === 'function' ? ev.view : window)).open('', 'dispo-auftrag', `popup=yes,width=600,height=${Math.max(480, Math.min(860, (screen.availHeight || 940) - 80))}`);
+        } catch (e) {}
+        if (!w) {
+          errorMsg = 'Das Fenster wurde vom Browser blockiert – bitte Pop-ups für diese Seite erlauben.';
+          render();
+          return;
+        }
+        try {
+          infoWinBuild(w);
+        } catch (e) {
+          try {
+            w.close();
+          } catch (x) {}
+          infoWinReset();
+          errorMsg = 'Das Fenster lässt sich nicht öffnen.';
+          render();
+        }
+      }
+      // Baut das Gerüst im neuen Fenster: Dokument mit Doctype (sonst Quirks-Modus), die Stile der Seite, der Inhalt kommt aus infoWinSync
+      function infoWinBuild(w) {
+        const d = w.document;
+        d.open();
+        d.write(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><base href="${location.origin}/"><title>Auftrag – Disposition</title></head><body class="giw"></body></html>`);
+        d.close();
+        for (const st of document.querySelectorAll('head style')) d.head.append(d.importNode(st, true));
+        d.head.append(el('link', { rel: 'icon', href: '/icon-192.png' }));
+        const main = el('main', { class: 'giw-main' });
+        d.body.append(main);
+        d.addEventListener('keydown', e => e.key === 'Escape' && closeInfoWin());
+        gInfoUi = { doc: d, main, html: '' };
+        gInfoWin = w;
+        infoWinSync();
+      }
+      // Inhalt des Fensters zu einem Auftrag (nur rep/ent können hier vorkommen, sie haben keine Prüfobjekte)
+      function infoWinContent(o) {
+        const a = o.auftrag,
+          kind = orderKind(o),
+          sap = sapOf(o),
+          slot = slotOf(o),
+          sug = suggestSlot(o),
+          clash = slot ? overlapsOf(slot, a) : [],
+          edit = () => {
+            if (dispoTab !== 'di') dispoTab = 'di';
+            if (gSel !== a) selectOrder(a);
+            else render();
+            try {
+              window.focus();
+            } catch (e) {}
+          },
+          info = orderCard(o, true, false),
+          dispo = el(
+            'div',
+            { class: 'card', 'data-k': 'gi-dis' },
+            el('b', {}, 'Disposition'),
+            slot
+              ? el('p', {}, el('span', { class: 'tag st-ok' }, 'disponiert'), ` ${slot.team} · ${slotText(slot)} (${durationText(minutesBetween(slot.von, slot.bis))})`)
+              : el('p', {}, el('span', { class: 'tag st-zf' }, 'noch offen'), ' Monteure sehen den Auftrag erst, wenn er disponiert ist.'),
+            clash.length > 0 && el('p', { class: 'mu er' }, `⚠ Überschneidet sich bei ${slot.team} mit ${clash.map(orderLabel).join(', ')}`),
+            el('p', { class: 'mu' }, `SAP: ${sap.team} · ${isoOfDate(sap.start) ? termText({ start: sap.start, ende: sap.ende, uhr: sap.uhr, uhr2: sap.uhr2 }) : 'kein Termin'}${o.arb ? ` · ${o.arb} Std geplant` : ''}`),
+            !slot && sug && el('p', { class: 'mu' }, `Vorschlag aus SAP: ${sug.team}, ${slotText(sug)}`)
+          );
+        return el(
+          'div',
+          { class: 'giw-in' },
+          el('div', { class: 'bar' }, el('h1', {}, `${kindInfo(kind).icon} ${kindInfo(kind).name} ${orderLabel(o)}`), el('button', { onclick: edit }, 'Im Diagramm bearbeiten')),
+          info,
+          dispo,
+          timeCard(o, false),
+          !!(meldungenOf(o).length || o.mel) && meldungCard(o)
+        );
+      }
+      // Gleicht das Fenster mit dem Stand ab (am Ende von render()); ein unveränderter Inhalt wird nicht angefasst, sonst bleibt die Scroll-Stelle
+      function infoWinSync() {
+        if (!gInfoWin || !infoWinAlive()) return;
+        if (session.role !== 'dispo' || !dispoUnlocked) return closeInfoWin();
+        const ui = gInfoUi,
+          d = ui.doc,
+          root = document.documentElement,
+          o = ordersMap.get(gInfoA),
+          content = o
+            ? infoWinContent(o)
+            : el('div', { class: 'giw-in' }, el('div', { class: 'card' }, el('b', {}, 'Auftrag ' + gInfoA), el('p', { class: 'mu' }, 'Diesen Auftrag gibt es nicht (mehr).')));
+        d.documentElement.className = root.className;
+        if (root.dataset.theme) d.documentElement.dataset.theme = root.dataset.theme;
+        else delete d.documentElement.dataset.theme;
+        d.title = (o ? `${kindInfo(orderKind(o)).name} ${orderLabel(o)}` : 'Auftrag ' + gInfoA) + ' – Disposition';
+        const html = content.outerHTML;
+        if (html === ui.html) return;
+        const w = gInfoWin,
+          sy = w.scrollY;
+        ui.html = html;
+        ui.main.replaceChildren(content);
+        w.scrollTo(0, ui.shown === gInfoA ? sy : 0); // (anderer Auftrag: wieder oben)
+        ui.shown = gInfoA;
+      }
+
       // ---- Karte aus dem Extra-Fenster in das Diagramm ziehen (HTML5-Ziehen, auch auf einen anderen Bildschirm) ----
       // Während des Ziehens ist gDrag = { a, native: true }: Live-Änderungen warten, das Extra-Fenster zeichnet nicht neu.
       function startNativeDrag(e, o) {
@@ -9620,11 +9807,13 @@
           }
         }
         animateView();
+        lockFreshSheet();
         if (!quietRender) animateRemoved(listSnap);
         animateOkPops(okBefore);
         if (!quietRender) animateBanners(bannersBefore, scrollBefore < 1);
         if (aokRun) aokRun();
         if (gPoolWin) poolWinSync();
+        if (gInfoWin) infoWinSync();
         gPoolTop = false;
         // frisch gespeicherte Zeit: Zeitkarte leuchtet kurz grün auf
         if (timeFlash) {

@@ -18,7 +18,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -1690,6 +1690,154 @@ async function dispositionChecks(browser, base, viewport, errors) {
   await settle(400);
   await page.context().close();
 }
+// ---------- Disposition: Details-Fenster zu einem Auftrag (Doppelklick) ----------
+// Doppelklick auf eine Karte der Offen-Liste oder einen Balken im Diagramm (auch auf eine Karte im Extra-Fenster) und der Knopf „ⓘ“ im
+// Bearbeiten-Fenster öffnen EIN eigenes Browserfenster mit den Details des Auftrags (Auftragsdaten, Disposition, Zeit, Meldungen). Es
+// bleibt aktuell, wenn sich etwas ändert; „Im Diagramm bearbeiten“ holt den Auftrag ins Bearbeiten-Fenster des Hauptfensters. Geprüft:
+// dass der Doppelklick im Hauptfenster nichts verschiebt, der Auftrag danach gewählt ist (der zweite Klick schließt das Bearbeiten-Fenster
+// nicht wieder), das Fenster wiederverwendet wird, sich live ändert, sich schließen und wieder öffnen lässt und nicht zu breit wird.
+async function infoWindowChecks(browser, base, errors) {
+  const viewport = { width: 1280, height: 900 },
+    label = '1280px Details-Fenster:',
+    dayIso = n => new Date(Date.now() + n * 864e5).toLocaleDateString('sv-SE');
+  console.log('\n=== Disposition: Details-Fenster zu einem Auftrag (1280px) ===');
+  await undispatchAll(base);
+  const page = await newPage(browser, base, viewport, errors),
+    ctx = page.context();
+  await loginDispo(page);
+  const settle = ms => pause(page, ms);
+  await page.evaluate(() => [...document.querySelectorAll('#app .tabs button')].find(b => /^Disposition/.test(b.textContent.trim())).click());
+  await page.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
+  await settle(900);
+  const pagesNow = () => ctx.pages().length,
+    text = p => p.evaluate(() => document.body.innerText.replace(/\s+/g, ' ')),
+    sheet = () => page.evaluate(() => (document.querySelector('#app .gt-sheet') || {}).textContent || '');
+  const H = await dispoHeaders(base),
+    dispatch = items => apiJson(base, 'POST', '/api/dispo', { items }, H);
+  // Doppelklick auf ein Element, das erst ins Bild gerollt wird: die Zeitachse meldet ihre neue Scroll-Stelle erst im nächsten Bild – ein
+  // sofortiger Klick ließe das Neuzeichnen nach dem ersten Klick wieder an die alte Stelle springen (ein Mensch wartet darauf nicht)
+  const dbl = async sel => {
+    await page.locator(sel).scrollIntoViewIfNeeded();
+    await settle(400);
+    await page.dblclick(sel);
+  };
+  // Position eines Elements Bild für Bild messen, während `act` läuft
+  const watchTop = async (sel, act) => {
+    await page.evaluate(sel => {
+      window.__tops = [];
+      const t0 = performance.now(),
+        loop = () => {
+          const n = document.querySelector(sel);
+          if (n) window.__tops.push(Math.round(n.getBoundingClientRect().top * 10) / 10);
+          if (performance.now() - t0 < 1100) requestAnimationFrame(loop);
+        };
+      requestAnimationFrame(loop);
+    }, sel);
+    const out = await act();
+    await settle(1000);
+    const tops = await page.evaluate(() => window.__tops);
+    return { out, tops, drift: Math.abs(tops[tops.length - 1] - tops[0]), step: Math.max(...tops.slice(1).map((v, i) => Math.abs(v - tops[i]))) };
+  };
+
+  // ---- Doppelklick auf eine Karte der Offen-Liste ----
+  const card = '#app [data-k="dp-65900002-0010"]';
+  const [info] = await Promise.all([
+    ctx.waitForEvent('page', { timeout: 10000 }).catch(async e => {
+      console.log('   [Fenster nicht geöffnet] Fehler:', errors.slice(-3).join(' | '), '· Hinweis:', await page.evaluate(() => [...document.querySelectorAll('#app .msg')].map(n => n.textContent).join(' | ') + ' · gSel=' + gSel + ' gInfoWin=' + !!gInfoWin));
+      throw e;
+    }),
+    (async () => {
+      const w = await watchTop(card, () => page.dblclick(card + ' .kt'));
+      report(w.drift <= 3 && w.step <= 12, `${label} Doppelklick auf eine Karte: die Karte bleibt stehen (kein Ruck)`, `Abweichung ${w.drift} px, größter Schritt ${w.step} px`);
+    })()
+  ]);
+  info.on('pageerror', e => errors.push('Details-Fenster: ' + e.message));
+  await info.waitForSelector('.giw-in .card', { timeout: 10000 });
+  const i0 = await info.evaluate(() => ({ mode: document.compatMode, title: document.title, h1: document.querySelector('h1').textContent, font: getComputedStyle(document.body).fontFamily.split(',')[0], bg: getComputedStyle(document.body).backgroundColor, wide: document.documentElement.scrollWidth <= document.documentElement.clientWidth, cards: [...document.querySelectorAll('.giw-in > .card')].map(c => c.querySelector('b').textContent) }));
+  const t0 = await text(info);
+  report(i0.mode === 'CSS1Compat' && /Reparatur 65900002-0010/.test(i0.h1) && /^Reparatur 65900002-0010 – Disposition$/.test(i0.title) && /Inter/.test(i0.font) && i0.bg !== 'rgba(0, 0, 0, 0)' && i0.wide, `${label} Doppelklick öffnet ein Fenster mit Titel, Überschrift und den Stilen der Seite, nichts zu breit`, JSON.stringify(i0));
+  report(/Schieber Teststraße/.test(t0) && /Teststraße 2/.test(t0) && /TP-2/.test(t0) && /Schieber tauschen/.test(t0), `${label} Auftragsdaten: Kurztext, Vorgang, Adresse, Technischer Platz`, t0.slice(0, 200));
+  report(/Disposition/.test(i0.cards.join()) && /noch offen/.test(t0) && /SAP: FW-IH01/.test(t0) && /13:30/.test(t0) && /4 Std geplant/.test(t0) && /Vorschlag aus SAP: FW-IH01/.test(t0) && /Zeit/.test(i0.cards.join()), `${label} Disposition: noch offen, SAP-Team und -Termin, geplante Stunden, Vorschlag; darunter die Zeitkarte`, i0.cards.join(' | ') + ' / ' + t0.slice(0, 260));
+  report(pagesNow() === 2 && /65900002-0010/.test(await sheet()) && (await page.evaluate(() => document.querySelector('#app [data-k="dp-65900002-0010"]').classList.contains('sel'))), `${label} Hauptfenster: der Auftrag ist gewählt (Bearbeiten-Fenster offen, Karte hervorgehoben) – der zweite Klick schließt es nicht wieder`);
+  // Das Bearbeiten-Fenster liegt am unteren Rand oft über dem angeklickten Auftrag: kurz nach dem Öffnen lässt es Klicks durch (damit der zweite
+  // Klick des Doppelklicks den Auftrag trifft), danach ist es wieder bedienbar
+  report(await page.evaluate(() => getComputedStyle(document.querySelector('#app .gt-sheet')).pointerEvents === 'auto'), `${label} Das Bearbeiten-Fenster ist nach dem Öffnen wieder bedienbar (Klicks gehen nicht mehr hindurch)`);
+
+  // ---- live: Disposition per Server ----
+  await dispatch([{ a: '65900002-0010', team: 'FW-IH02', von: dayIso(1) + 'T13:30', bis: dayIso(1) + 'T17:30' }, { a: '65900003', team: 'FW-IH01', von: dayIso(0) + 'T08:30', bis: dayIso(0) + 'T10:15' }]);
+  await info.waitForFunction(() => /disponiert/.test(document.querySelector('[data-k="gi-dis"]').textContent) && !/noch offen/.test(document.body.innerText), null, { timeout: 15000 });
+  const t1 = await text(info);
+  report(/disponiert FW-IH02/.test(t1) && /13:30/.test(t1) && /4 Std/.test(t1) && !/Vorschlag aus SAP/.test(t1), `${label} Live: nach der Disposition steht im Fenster Team und Zeitraum (ohne Aktualisieren)`, t1.slice(0, 260));
+
+  // ---- Doppelklick auf einen Balken im Diagramm: dasselbe Fenster zeigt den anderen Auftrag ----
+  await page.waitForSelector('#app .gt-bar[data-k="gb-65900003"]', { timeout: 15000 });
+  await settle(700);
+  const bar = '#app .gt-bar[data-k="gb-65900003"]';
+  {
+    const w = await watchTop(bar, () => dbl(bar));
+    report(w.drift <= 3 && w.step <= 12, `${label} Doppelklick auf einen Balken: der Balken bleibt stehen (kein Ruck)`, `Abweichung ${w.drift} px, größter Schritt ${w.step} px`);
+  }
+  await info.waitForFunction(() => /65900003/.test(document.querySelector('h1').textContent), null, { timeout: 10000 });
+  const t2 = await text(info);
+  report(pagesNow() === 2 && /Entstörung 65900003/.test(await info.evaluate(() => document.querySelector('h1').textContent)), `${label} Balken: dasselbe Fenster zeigt den nächsten Auftrag (kein weiteres Fenster)`, `${pagesNow()} Fenster`);
+  report(/Dampf aus dem Schacht/.test(t2) && /Gebrechen/.test(t2) && /1290000001/.test(t2) && /disponiert FW-IH01/.test(t2) && /08:30/.test(t2), `${label} Meldungen und Gebrechen stehen im Fenster, dazu Disposition (FW-IH01, 08:30–10:15)`, t2.slice(0, 300));
+  report(/65900003/.test(await sheet()), `${label} Hauptfenster: der Balken-Auftrag ist gewählt`);
+
+  // ---- „Im Diagramm bearbeiten“ und „ⓘ“ ----
+  await page.evaluate(() => document.querySelector('#app .gt-bar[data-k="gb-65900002-0010"]').click());
+  await settle(600);
+  report(/65900002-0010/.test(await sheet()), `${label} Einfacher Klick auf einen Balken wählt ihn weiter nur aus (öffnet kein Fenster)`, `${pagesNow()} Fenster`);
+  await info.click('text=Im Diagramm bearbeiten');
+  await info.evaluate(() => 0);
+  await settle(300);
+  report(/65900003/.test(await sheet()) && pagesNow() === 2, `${label} „Im Diagramm bearbeiten“: das Bearbeiten-Fenster im Hauptfenster zeigt den Auftrag aus dem Details-Fenster`, (await sheet()).slice(0, 80));
+  await page.evaluate(() => document.querySelector('#app .gt-bar[data-k="gb-65900002-0010"]').click());
+  await settle(600);
+  await page.click('#app .gt-sheet button[aria-label="Details in neuem Fenster"]');
+  await info.waitForFunction(() => /65900002-0010/.test(document.querySelector('h1').textContent), null, { timeout: 10000 });
+  report(pagesNow() === 2, `${label} „ⓘ“ im Bearbeiten-Fenster zeigt den gewählten Auftrag im selben Fenster`);
+
+  // ---- schmales Fenster ----
+  await info.setViewportSize({ width: 360, height: 700 });
+  await settle(300);
+  report(await info.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), `${label} Auch ein schmales Fenster (360 px) wird nicht zu breit`);
+  await info.setViewportSize({ width: 600, height: 800 });
+
+  // ---- schließen und wieder öffnen ----
+  await info.close();
+  await page.click('#app .gt-sheet button[aria-label="Schließen"]'); // (das offene Bearbeiten-Fenster liegt sonst über dem Balken)
+  await settle(600);
+  const [info2] = await Promise.all([
+    ctx.waitForEvent('page', { timeout: 10000 }).catch(async e => {
+      console.log('   [Fenster nicht geöffnet]', await page.evaluate(() => { const b = document.querySelector('#app .gt-bar[data-k="gb-65900002-0010"]'), r = b && b.getBoundingClientRect(), top = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return `gSel=${gSel} gInfoWin=${!!gInfoWin} sheet=${!!document.querySelector('#app .gt-sheet')} bar=${r && [r.left, r.top, r.width, r.height].map(Math.round)} scrollY=${scrollY} vh=${innerHeight} oben=${top && top.className}`; }));
+      throw e;
+    }),
+    dbl('#app .gt-bar[data-k="gb-65900002-0010"]')
+  ]);
+  info2.on('pageerror', e => errors.push('Details-Fenster: ' + e.message));
+  await info2.waitForSelector('.giw-in .card', { timeout: 10000 });
+  report(pagesNow() === 2 && /65900002-0010/.test(await info2.evaluate(() => document.querySelector('h1').textContent)), `${label} Nach dem Schließen öffnet der nächste Doppelklick wieder ein Fenster`);
+  await info2.close();
+  await settle(300);
+
+  // ---- Doppelklick auf eine Karte im Extra-Fenster ----
+  await undispatchAll(base);
+  await page.waitForFunction(() => document.querySelectorAll('#app .gt-pc').length === 7, null, { timeout: 15000 });
+  await settle(600);
+  const [pool] = await Promise.all([ctx.waitForEvent('page', { timeout: 10000 }), page.click('#app .gtt-pop')]);
+  pool.on('pageerror', e => errors.push('Extra-Fenster: ' + e.message));
+  await pool.waitForSelector('.gt-pool > [data-k]', { timeout: 10000 });
+  await settle(700);
+  const [info3] = await Promise.all([ctx.waitForEvent('page', { timeout: 10000 }), pool.dblclick('.gt-pool [data-k="dp-65900004"] .kt')]);
+  info3.on('pageerror', e => errors.push('Details-Fenster: ' + e.message));
+  await info3.waitForSelector('.giw-in .card', { timeout: 10000 });
+  report(/Entstörung 65900004/.test(await info3.evaluate(() => document.querySelector('h1').textContent)) && /Nächtliche Störung/.test(await text(info3)), `${label} Doppelklick auf eine Karte im Extra-Fenster öffnet ebenfalls die Details`);
+  await info3.close();
+  await pool.close();
+  await settle(600);
+  report(await page.evaluate(() => !!document.querySelector('#app .gt-pc')), `${label} Nach dem Schließen beider Fenster steht die Liste wieder im Hauptfenster`);
+  await page.context().close();
+}
 // ---------- Disposition: Liste der offenen Aufträge im Extra-Fenster (zwei Bildschirme) ----------
 // Der Knopf „⧉ Extra-Fenster“ öffnet die Offen-Liste in einem zweiten Browserfenster, das Hauptfenster zeigt das Diagramm in voller Breite.
 // Geprüft: Aufbau und Stabilität des Hauptfensters (Leiste gleich hoch, nichts springt), Liste im Fenster (Karten, Zahl im Titel, Suche mit
@@ -2729,6 +2877,7 @@ function summary(t0) {
       await kindUploadChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
       await poolWindowChecks(browser, base, errors);
+      await infoWindowChecks(browser, base, errors);
       await poolListChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
@@ -2743,6 +2892,13 @@ function summary(t0) {
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
+    if (process.env.TEST_ONLY === 'detailfenster') {
+      // schnell: Upload, dann nur das Details-Fenster (Doppelklick)
+      await kindUploadChecks(browser, base, errors);
+      await infoWindowChecks(browser, base, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
     if (process.env.TEST_ONLY === 'poolliste') {
       // schnell: Upload, dann nur die Offen-Liste der Disposition (Team, Termin, Zeitraum, Nachladen)
       await kindUploadChecks(browser, base, errors);
@@ -2754,6 +2910,7 @@ function summary(t0) {
       await kindUploadChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
       await poolWindowChecks(browser, base, errors);
+      await infoWindowChecks(browser, base, errors);
       await poolListChecks(browser, base, errors);
       await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
       await dispositionNarrowChecks(browser, base, errors);
@@ -2768,6 +2925,7 @@ function summary(t0) {
     await kindUploadChecks(browser, base, errors);
     await dispositionChecks(browser, base, { width: 1280, height: 900 }, errors);
     await poolWindowChecks(browser, base, errors);
+    await infoWindowChecks(browser, base, errors);
     await poolListChecks(browser, base, errors);
     await dispositionChecks(browser, base, { width: 390, height: 844 }, errors);
     await dispositionNarrowChecks(browser, base, errors);
