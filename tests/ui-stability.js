@@ -2429,7 +2429,8 @@ async function workStateChecks(browser, base, errors) {
   console.log('\n=== Gestartet / fertig: Farbe in Diagramm, Liste und beim Monteur ===');
   const A = '65900002-0010',
     login = await apiJson(base, 'POST', '/api/user/login', { user: MONTEUR.user, password: MONTEUR.password }),
-    put = async doc => (await fetch(`${base}/api/ergebnis/${A}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': login.token }, body: JSON.stringify({ a: A, team: 'FW-IH01', n: 0, s: '', nok: [], ...doc }) })).status,
+    putKey = async (key, doc) => (await fetch(`${base}/api/ergebnis/${encodeURIComponent(key)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': login.token }, body: JSON.stringify({ a: key, team: 'FW-IH01', n: 0, s: '', nok: [], ...doc }) })).status,
+    put = doc => putKey(A, doc),
     dispo = await newPage(browser, base, { width: 1280, height: 900 }, errors);
   await loginDispo(dispo);
   const tab = async n => {
@@ -2468,6 +2469,35 @@ async function workStateChecks(browser, base, errors) {
   report(await waitFor(A => { const n = document.querySelector(`#app .gt-bar[data-k="gb-${A}"]`); return n && !/\b(run|fin)\b/.test(n.className); }, A), 'Gestartet: „Verwerfen“ nimmt die Markierung wieder zurück (live)');
   const b0 = await bar();
   report(b0 && b0.box === b1.box && !/^[▶✓]/.test(b0.label || ''), 'Gestartet: Der Balken behält Lage und Größe (nur die Farbe wechselt)', `${b0 && b0.box} / ${b1.box}`);
+  // Mehrere Zeiten (Reparatur/Entstörung): eine Teilrückmeldung (Zeit, aber keine Endrückmeldung) ist „in Arbeit“ (blau, ◐), erst die
+  // Endrückmeldung macht den Auftrag fertig (grün, ✓) – live beim Disponenten, in der Karte und im Diagramm
+  const today = new Date().toLocaleDateString('sv-SE'),
+    clearEntries = async () => {
+      for (const k of await dispo.evaluate(A => [...(entryKeys.get(A) || [])], A)) await putKey(k, {});
+    };
+  await tab('Übersicht');
+  await chooseKind(dispo, 'Reparaturen');
+  report((await putKey(A + '#teil001', { min: 60, dat: today, von: '08:00' })) === 200, 'Teilrückmeldung: Server nimmt einen Zeiteintrag zu einer Reparatur an');
+  report(await waitFor(A => { const n = document.querySelector(`#app [data-k="o${A}"]`); return n && /\brun\b/.test(n.className) && !/\bfin\b/.test(n.className); }, A), 'Teilrückmeldung: Karte des Disponenten wird blau („in Arbeit“), nicht grün (live)');
+  const t1 = await card();
+  report(t1 && t1.tags.includes('◐ Teilrückmeldung') && t1.tags.includes('⏱ 1 Std') && !t1.tags.some(t => /gestartet|Endrückmeldung|Erledigt/.test(t)) && t1.box === c0.box, 'Teilrückmeldung: Etikett „◐ Teilrückmeldung“ und Zeit, kein „gestartet“, Karte behält Lage und Breite', JSON.stringify(t1));
+  await tab('Disposition');
+  const bt = await bar();
+  report(bt && /\brun\b/.test(bt.cls) && bt.bg === (await colorOf('run')) && /^◐ /.test(bt.label || '') && /Teilrückmeldung/.test(bt.title) && bt.box === b1.box, 'Teilrückmeldung: Balken im Diagramm ist blau (◐ vor der Nummer), Lage und Größe unverändert', JSON.stringify(bt));
+  report((await putKey(A + '#end002', { min: 30, dat: today, von: '09:30', fin: 1 })) === 200, 'Endrückmeldung: Server nimmt einen Zeiteintrag mit Endrückmeldung an');
+  report(await waitFor(A => { const n = document.querySelector(`#app .gt-bar[data-k="gb-${A}"]`); return n && /\bfin\b/.test(n.className); }, A), 'Endrückmeldung: Balken wird grün, sobald der Eintrag mit „Endrückmeldung“ da ist (live)');
+  const bf = await bar();
+  report(bf && bf.bg === (await colorOf('ok')) && /^✓ /.test(bf.label || '') && /Endrückmeldung/.test(bf.title) && bf.box === b1.box, 'Endrückmeldung: Balken grün (✓), Lage und Größe unverändert', JSON.stringify(bf));
+  await tab('Übersicht');
+  await chooseKind(dispo, 'Reparaturen');
+  const t2 = await card();
+  report(t2 && /\bfin\b/.test(t2.cls) && t2.tags.includes('✓ Endrückmeldung') && t2.tags.includes('⏱ 1 Std 30 Min · 2 Einträge') && !t2.tags.some(t => /Teilrückmeldung|Erledigt/.test(t)), 'Endrückmeldung: Karte ist grün mit „✓ Endrückmeldung“ und der Gesamtzeit aus beiden Einträgen', JSON.stringify(t2));
+  // wird die Endrückmeldung gelöscht, ist der Auftrag wieder nur in Arbeit; ohne Einträge ist er unmarkiert
+  await putKey(A + '#end002', {});
+  report(await waitFor(A => { const n = document.querySelector(`#app [data-k="o${A}"]`); return n && /\brun\b/.test(n.className) && !/\bfin\b/.test(n.className); }, A), 'Endrückmeldung: wird sie gelöscht, ist der Auftrag wieder „in Arbeit“ (live)');
+  await clearEntries();
+  report(await waitFor(A => { const n = document.querySelector(`#app [data-k="o${A}"]`); return n && !/\b(run|fin)\b/.test(n.className); }, A), 'Teilrückmeldung: ohne Zeiteinträge ist der Auftrag wieder unmarkiert (live)');
+  await tab('Disposition'); // (weiter im Diagramm, wie vor diesem Abschnitt)
   // Start und „■ Ende“: die Zeit ist gespeichert -> fertig (grün)
   await phone.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Start$/.test(b.textContent.trim())).click());
   await pause(phone, 800);
@@ -2491,8 +2521,9 @@ async function workStateChecks(browser, base, errors) {
   await pause(dispo, 800);
   const srv2 = await dispo.evaluate(A => rawResult(A), A);
   report(srv2 && srv2.min === 60 && srv2.go === undefined, 'Fertig: mit gespeicherter Zeit gibt es keinen Start mehr im Ergebnis', JSON.stringify(srv2));
-  // aufräumen: Ergebnis ohne Zeit und ohne Start
+  // aufräumen: Ergebnis ohne Zeit und ohne Start (auch der Eintrag von „■ Ende“)
   await put({});
+  await clearEntries();
   await pause(dispo, 800);
   const bEnd = await bar();
   report(await dispo.evaluate(A => { const n = document.querySelector(`[data-k="o${A}"]`); return !n || !/\b(run|fin)\b/.test(n.className); }, A) && (await card()).tags.every(t => !/gestartet|Erledigt/.test(t)), 'Gestartet: nach dem Aufräumen ist nichts mehr markiert');
@@ -2604,6 +2635,55 @@ async function kindChecks(browser, base, viewport, errors) {
   await probe(page, `${label} Entstörung schließen (← Zurück)`, btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
   const bothLeft = await page.evaluate(() => [...document.querySelectorAll('#app [data-list] > [data-k]')].map(n => n.dataset.k).join());
   report(bothLeft === 'o65900004,o65900003', `${label} Entstörungen: alle bleiben in der Liste (kein Offen/Erledigt-Filter)`, bothLeft);
+  // ---- mehrere Zeiten: erst Teilrückmeldung, dann Endrückmeldung ----
+  // Reparatur/Entstörung: Der Monteur kann mehrere Zeiten zurückmelden. „Endrückmeldung (Auftrag ist fertig)“ ist vorbelegt (ein Auftrag mit einer
+  // Zeit war bisher fertig); nimmt er den Haken weg, ist es eine Teilrückmeldung: der Auftrag ist „in Arbeit“ (blau) und bleibt es, bis eine
+  // spätere Zeit die Endrückmeldung ist (grün). Der Schalter ändert die Höhe der Karte nicht.
+  await probe(page, `${label} Entstörung (Nachtschicht) öffnen`, `() => document.querySelector('#app [data-k="o65900004"]')`, { reflow: true, ms: 900, anim: true });
+  const fin0 = await page.evaluate(() => { const c = document.querySelector('#app .frow .chip'); return { on: c && c.getAttribute('aria-pressed'), text: c && c.textContent, hint: (document.querySelector('#app .frow p') || {}).textContent }; });
+  report(fin0.on === 'true' && /Endrückmeldung/.test(fin0.text || '') && /Teilrückmeldung/.test(fin0.hint || ''), `${label} Endrückmeldung: Schalter ist vorbelegt (gesetzt) und erklärt die Teilrückmeldung`, JSON.stringify(fin0));
+  await probe(page, `${label} Teilrückmeldung: Zeit von Hand eintragen öffnen`, btn('/Zeit von Hand/'), { at: A, ms: 800 });
+  await probe(page, `${label} Teilrückmeldung: Schnellwahl 1 Std`, btn('/^1 Std$/'), { at: A });
+  const zcH = () => page.evaluate(() => Math.round(document.querySelector('#app [data-k="zc"]').getBoundingClientRect().height * 10) / 10);
+  const zc0 = await zcH();
+  await probe(page, `${label} Teilrückmeldung: Haken „Endrückmeldung“ wegnehmen`, `() => document.querySelector('#app .frow .chip')`, { at: A });
+  report((await zcH()) === zc0 && (await page.evaluate(() => document.querySelector('#app .frow .chip').getAttribute('aria-pressed'))) === 'false', `${label} Teilrückmeldung: der Schalter ändert die Höhe der Karte nicht`, `${zc0} → ${await zcH()}`);
+  await probe(page, `${label} Teilrückmeldung: Zeit speichern`, btn('/Zeit speichern/'), { at: A, ms: 1200 });
+  await pause(page, 600);
+  const part = await page.evaluate(() => { const o = document.querySelector('#app [data-k="oc"]'); return { cls: o.className, tags: [...o.querySelectorAll('.tag')].map(t => t.textContent), zc: document.querySelector('#app [data-k="zc"]').textContent.replace(/\s+/g, ' '), rows: document.querySelectorAll('#app .zrow').length, chip: document.querySelector('#app .frow .chip').getAttribute('aria-pressed') }; });
+  report(/\brun\b/.test(part.cls) && !/\bfin\b/.test(part.cls) && part.tags.includes('◐ Teilrückmeldung') && part.tags.includes('⏱ 1 Std') && !part.tags.some(t => /Endrückmeldung|Erledigt/.test(t)), `${label} Teilrückmeldung: der Auftrag ist „in Arbeit“ (blau, ◐ Teilrückmeldung), nicht fertig`, JSON.stringify({ cls: part.cls, tags: part.tags }));
+  report(/Gesamt 1 Std in 1 Eintrag · Teilrückmeldung/.test(part.zc) && part.rows === 1 && /◐ Teilrückmeldung/.test(part.zc) && part.chip === 'true', `${label} Teilrückmeldung: die Karte „Zeit“ zeigt den Eintrag; der Schalter steht für die nächste Zeit wieder auf „Endrückmeldung“`, part.zc.slice(0, 200));
+  await probe(page, `${label} Endrückmeldung: weitere Zeit von Hand eintragen öffnen`, btn('/Weitere Zeit von Hand/'), { at: A, ms: 800 });
+  await probe(page, `${label} Endrückmeldung: Beginn „Jetzt“`, btn('/^Jetzt$/'), { at: A });
+  await probe(page, `${label} Endrückmeldung: Schnellwahl 30 Min`, btn('/^30 Min$/'), { at: A });
+  await probe(page, `${label} Endrückmeldung: Zeit speichern (der neue Eintrag blendet ein)`, btn('/Zeit speichern/'), { at: A, ms: 1200, anim: true });
+  await pause(page, 600);
+  const endd = await page.evaluate(() => { const o = document.querySelector('#app [data-k="oc"]'); return { cls: o.className, tags: [...o.querySelectorAll('.tag')].map(t => t.textContent), zc: document.querySelector('#app [data-k="zc"]').textContent.replace(/\s+/g, ' '), rows: [...document.querySelectorAll('#app .zrow')].map(r => r.textContent.replace(/\s+/g, ' ')), chip: document.querySelector('#app .frow .chip').getAttribute('aria-pressed') }; });
+  report(/\bfin\b/.test(endd.cls) && endd.tags.includes('✓ Endrückmeldung') && endd.tags.includes('⏱ 1 Std 30 Min · 2 Einträge') && !endd.tags.some(t => /Teilrückmeldung|Erledigt/.test(t)), `${label} Endrückmeldung: der Auftrag ist fertig (grün, ✓ Endrückmeldung), die Zeit zählt beide Einträge`, JSON.stringify({ cls: endd.cls, tags: endd.tags }));
+  report(/Gesamt 1 Std 30 Min in 2 Einträgen · ✓ Endrückmeldung gegeben/.test(endd.zc) && endd.rows.length === 2 && /Endrückmeldung/.test(endd.rows[0]) && /Teilrückmeldung/.test(endd.rows[1]) && endd.chip === 'false', `${label} Endrückmeldung: zwei Einträge (neuester zuerst), der Schalter steht danach auf „Teilrückmeldung“ (schon endrückgemeldet)`, endd.rows.join(' | '));
+  // Nachträglich ändern: den Haken am Endrückmeldungs-Eintrag wegnehmen macht den Auftrag wieder „in Arbeit“
+  await probe(page, `${label} Endrückmeldung: Eintrag ändern öffnen`, `() => document.querySelector('#app .zrow button')`, { at: A, ms: 800 });
+  report(await page.evaluate(() => document.querySelector('#app .frow .chip').getAttribute('aria-pressed')) === 'true', `${label} Eintrag ändern: der Schalter zeigt die Endrückmeldung dieses Eintrags`);
+  await page.evaluate(() => document.querySelector('#app .frow .chip').click());
+  await pause(page, 200);
+  await probe(page, `${label} Eintrag ändern: ohne Haken speichern`, btn('/^Zeit ändern$/', '#app .ob'), { at: A, ms: 1200 });
+  await pause(page, 600);
+  report(await page.evaluate(() => { const o = document.querySelector('#app [data-k="oc"]'); return /\brun\b/.test(o.className) && !/\bfin\b/.test(o.className) && [...o.querySelectorAll('.tag')].some(t => t.textContent === '◐ Teilrückmeldung'); }), `${label} Eintrag ändern: ohne den Haken ist der Auftrag wieder „in Arbeit“`);
+  // Endrückmeldung wieder setzen (so bleibt der Auftrag für die späteren Prüfungen fertig) und neu laden: der Server-Stand ist derselbe
+  await probe(page, `${label} Eintrag ändern: Endrückmeldung wieder setzen`, `() => document.querySelector('#app .zrow button')`, { at: A, ms: 800 });
+  await page.evaluate(() => { if (document.querySelector('#app .frow .chip').getAttribute('aria-pressed') !== 'true') document.querySelector('#app .frow .chip').click(); });
+  await pause(page, 200);
+  await probe(page, `${label} Eintrag ändern: speichern`, btn('/^Zeit ändern$/', '#app .ob'), { at: A, ms: 1200 });
+  await pause(page, 800);
+  await page.reload();
+  await pause(page, 1500);
+  await chooseKind(page, 'Entstörungen');
+  await page.evaluate(() => document.querySelector('#app [data-k="o65900004"]').click());
+  await pause(page, 900);
+  const after = await page.evaluate(() => { const o = document.querySelector('#app [data-k="oc"]'); return { cls: o.className, tags: [...o.querySelectorAll('.tag')].map(t => t.textContent), rows: document.querySelectorAll('#app .zrow').length }; });
+  report(/\bfin\b/.test(after.cls) && after.tags.includes('✓ Endrückmeldung') && after.rows === 2, `${label} Endrückmeldung: nach dem Neuladen (Server-Stand) sind beide Einträge und die Endrückmeldung da`, JSON.stringify(after));
+  await page.evaluate(() => [...document.querySelectorAll('#app button')].find(b => /Zurück/.test(b.textContent)).click());
+  await pause(page, 700);
   // Dauerauftrag, Meldungen
   await probe(page, `${label} Entstörungen: ← Auftragsarten`, btn('/Auftragsarten/'), { reflow: true, ms: 900, anim: true });
   await probe(page, `${label} Startseite: Daueraufträge öffnen`, `() => document.querySelector('#app [data-k="kd-dau"]')`, { reflow: true, ms: 900, anim: true });
@@ -2650,7 +2730,10 @@ async function kindChecks(browser, base, viewport, errors) {
   // nach dem Neuladen (Server-Stand) sind die Einträge noch da; der Server lehnt Tageseinträge bei anderen Auftragsarten ab
   const login = await (await fetch(base + '/api/user/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: MONTEUR.user, password: MONTEUR.password }) })).json();
   const put = async key => (await fetch(base + '/api/ergebnis/' + encodeURIComponent(key), { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': login.token }, body: JSON.stringify({ a: key, team: 'FW-IH01', n: 0, s: '', nok: [], min: 60, dat: todayIso, von: '08:00' }) })).status;
-  report((await put('65900003#abcdef')) === 400, `${label} Server: Tageseintrag bei einer Entstörung wird abgelehnt (nur Daueraufträge)`);
+  const putEmpty = async key => (await fetch(base + '/api/ergebnis/' + encodeURIComponent(key), { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-User-Token': login.token }, body: JSON.stringify({ a: key, team: 'FW-IH01', n: 0, s: '', nok: [] }) })).status;
+  const warOrder = (await (await fetch(base + '/api/sync?since=0&team=FW-IH01', { headers: { 'X-User-Token': login.token } })).json()).orders.find(o => (o.kind || 'war') === 'war');
+  report(!!warOrder && (await put(warOrder.auftrag + '#abcdef')) === 400, `${label} Server: Zeiteintrag bei einer Wartung wird abgelehnt (nur Daueraufträge, Reparaturen, Entstörungen)`, warOrder && warOrder.auftrag);
+  report((await putEmpty('65900003#abcdef')) === 200 && (await putEmpty('65900002-0010#abcdef')) === 200, `${label} Server: Zeiteinträge bei einer Entstörung und einer Reparatur werden angenommen (mehrere Zeiten)`);
   report((await put('65900005#abcdef')) === 200, `${label} Server: Tageseintrag bei einem Dauerauftrag wird angenommen`);
   await page.reload();
   await pause(page, 1500);

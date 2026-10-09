@@ -1116,6 +1116,14 @@
         padding-top: 10px;
         border-top: 1px solid var(--bd);
       }
+      /* Endrückmeldung (Reparatur/Entstörung): Schalter mit Hinweis darunter */
+      .frow {
+        margin: 12px 0 4px;
+      }
+      .frow p {
+        margin: 6px 0 0;
+        font-size: 0.8125rem;
+      }
       .zall {
         margin: 6px 0 10px;
       }
@@ -3210,9 +3218,11 @@
         timeError = '',
         timeDate = '',
         timeStart = '',
-        // entryKey: Dauerauftrag – Schlüssel des Tageseintrags, der gerade bearbeitet wird ('' = neuer Eintrag) · entriesAll: alle Einträge zeigen
+        // timeFinal: Reparatur/Entstörung – der Eintrag, der gerade eingegeben wird, ist die Endrückmeldung (Auftrag fertig), nicht nur eine Teilzeit
+        // entryKey: Auftrag mit Zeiteinträgen – Schlüssel des Eintrags, der gerade bearbeitet wird ('' = neuer Eintrag) · entriesAll: alle Einträge zeigen
         entryKey = '',
-        entriesAll = false;
+        entriesAll = false,
+        timeFinal = true;
       // Abhaken (Disponent)
       // marks: Auftragsnummer -> { v, at, sq } (siehe markState)
       let marks = new Map(),
@@ -3801,12 +3811,13 @@
               'Vorgang Kurztext',
               'Uhrzeit von',
               'Uhrzeit bis',
-              'Meldung(en)'
+              'Meldung(en)',
+              'Endrückmeldung'
             ]
           ];
-          // Daueraufträge: jeder Tageseintrag eine Zeile (Blatt „Zeiteinträge“); beim Auftrag stehen die Summen
+          // Daueraufträge, Reparaturen, Entstörungen: jeder Eintrag eine Zeile (Blatt „Zeiteinträge“); beim Auftrag stehen die Summen
           const entryRows = [
-            ['Auftrag', 'Team', 'Kurztext', 'Durchgeführt am', 'Beginn (Uhrzeit)', 'Dauer (Min)', 'Dauer (Std)', 'Gearbeitet mit', 'Eingetragen von', 'Eingetragen am']
+            ['Auftrag', 'Team', 'Kurztext', 'Durchgeführt am', 'Beginn (Uhrzeit)', 'Dauer (Min)', 'Dauer (Std)', 'Gearbeitet mit', 'Eingetragen von', 'Eingetragen am', 'Endrückmeldung']
           ];
           const checklistRows = [
             [
@@ -3864,7 +3875,7 @@
               stale
                 ? 'Prüfliste seit der Bewertung geändert'
                 : status.cnt
-                  ? `${status.cnt} Tageseinträge – siehe Blatt „Zeiteinträge“`
+                  ? `${status.cnt} ${orderKind(order) === 'dau' ? 'Tageseinträge' : 'Zeiteinträge'} – siehe Blatt „Zeiteinträge“`
                   : '',
               markState(order.auftrag)
                 ? new Date(marks.get(order.auftrag).at).toLocaleString('de-AT') +
@@ -3876,7 +3887,8 @@
               order.vtxt || '',
               order.uhr || '',
               order.uhr2 || '',
-              meldungenOf(order).map(m => `${m.nr}: ${m.txt}`).join(' | ') || order.mel || ''
+              meldungenOf(order).map(m => `${m.nr}: ${m.txt}`).join(' | ') || order.mel || '',
+              isTimedKind(orderKind(order)) && status.cnt ? (status.fin ? 'ja' : 'nein (Teilrückmeldung)') : ''
             ]);
             for (const e of status.ein || [])
               entryRows.push([
@@ -3889,7 +3901,8 @@
                 Math.round((e.min / 60) * 100) / 100,
                 e.mit && e.mit.length ? e.mit.map(userLabel).join(', ') : null,
                 e.tu ? userLabel(e.tu) : null,
-                e.tat ? new Date(e.tat).toLocaleString('de-AT') : null
+                e.tat ? new Date(e.tat).toLocaleString('de-AT') : null,
+                isTimedKind(orderKind(order)) ? (e.fin ? 'ja' : 'nein') : ''
               ]);
             items.forEach((t, i) => {
               const itemMark = valid ? status.s[i] : '-',
@@ -3951,8 +3964,9 @@
         checklist = { st: 'load' };
         entryKey = '';
         entriesAll = false;
-        // Dauerauftrag: das Formular ist ein neuer Tageseintrag (die Einträge stehen darüber)
-        const existingResult = orderKind(order) === 'dau' ? null : resultOf(order.auftrag);
+        // Auftrag mit Zeiteinträgen (Dauerauftrag, Reparatur, Entstörung): das Formular ist ein neuer Eintrag (die Einträge stehen darüber)
+        const existingResult = hasEntries(orderKind(order)) ? null : resultOf(order.auftrag);
+        timeFinal = !endReported(order);
         // ältere, nicht auf Viertelstunden gerundete Zeiten werden im Formular auf die nächste Viertelstunde aufgerundet vorbelegt
         const shownMin = existingResult && existingResult.min != null ? roundUpQuarter(existingResult.min) : null;
         timeHours = shownMin != null ? String(Math.floor(shownMin / 60)) : '';
@@ -3965,7 +3979,7 @@
             ? roundQuarterHHMM(existingResult.von)
             : '';
         // Reparatur/Entstörung ohne Zeit: Datum und Beginn des Termins vorbelegen (nicht in der Zukunft)
-        if (isTimedKind(orderKind(order)) && !(existingResult && existingResult.min != null)) {
+        if (isTimedKind(orderKind(order)) && !(resultOf(order.auftrag) || {}).cnt) {
           const planned = isoOfDate(order.start);
           if (planned && planned <= today()) timeDate = planned;
           if (order.uhr && /^\d{2}:\d{2}$/.test(order.uhr)) timeStart = roundQuarterHHMM(order.uhr);
@@ -4005,25 +4019,38 @@
       // ---- Ergebnisse und Status ----
       // Ergebnis-Dokument eines Auftrags (Format siehe Kopfkommentar): erst die noch nicht gesendete Eingabe (outbox), sonst der Stand vom Server
       const rawResult = key => outbox.get(key) || results.get(key);
-      // Tageseinträge eines Dauerauftrags (nur gültige, mit Zeit), älteste zuerst; jeder mit seinem Schlüssel `k`
+      // Aufträge mit mehreren Zeiteinträgen: Daueraufträge (ein Eintrag je Tag) sowie Reparaturen und Entstörungen (mehrere Zeiten, wenn die
+      // Arbeit nicht in einem Zug fertig wird; der Eintrag mit `fin` ist die Endrückmeldung). Wartungen haben genau eine Zeit im Ergebnis.
+      const hasEntries = k => k === 'dau' || k === 'rep' || k === 'ent';
+      // Reparatur/Entstörung: eine früher (vor den Zeiteinträgen) im Ergebnis des Auftrags selbst gespeicherte Zeit zählt als Eintrag – und als
+      // Endrückmeldung, denn mit ihr war der Auftrag bisher erledigt
+      const legacyEntry = orderNo => {
+        const o = ordersMap.get(orderNo);
+        return !!o && (o.kind === 'rep' || o.kind === 'ent');
+      };
+      // Zeiteinträge eines Auftrags (nur gültige, mit Zeit), älteste zuerst; jeder mit seinem Schlüssel `k`
       function entriesOf(orderNo) {
-        const keys = entryKeys.get(orderNo);
-        if (!keys) return [];
-        return [...keys]
-          .map(k => {
-            const d = rawResult(k);
-            return d && d.min != null ? { ...d, k } : null;
-          })
-          .filter(Boolean)
-          .sort((a, b) => (performedDate(a) + ' ' + (a.von || '')).localeCompare(performedDate(b) + ' ' + (b.von || '')) || a.k.localeCompare(b.k));
+        const list = [...(entryKeys.get(orderNo) || [])]
+            .map(k => {
+              const d = rawResult(k);
+              return d && d.min != null ? { ...d, k } : null;
+            })
+            .filter(Boolean),
+          own = rawResult(orderNo);
+        if (own && own.min != null && legacyEntry(orderNo)) list.push({ ...own, k: orderNo, fin: own.fin ?? 1 });
+        return list.sort((a, b) => (performedDate(a) + ' ' + (a.von || '')).localeCompare(performedDate(b) + ' ' + (b.von || '')) || a.k.localeCompare(b.k));
       }
-      // Ein Dauerauftrag mit Tageseinträgen hat als „Ergebnis“ die Summe: min = Gesamtdauer, dat/von = letzter Eintrag, tat/tu = zuletzt
-      // eingetragen, cnt = Anzahl, ein = die Einträge. Alle anderen Aufträge: ihr gespeichertes Ergebnis.
+      // Ein Auftrag mit Zeiteinträgen hat als „Ergebnis“ die Summe: min = Gesamtdauer, dat/von = letzter Eintrag, tat/tu = zuletzt
+      // eingetragen, cnt = Anzahl, ein = die Einträge, fin = ein Eintrag ist die Endrückmeldung (Reparatur/Entstörung), mit = alle, mit denen
+      // gearbeitet wurde (Reparatur/Entstörung). Alle anderen Aufträge: ihr gespeichertes Ergebnis.
       const resultOf = orderNo => {
-        if (entryKeys.has(orderNo)) {
+        const own = rawResult(orderNo);
+        if (entryKeys.has(orderNo) || (own && own.min != null && legacyEntry(orderNo))) {
           const list = entriesOf(orderNo);
           if (list.length) {
-            const last = list[list.length - 1];
+            const last = list[list.length - 1],
+              mit = [...new Set(list.flatMap(e => e.mit || []))],
+              timed = !!(ordersMap.get(orderNo) && isTimedKind(ordersMap.get(orderNo).kind));
             return {
               a: orderNo,
               team: last.team,
@@ -4038,12 +4065,15 @@
               tat: Math.max(...list.map(e => e.tat || 0)),
               tu: last.tu,
               cnt: list.length,
-              ein: list
+              ein: list,
+              ...(timed ? { fin: list.some(e => e.fin) ? 1 : 0, ...(mit.length ? { mit } : {}) } : {})
             };
           }
         }
-        return rawResult(orderNo);
+        return own;
       };
+      // Hat der Monteur den Auftrag endrückgemeldet (Reparatur/Entstörung: ein Eintrag hat den Haken „Endrückmeldung“)?
+      const endReported = order => !!(resultOf(order.auftrag) || {}).fin;
       /**
        * Status eines Auftrags, abgeleitet aus dem Ergebnis-Dokument:
        *   st = 'done'  erledigt: alle Prüfobjekte bewertet UND Zeitrückmeldung vollständig
@@ -4062,8 +4092,8 @@
         if (!status) statusCache.set(result, (status = computeOrderStatus(result, orderKind(order))));
         return status;
       };
-      // Auftragsart ohne Prüfobjekte (Reparatur, Entstörung): erledigt ist sie mit vollständiger Zeit. Ein Dauerauftrag ist nie „erledigt“
-      // (er läuft weiter): mit Tageseinträgen ist er „in Arbeit“.
+      // Auftragsart ohne Prüfobjekte (Reparatur, Entstörung): erledigt ist sie mit der Endrückmeldung (vollständige Zeit, Haken „Endrückmeldung“ –
+      // Teilzeiten allein genügen nicht). Ein Dauerauftrag ist nie „erledigt“ (er läuft weiter): mit Tageseinträgen ist er „in Arbeit“.
       const computeOrderStatus = (result, kind) => {
         const openCount = Math.max(0, (result.n | 0) - (result.ok | 0) - (result.nx | 0));
         return {
@@ -4071,7 +4101,7 @@
           op: openCount,
           nok: (result.nok || []).map(z => (typeof z === 'string' ? { t: z, m: '' } : z)),
           st:
-            kind !== 'dau' && (result.n > 0 || kind !== 'war') && !openCount && timeComplete(result)
+            kind !== 'dau' && (result.n > 0 || kind !== 'war') && !openCount && timeComplete(result) && (kind === 'war' || !!result.fin)
               ? 'done'
               : result.ok + result.nx > 0 || result.min != null
                 ? 'teil'
@@ -4103,7 +4133,9 @@
       // eingetragen, sonst: Zeit eingetragen) · '' = sonst. Daueraufträge laufen weiter und bekommen keine Farbe. Der Disponent sieht nur den Start
       // laut Ergebnis (go); ein Monteur auch den Timer seines Geräts, der noch nicht gesendet ist.
       const startOf = order => (session.role === 'dispo' ? goOf(order.auftrag) : timerStartOf(order.auftrag));
-      const workState = order => (orderKind(order) === 'dau' ? '' : isFinished(order) ? 'fin' : startOf(order) ? 'run' : '');
+      // Reparatur/Entstörung: auch mit Teilrückmeldung (Zeit eingetragen, aber noch keine Endrückmeldung) ist der Auftrag „in Arbeit“ (blau)
+      const workState = order =>
+        orderKind(order) === 'dau' ? '' : isFinished(order) ? 'fin' : startOf(order) || (isTimedKind(orderKind(order)) && (resultOf(order.auftrag) || {}).cnt) ? 'run' : '';
       // „08:15“, an einem anderen Tag „07.10. 08:15“
       const startText = ms => {
         const d = new Date(ms),
@@ -4112,7 +4144,12 @@
       };
       // Etikett „▶ gestartet 08:15“ (blau). „Erledigt“ bekommt nur die Farbe (grüne Kante): bei Wartungen steht das Etikett schon in statusTags,
       // die übrigen Auftragsarten zeigen bewusst keinen Status – dort steht die Zeit („⏱ 1 Std“) auf der Karte.
-      const workTags = order => (workState(order) === 'run' ? el('span', { class: 'tag st-run' }, '▶ gestartet ' + startText(startOf(order))) : null);
+      const workTags = order => (workState(order) === 'run' && startOf(order) ? el('span', { class: 'tag st-run' }, '▶ gestartet ' + startText(startOf(order))) : null);
+      // Etikett für Reparatur/Entstörung mit Zeit: „✓ Endrückmeldung“ (fertig) oder „◐ Teilrückmeldung“ (die Arbeit geht weiter)
+      const endTag = order => {
+        const d = isTimedKind(orderKind(order)) && resultOf(order.auftrag);
+        return d && d.cnt ? (d.fin ? el('span', { class: 'tag st-ok' }, '✓ Endrückmeldung') : el('span', { class: 'tag st-teil' }, '◐ Teilrückmeldung')) : null;
+      };
       // Zeile mit Filter-Chips: items = [[Schlüssel, Beschriftung, Anzahl]]; current = aktiver Schlüssel; select setzt ihn
       const filterChips = (items, cur, set) =>
         el(
@@ -4219,9 +4256,10 @@
       // Zeit-Etikett: Dauer, oder Warnung, sobald am Auftrag gearbeitet wurde, die Zeitrückmeldung aber fehlt/unvollständig ist
       const timeTag = r => {
         const d = resultOf(r.auftrag);
-        // Dauerauftrag: Gesamtdauer aller Tageseinträge
+        // Dauerauftrag: Gesamtdauer aller Tageseinträge; Reparatur/Entstörung: Gesamtzeit (bei mehreren Zeiten mit der Zahl der Einträge)
         if (orderKind(r) === 'dau')
           return d && d.cnt ? el('span', { class: 'tag' }, `⏱ ${formatMinutes(d.min)} · ${d.cnt === 1 ? '1 Eintrag' : d.cnt + ' Einträge'}`) : null;
+        if (d && d.cnt > 1) return el('span', { class: 'tag' }, `⏱ ${formatMinutes(d.min)} · ${d.cnt} Einträge`);
         if (timeComplete(d)) return el('span', { class: 'tag' }, '⏱ ' + formatMinutes(d.min));
         if (d && d.min != null) return el('span', { class: 'tag st-zf' }, '⏱ Beginn fehlt');
         return d && d.ok + d.nx > 0 ? el('span', { class: 'tag st-zf' }, '⏱ Zeit fehlt') : null;
@@ -4277,16 +4315,20 @@
        */
       // Kennung eines neuen Tageseintrags (Kleinbuchstaben und Ziffern, 7 Zeichen)
       const newEntryId = () => (Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 5)).padEnd(7, '0');
-      // key: Schlüssel des Ergebnisses – der Auftrag selbst, bei einem Dauerauftrag der Tageseintrag („Auftrag#Kennung“; leer = neuer)
+      // key: Schlüssel des Ergebnisses – der Auftrag selbst, bei einem Auftrag mit Zeiteinträgen der Eintrag („Auftrag#Kennung“; leer = neuer)
       function storeTime(order, items, minutes, date, start, key = '') {
         if (isLocked(order.auftrag)) return denyLocked();
-        const dau = orderKind(order) === 'dau';
-        key = key || (dau ? order.auftrag + '#' + newEntryId() : order.auftrag);
+        const entries = hasEntries(orderKind(order)),
+          timed = isTimedKind(orderKind(order)),
+          finalNow = timed && timeFinal;
+        key = key || (entries ? order.auftrag + '#' + newEntryId() : order.auftrag);
         timeFormAtOpen = timeFormSnapshot();
         timeFormOpen = false;
         timeFlash = minutes > 0;
-        // kurze Bestätigung (bei „Ende“ hat stopTimer schon eine eigene Meldung gesetzt)
-        if (minutes > 0 && !infoMsg.startsWith('⏱')) infoMsg = '✓ Zeit gespeichert: ' + formatMinutes(minutes);
+        // kurze Bestätigung (bei „Ende“ hat stopTimer schon eine eigene Meldung gesetzt); Reparatur/Entstörung nennen, ob es die Endrückmeldung war
+        const how = timed ? (finalNow ? ' · Endrückmeldung (Auftrag fertig)' : ' · Teilrückmeldung (Arbeit geht weiter)') : '';
+        if (minutes > 0 && !infoMsg.startsWith('⏱')) infoMsg = '✓ Zeit gespeichert: ' + formatMinutes(minutes) + how;
+        else if (minutes > 0) infoMsg += how;
         else if (!(minutes > 0)) infoMsg = '🗑 Zeit gelöscht';
         const result = rawResult(key),
           count = items.length,
@@ -4301,11 +4343,13 @@
         delete doc.dat;
         delete doc.von;
         delete doc.mit;
+        delete doc.fin;
         delete doc.go; // die Zeit ersetzt den Start
         if (minutes > 0) {
           delete runningTimers[order.auftrag]; // die Zeit ist jetzt gespeichert: ein laufender Timer ist erledigt
           saveTimers();
           doc.min = minutes;
+          if (finalNow) doc.fin = 1; // Endrückmeldung: der Auftrag ist mit dieser Zeit fertig
           doc.tat = Date.now();
           if (date) doc.dat = date;
           if (start) doc.von = start;
@@ -4314,8 +4358,8 @@
         doc._b = serverBaseOf(key);
         outbox.set(key, doc);
         errorMsg = '';
-        // Dauerauftrag: nach dem Speichern (oder Löschen) ist das Formular wieder ein leerer, neuer Eintrag
-        if (dau) {
+        // Auftrag mit Zeiteinträgen: nach dem Speichern (oder Löschen) ist das Formular wieder ein leerer, neuer Eintrag
+        if (entries) {
           entryKey = '';
           timeHours = '';
           timeMinutes = '';
@@ -4323,10 +4367,14 @@
           timeDate = today();
           timeWith = [];
           timeWithAuto = session.role === 'monteur';
+          timeFinal = !endReported(order); // schon endrückgemeldet: weitere Zeiten sind Teilzeiten, bis der Monteur etwas anderes wählt
           applyDefaultWith(order);
           timeFormAtOpen = timeFormSnapshot();
         }
         saveOutbox();
+        // Der Start (go) steht im Ergebnis des Auftrags selbst, die Zeit in ihrem Eintrag: mit der Zeit ist der Start erledigt (nicht bei einer
+        // früheren Zeit im Auftrag selbst: sie ersetzt den Start schon)
+        if (minutes > 0 && timed && key !== order.auftrag) saveGo(order, items, 0);
         render();
         sendPending(key);
       }
@@ -4372,6 +4420,8 @@
       function saveGo(order, items, go) {
         const key = order.auftrag;
         if (!items || orderKind(order) === 'dau' || isLocked(key) || (goOf(key) || 0) === go) return;
+        // (eine frühere Zeit im Auftrag selbst – Reparatur/Entstörung vor den Zeiteinträgen – lässt den Start im Ergebnis nicht zu: er bleibt im Gerät)
+        if (go && orderKind(order) !== 'war' && rawResult(key) && rawResult(key).min != null) return;
         const result = rawResult(key),
           count = items.length,
           listValid = !!(result && result.s && result.n === count && result.s.length === count),
@@ -4434,10 +4484,11 @@
         timeDate = today();
         storeTime(order, items, null, '', '', key);
       }
-      // Dauerauftrag: einen Tageseintrag zum Ändern ins Formular laden (key leer = zurück zu einem neuen Eintrag)
+      // Auftrag mit Zeiteinträgen: einen Eintrag zum Ändern ins Formular laden (key leer = zurück zu einem neuen Eintrag)
       function editEntry(order, key) {
         const e = key ? rawResult(key) : null;
         entryKey = e ? key : '';
+        timeFinal = e ? !!(key === order.auftrag ? (e.fin ?? 1) : e.fin) : !endReported(order); // (eine frühere Zeit im Auftrag selbst war die Endrückmeldung)
         timeHours = e ? String(Math.floor(e.min / 60)) : '';
         timeMinutes = e ? String(e.min % 60) : '';
         timeDate = e ? performedDate(e) || today() : today();
@@ -4450,7 +4501,7 @@
         timeFormAtOpen = timeFormSnapshot();
         render();
       }
-      // Kopf der Karte bei einem Dauerauftrag: Summe und die Tageseinträge (neueste zuerst); der Monteur kann sie ändern
+      // Kopf der Karte bei einem Auftrag mit Zeiteinträgen: Summe und die Einträge (neueste zuerst); der Monteur kann sie ändern
       // Tageseinträge, die gerade dazugekommen sind (Schlüssel -> Zeitpunkt): sie blenden ein – auch wenn währenddessen neu gezeichnet wird
       // (siehe animateView). entrySeen: Einträge der letzten Zeichnung, entrySeenOrder: zu welchem Auftrag.
       const entryFresh = new Map();
@@ -4466,15 +4517,20 @@
         entrySeenOrder = order.auftrag;
         const total = list.reduce((sum, e) => sum + e.min, 0),
           locked = isMonteur && isLocked(order.auftrag),
-          shown = entriesAll ? list : list.slice(0, 8);
+          shown = entriesAll ? list : list.slice(0, 8),
+          timed = isTimedKind(orderKind(order)),
+          ended = list.some(e => e.fin);
         return [
-          el('b', {}, 'Tageseinträge'),
+          el('b', {}, timed ? 'Zeit' : 'Tageseinträge'),
           el(
             'p',
             { class: 'mu', 'data-k': 'zs0' },
             list.length
-              ? `Gesamt ${formatMinutes(total)} in ${list.length === 1 ? '1 Eintrag' : list.length + ' Einträgen'}`
-              : 'Noch keine Einträge – für jeden Tag, an dem gearbeitet wurde, ein Eintrag.'
+              ? `Gesamt ${formatMinutes(total)} in ${list.length === 1 ? '1 Eintrag' : list.length + ' Einträgen'}` +
+                  (timed ? (ended ? ' · ✓ Endrückmeldung gegeben' : ' · Teilrückmeldung (Arbeit geht weiter)') : '')
+              : timed
+                ? 'Noch keine Zeit zurückgemeldet.'
+                : 'Noch keine Einträge – für jeden Tag, an dem gearbeitet wurde, ein Eintrag.'
           ),
           el(
             'div',
@@ -4487,7 +4543,9 @@
                 'div',
                 {},
                 el('b', {}, `${weekdayShort(performedDate(e))} ${formatIsoDate(performedDate(e))}`),
-                ` · ${e.von ? 'ab ' + e.von + ' Uhr · ' : ''}${formatMinutes(e.min)}`
+                ` · ${e.von ? 'ab ' + e.von + ' Uhr · ' : ''}${formatMinutes(e.min)}`,
+                timed && ' ',
+                timed && (e.fin ? el('span', { class: 'tag st-ok' }, '✓ Endrückmeldung') : el('span', { class: 'tag st-teil' }, '◐ Teilrückmeldung'))
               ),
               e.mit && e.mit.length > 0 && el('div', { class: 'mu' }, '👥 ' + userNamesText(e.mit)),
               e.tu && el('div', { class: 'mu' }, '👤 ' + userLabel(e.tu)),
@@ -4522,17 +4580,20 @@
        * (Schnellwahl + Stunden/Minuten) und Speichern/Löschen.
        */
       function timeCard(order, isMonteur) {
-        // Dauerauftrag: mehrere Tageseinträge. Das Formular unten gilt dann für einen neuen Eintrag oder den gerade bearbeiteten (entryKey)
+        // Dauerauftrag, Reparatur, Entstörung: mehrere Einträge. Das Formular unten gilt dann für einen neuen Eintrag oder den gerade bearbeiteten
+        // (entryKey). Reparatur/Entstörung: jede Zeit ist eine Teilrückmeldung, außer der Monteur wählt „Endrückmeldung“ (der Auftrag ist fertig).
         const dau = orderKind(order) === 'dau',
-          entry = dau && entryKey ? rawResult(entryKey) : null,
-          result = dau ? entry : resultOf(order.auftrag),
-          key = dau ? entryKey : order.auftrag,
+          entries = hasEntries(orderKind(order)),
+          timed = isTimedKind(orderKind(order)),
+          entry = entries && entryKey ? rawResult(entryKey) : null,
+          result = entries ? entry : resultOf(order.auftrag),
+          key = entries ? entryKey : order.auftrag,
           items = checklist.st === 'ok' ? checklist.list : null,
           hasTime = !!(result && result.min != null);
         const timePanel = el(
           'div',
           { class: 'card', 'data-zeit': '1', 'data-k': 'zc' },
-          ...(dau
+          ...(entries
             ? entriesHead(order, isMonteur)
             : [
                 el('b', {}, 'Zeit'),
@@ -4553,8 +4614,8 @@
         );
         // abgehakt (Monteur): nur ansehen – keine Hinweise zum Ausfüllen, keine Eingabe von Zeit und Kollegen
         if (isMonteur && isLocked(order.auftrag)) return timePanel;
-        if (dau) {
-          // keine Hinweise zu „erledigt“: ein Dauerauftrag läuft weiter
+        if (entries) {
+          // keine Hinweise zu „erledigt“: ein Dauerauftrag läuft weiter, bei Reparatur/Entstörung sagt es die Zeile „Gesamt … Endrückmeldung“
         } else if (hasTime && !timeComplete(result))
           timePanel.append(
             el(
@@ -4652,6 +4713,30 @@
           timePanel.append(
             el('b', { class: 'zne', 'data-k': 'zn' }, entry ? `Eintrag bearbeiten (${formatIsoDate(performedDate(entry))})` : 'Neuer Eintrag')
           );
+        else if (timed && (entry || (resultOf(order.auftrag) || {}).cnt))
+          timePanel.append(
+            el('b', { class: 'zne', 'data-k': 'zn' }, entry ? `Zeit bearbeiten (${formatIsoDate(performedDate(entry))})` : 'Weitere Zeit eintragen')
+          );
+        // Reparatur/Entstörung: Endrückmeldung (der Auftrag ist fertig) oder Teilrückmeldung (die Arbeit geht weiter). Der Hinweis ändert sich
+        // nicht mit der Wahl (eine Zeile mit anderem Umbruch ließe die Karte springen), nur der Haken am Schalter.
+        const finRow = () =>
+          el(
+            'div',
+            { class: 'frow', 'data-k': 'zf' },
+            el(
+              'button',
+              {
+                class: 'chip' + (timeFinal ? ' on' : ''),
+                'aria-pressed': timeFinal ? 'true' : 'false',
+                onclick: () => {
+                  timeFinal = !timeFinal;
+                  render();
+                }
+              },
+              (timeFinal ? '✓ ' : '') + 'Endrückmeldung (Auftrag ist fertig)'
+            ),
+            el('p', { class: 'mu' }, 'Ohne Haken ist es eine Teilrückmeldung: Die Arbeit geht weiter, der Auftrag bleibt in Arbeit.')
+          );
         if (timerStart || !hasTime)
           timePanel.append(
             el(
@@ -4689,8 +4774,7 @@
         // Kompakt: Start/Ende und die Kollegen-Auswahl sind immer da (bei neuer Zeit), Datum/Beginn/Dauer erst nach „Zeit von Hand
         // eintragen“ bzw. „Zeit ändern“. Bei einem Fehler oder angefangener Eingabe bleibt das Formular offen.
         const formOpen = timeFormOpen || !!timeError;
-        if (!hasTime)
-          timePanel.append(el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order));
+        if (!hasTime) timePanel.append(...(timed ? [finRow()] : []), el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order));
         if (!formOpen) {
           timePanel.append(
             el(
@@ -4710,7 +4794,9 @@
                     : '✎ Eintrag von Hand eintragen'
                   : hasTime
                     ? '✎ Zeit ändern'
-                    : '✎ Zeit von Hand eintragen'
+                    : timed && (resultOf(order.auftrag) || {}).cnt
+                      ? '✎ Weitere Zeit von Hand eintragen'
+                      : '✎ Zeit von Hand eintragen'
               )
             )
           );
@@ -4844,7 +4930,7 @@
             ),
             el('span', {}, 'Min')
           ),
-          ...(hasTime ? [el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order)] : []),
+          ...(hasTime ? [...(timed ? [finRow()] : []), el('div', { class: 'mu' }, 'Mit wem gearbeitet? (optional)'), withPicker(order)] : []),
           timeError && el('p', { class: 'mu er' }, timeError),
           el(
             'div',
@@ -4863,13 +4949,13 @@
               'button',
               {
                 onclick: () => {
-                  if (dau && entryKey) return editEntry(order, ''); // Bearbeiten abbrechen: zurück zu einem neuen Eintrag
+                  if (entries && entryKey) return editEntry(order, ''); // Bearbeiten abbrechen: zurück zu einem neuen Eintrag
                   timeFormOpen = false;
                   timeError = '';
                   render();
                 }
               },
-              dau && entryKey ? 'Abbrechen' : 'Zuklappen'
+              entries && entryKey ? 'Abbrechen' : 'Zuklappen'
             )
           )
         );
@@ -5888,13 +5974,13 @@
       };
       /**
        * Reparaturen und Entstörungen im Verzug: Der Termin sollte schon gewesen sein – sein Ende (Enddatum, sonst das Datum) liegt vor
-       * heute – und es ist noch keine Zeit zurückgemeldet. Wer pünktlich arbeitet, hat in der Liste nur Aufträge von heute an. Alles Ältere
+       * heute – und der Auftrag ist noch nicht endrückgemeldet (Teilzeiten genügen nicht). Wer pünktlich arbeitet, hat in der Liste nur Aufträge von heute an. Alles Ältere
        * ist hervorgehoben (rotes Etikett mit den Tagen, rote Kante) und steht in der Liste ganz oben. Ergebnis { days } oder null.
        */
       const dueDateOf = order => isoOfDate(order.ende) || isoOfDate(order.start);
       const lateInfo = order => {
         const due = isTimedKind(orderKind(order)) ? dueDateOf(order) : '';
-        if (!due || timeComplete(resultOf(order.auftrag))) return null;
+        if (!due || isFinished(order)) return null;
         const days = Math.round((new Date(today() + 'T12:00:00') - new Date(due + 'T12:00:00')) / 864e5);
         return days > 0 ? { days } : null;
       };
@@ -6249,6 +6335,7 @@
             statusTags(order),
             workTags(order),
             timeTag(order),
+            endTag(order),
             termTag(order),
             dueTag(order),
             lateTag(order),
@@ -6294,7 +6381,7 @@
           isDispo &&
             result &&
             result.min != null &&
-            (kind === 'dau'
+            (kind === 'dau' || result.cnt > 1
               ? el(
                   'div',
                   { class: 'mu' },
@@ -8535,8 +8622,8 @@
               'data-k': (draft ? 'gd-' : 'gb-') + o.auftrag,
               role: 'button',
               tabindex: '0',
-              'aria-label': `${label} ${text}, ${kindInfo(kind).name}, ${it.slot.team}, ${slotText(it.slot)}${state === 'run' ? ', gestartet' : state === 'fin' ? ', fertig' : ''}${it.cf ? ', Überschneidung' : ''}`,
-              title: `${label}${text ? ' · ' + text : ''}\n${kindInfo(kind).name} · ${it.slot.team} · ${slotText(it.slot)} (${durationText(minutesBetween(it.slot.von, it.slot.bis))})${state === 'run' ? '\n▶ gestartet ' + startText(startOf(o)) : state === 'fin' ? '\n✓ fertig, Zeit eingetragen' : ''}${o.str ? '\n' + [o.plz, o.str].filter(Boolean).join(' ') : ''}${it.cf ? '\n⚠ Überschneidet sich mit einem anderen Auftrag' : ''}${late ? '\n⏰ im Verzug' : ''}`,
+              'aria-label': `${label} ${text}, ${kindInfo(kind).name}, ${it.slot.team}, ${slotText(it.slot)}${state === 'run' ? (startOf(o) ? ', gestartet' : ', Teilrückmeldung') : state === 'fin' ? ', fertig' : ''}${it.cf ? ', Überschneidung' : ''}`,
+              title: `${label}${text ? ' · ' + text : ''}\n${kindInfo(kind).name} · ${it.slot.team} · ${slotText(it.slot)} (${durationText(minutesBetween(it.slot.von, it.slot.bis))})${state === 'run' ? (startOf(o) ? '\n▶ gestartet ' + startText(startOf(o)) : '\n◐ Teilrückmeldung: Zeit eingetragen, noch nicht fertig') : state === 'fin' ? '\n✓ fertig (Endrückmeldung)' : ''}${o.str ? '\n' + [o.plz, o.str].filter(Boolean).join(' ') : ''}${it.cf ? '\n⚠ Überschneidet sich mit einem anderen Auftrag' : ''}${late ? '\n⏰ im Verzug' : ''}`,
               style: `left:${left}px;width:${Math.max(g.minBar, right - left)}px;top:${4 + it.lane * h}px;height:${h - 2}px`,
               onpointerdown: e => startBarDrag(e, o, it.slot, 'move', !!draft),
               onclick: e => {
@@ -8553,7 +8640,7 @@
               }
             },
             // (in einem schmalen Balken, im Monat meist, stünde von der Nummer nur ein abgeschnittener Rest)
-            right - left >= 44 && el('b', {}, (state === 'run' ? '▶ ' : state === 'fin' ? '✓ ' : '') + label),
+            right - left >= 44 && el('b', {}, (state === 'run' ? (startOf(o) ? '▶ ' : '◐ ') : state === 'fin' ? '✓ ' : '') + label),
             text && h >= 16 && right - left >= 44 && el('span', {}, text),
             // Ränder zum Ändern der Länge (nicht am abgeschnittenen Rand: dort endet der Auftrag nicht; nicht am blassen Platzhalter eines Entwurfs)
             grip && x0 >= 0 && edge('l', 'start'),
@@ -8674,7 +8761,7 @@
             )
           ),
           el('div', { class: 'gt-wrap' }, names, scroller),
-          el('div', { class: 'gt-leg' }, el('span', {}, el('i', {}), 'Reparatur'), el('span', {}, el('i', { class: 'ent' }), 'Entstörung'), el('span', {}, el('i', { class: 'dr' }), 'Entwurf'), el('span', {}, el('i', { class: 'run' }), 'gestartet'), el('span', {}, el('i', { class: 'fin' }), 'fertig (Zeit eingetragen)'), el('span', {}, '⚠ gelber Rand = Überschneidung im Team'), el('span', {}, '↔ Rand des Balkens ziehen = Länge ändern'))
+          el('div', { class: 'gt-leg' }, el('span', {}, el('i', {}), 'Reparatur'), el('span', {}, el('i', { class: 'ent' }), 'Entstörung'), el('span', {}, el('i', { class: 'dr' }), 'Entwurf'), el('span', {}, el('i', { class: 'run' }), 'gestartet oder Teilrückmeldung'), el('span', {}, el('i', { class: 'fin' }), 'fertig (Endrückmeldung)'), el('span', {}, '⚠ gelber Rand = Überschneidung im Team'), el('span', {}, '↔ Rand des Balkens ziehen = Länge ändern'))
         );
         return card;
       }

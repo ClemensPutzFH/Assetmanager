@@ -21,8 +21,10 @@
  *             Vorgängen wird `orders` daraus neu berechnet
  *   meldung   Meldungen (Schäden): mit Auftrag (auftrag = echte Auftragsnummer) oder noch ohne (auftrag = '')
  *   pruef     Prüfobjekt-Liste je Auftrag (JSON)       ergebnis  Bewertung/Zeit je Auftrag (JSON, Format siehe index.html).
- *             Daueraufträge haben mehrere Tageseinträge: je Eintrag eine Zeile mit dem Schlüssel „Auftrag#Kennung“ (Format wie die Zeit
- *             eines Auftrags: min, dat, von, mit …); ein Eintrag ohne `min` gilt als gelöscht. `go` (ms) = Start gedrückt, solange noch keine Zeit gespeichert ist
+ *             Daueraufträge, Reparaturen und Entstörungen haben mehrere Zeiteinträge: je Eintrag eine Zeile mit dem Schlüssel „Auftrag#Kennung“
+ *             (Format wie die Zeit eines Auftrags: min, dat, von, mit …); ein Eintrag ohne `min` gilt als gelöscht. Bei Reparatur/Entstörung
+ *             ist der Eintrag mit `fin` = 1 die Endrückmeldung (Auftrag fertig), die übrigen sind Teilrückmeldungen. `go` (ms) = Start gedrückt,
+ *             solange noch keine Zeit gespeichert ist
  *   dmark     „Abgehakt“ des Disponenten               meta      Schlüssel/Werte (Änderungsnummer, Geheimnis, VAPID, Upload-Infos)
  *   dev       Geräte (Rolle, Team, Spitzname, zuletzt aktiv, Push-Abo, Abmeldung, letzter Standort)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
@@ -276,7 +278,7 @@ const sql = {
     'SELECT d.auftrag,d.v,d.at,d.seq FROM dmark d JOIN orders o ON o.auftrag=d.auftrag WHERE d.seq>? AND d.v=1 AND o.del=0 AND o.mteam=?'
   ),
   getMark: db.prepare('SELECT v,at,seq FROM dmark WHERE auftrag=?'),
-  // Tageseinträge eines Dauerauftrags (Schlüssel „Auftrag#Kennung“)
+  // Zeiteinträge eines Auftrags (Schlüssel „Auftrag#Kennung“)
   getOrderKind: db.prepare('SELECT kind FROM orders WHERE auftrag=? AND del=0'),
   // Disposition (siehe /api/dispo): Zustand eines Auftrags, setzen, aufheben, Teams zur Auswahl
   getOrderDispo: db.prepare('SELECT * FROM orders WHERE auftrag=?'),
@@ -990,6 +992,8 @@ function cleanResultDoc(orderNo, doc) {
     if (!(minutes >= 1 && minutes <= 1440)) throw { code: 400, msg: 'Ungültige Dauer' };
     clean.min = Math.round(minutes);
     clean.tat = +doc.tat || Date.now();
+    // Endrückmeldung (Reparatur/Entstörung): mit dieser Zeit ist der Auftrag fertig; ohne den Haken ist es eine Teilrückmeldung
+    if (doc.fin) clean.fin = 1;
     if (/^\d{4}-\d{2}-\d{2}$/.test(doc.dat || '')) clean.dat = doc.dat;
     if (/^\d{2}:\d{2}$/.test(doc.von || '')) clean.von = doc.von;
     // mit wem gearbeitet (SAP-User der Kollegen, höchstens 10); der Server streicht unbekannte und den Speichernden selbst
@@ -1013,7 +1017,7 @@ const cleanExt = list => {
   return clean.length ? JSON.stringify(clean) : null;
 };
 // nur die bekannten Felder eines Auftrags an die Geräte schicken
-const MAX_ENTRIES = 500; // Tageseinträge je Dauerauftrag
+const MAX_ENTRIES = 500; // Zeiteinträge je Auftrag (Dauerauftrag, Reparatur, Entstörung)
 
 // ---------- Aufträge aus den SAP-Dateien zusammensetzen ----------
 // Team mit angehängtem „P“ („FW-IH01P“): geplant und vorgemerkt, aber noch nicht fix – wird nicht angezeigt
@@ -1683,20 +1687,20 @@ async function handleApi(req, res, url) {
     if (!teamAllowed(user, d.team))
       return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt – dieser Auftrag gehört zu einem anderen Team.' });
     d.u = user.sap; // wer das Ergebnis zuletzt gespeichert hat (kommt aus der Anmeldung, nicht vom Gerät)
-    // Schlüssel „Auftrag#Kennung“ = ein Tageseintrag eines Dauerauftrags; gesperrt wird über den Auftrag
+    // Schlüssel „Auftrag#Kennung“ = ein Zeiteintrag (Dauerauftrag: ein Tageseintrag; Reparatur/Entstörung: eine von mehreren Zeiten); gesperrt wird über den Auftrag
     const orderKey = match[1].split('#')[0],
       isEntry = match[1].includes('#');
     const r = await inBatch(() => {
       if (isEntry) {
         const o = sql.getOrderKind.get(orderKey);
-        if (!o || o.kind !== 'dau') return { bad: 'Tageseinträge gibt es nur bei Daueraufträgen.' };
+        if (!o || !['dau', 'rep', 'ent'].includes(o.kind)) return { bad: 'Zeiteinträge gibt es nur bei Daueraufträgen, Reparaturen und Entstörungen.' };
       }
       const cur = sql.getErg.get(match[1]);
       // Vom Disponenten abgehakt: der Monteur kann nichts mehr ändern (erst wieder, wenn der Haken zurückgenommen wird)
       const mark = sql.getMark.get(orderKey);
       if (mark && mark.v) return { locked: mark, cur: cur || null };
       if (isEntry && !cur && sql.countEntries.get(orderKey + '#%').n >= MAX_ENTRIES)
-        return { bad: `Zu diesem Dauerauftrag gibt es schon ${MAX_ENTRIES} Einträge.` };
+        return { bad: `Zu diesem Auftrag gibt es schon ${MAX_ENTRIES} Einträge.` };
       if (base !== null && (cur ? cur.seq : 0) !== base) return { cur: cur || null };
       // Zeitrückmeldung (tu = SAP-User, der sie gemacht hat): bleibt die Zeit unverändert, bleibt auch der bisherige Benutzer
       // (z. B. wenn ein anderer Monteur nur Prüfobjekte bewertet); neue oder geänderte Zeit gehört dem speichernden Benutzer
@@ -1733,7 +1737,7 @@ async function handleApi(req, res, url) {
         user.did,
         d.team,
         match[1],
-        `${d.ok} OK, ${d.nx} Nicht OK, ${d.n - d.ok - d.nx} offen` + (d.min != null ? `, Zeit ${d.min} Min` : d.go ? ', gestartet' : '')
+        `${d.ok} OK, ${d.nx} Nicht OK, ${d.n - d.ok - d.nx} offen` + (d.min != null ? `, Zeit ${d.min} Min${d.fin ? ', Endrückmeldung' : ''}` : d.go ? ', gestartet' : '')
       );
       return { sq: changeSeq };
     });
