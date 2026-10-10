@@ -250,6 +250,9 @@ addColumn('usr', 'team_lock', 'INTEGER NOT NULL DEFAULT 0');
     first: 'INTEGER',
     kick: 'INTEGER NOT NULL DEFAULT 0',
     kick_at: 'INTEGER',
+    // vom Disponenten ausgeloggt: das Gerät steht nicht mehr in der Geräteliste (bis es sich wieder anmeldet), die Zeile bleibt aber
+    // stehen – `kick` und `kick_at` brauchen wir, damit das Gerät es erfährt und seine alten Tokens ungültig bleiben
+    gone: 'INTEGER NOT NULL DEFAULT 0',
     loc_lat: 'REAL',
     loc_lon: 'REAL',
     loc_acc: 'REAL',
@@ -261,6 +264,8 @@ addColumn('usr', 'team_lock', 'INTEGER NOT NULL DEFAULT 0');
   for (const [column, type] of Object.entries(added))
     if (!have.has(column)) db.exec(`ALTER TABLE dev ADD COLUMN ${column} ${type}`);
   if (!have.has('role')) db.exec("UPDATE dev SET role='monteur' WHERE team IS NOT NULL");
+  // Geräte, die der Disponent früher ausgeloggt hat und die sich noch nicht gemeldet haben, verschwinden jetzt auch aus der Liste
+  if (!have.has('gone')) db.exec('UPDATE dev SET gone=1 WHERE kick=1');
 }
 // Vorbereitete SQL-Anweisungen (einmal kompiliert, vielfach genutzt). up… = einfügen/aktualisieren, tomb… = als gelöscht markieren
 const sql = {
@@ -387,12 +392,14 @@ const sql = {
   getKick: db.prepare('SELECT kick, kick_at FROM dev WHERE did=?'),
   // Anmeldung auf dem Gerät: die Abmeldung durch den Disponenten ist damit erledigt (sonst würde das Gerät gleich wieder abgemeldet)
   clearKick: db.prepare('UPDATE dev SET kick=0 WHERE did=? AND kick=1'),
-  // meldet das Gerät an/um/ab (Rolle, Team, Push-Abo) und hebt eine angeforderte Abmeldung auf; Spitzname bleibt erhalten
+  // meldet das Gerät an/um/ab (Rolle, Team, Push-Abo) und hebt eine angeforderte Abmeldung auf; Spitzname bleibt erhalten.
+  // `gone` (vom Disponenten ausgeloggt, nicht mehr in der Liste) hebt erst die Anmeldung mit Rolle auf: die Abmeldemeldung des Geräts
+  // selbst (Rolle leer, kommt gleich nach dem Ausloggen) darf es nicht wieder in die Liste bringen
   upDev: db.prepare(
-    'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick,usr,pstat) VALUES(?,?,?,?,?,?,?,0,?,?) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0, usr=excluded.usr, pstat=excluded.pstat'
+    'INSERT INTO dev(did,role,team,sub,seen,ua,first,kick,usr,pstat) VALUES(?,?,?,?,?,?,?,0,?,?) ON CONFLICT(did) DO UPDATE SET role=excluded.role, team=excluded.team, sub=excluded.sub, seen=excluded.seen, ua=excluded.ua, kick=0, gone=CASE WHEN excluded.role IS NULL THEN dev.gone ELSE 0 END, usr=excluded.usr, pstat=excluded.pstat'
   ),
   listDevs: db.prepare(
-    "SELECT d.did, d.name, d.role, d.team, d.sub IS NOT NULL AS push, d.pstat, d.seen, d.first, d.ua, d.kick, d.loc_lat, d.loc_lon, d.loc_acc, d.loc_at, d.loc_err, d.usr, trim(u.first || ' ' || u.last) AS uname FROM dev d LEFT JOIN usr u ON u.sap=d.usr WHERE d.seen>? ORDER BY d.seen DESC"
+    "SELECT d.did, d.name, d.role, d.team, d.sub IS NOT NULL AS push, d.pstat, d.seen, d.first, d.ua, d.loc_lat, d.loc_lon, d.loc_acc, d.loc_at, d.loc_err, d.usr, trim(u.first || ' ' || u.last) AS uname FROM dev d LEFT JOIN usr u ON u.sap=d.usr WHERE d.seen>? AND d.gone=0 ORDER BY d.seen DESC"
   ),
   // letzter Standort bzw. Fehler (nur das Neueste, kein Verlauf); nur für angemeldete Monteur-Geräte
   setLoc: db.prepare(
@@ -402,10 +409,11 @@ const sql = {
     'UPDATE dev SET loc_lat=NULL, loc_lon=NULL, loc_acc=NULL, loc_err=NULL, loc_at=NULL WHERE did=?'
   ),
   nameDev: db.prepare('UPDATE dev SET name=? WHERE did=?'),
-  // Ausloggen: das Gerät ist sofort abgemeldet (Rolle, Team, Standort weg); `kick` merkt vor, dass es das beim nächsten
-  // Kontakt auch selbst erfährt (Startbildschirm), `kick_at` entwertet seine bisherigen Tokens
+  // Ausloggen: das Gerät ist sofort abgemeldet (Rolle, Team, Standort weg) und steht nicht mehr in der Geräteliste (`gone`) – der
+  // Disponent wartet nicht, bis es sich meldet; `kick` merkt vor, dass es das beim nächsten Kontakt auch selbst erfährt
+  // (Startbildschirm), `kick_at` entwertet seine bisherigen Tokens
   kickDev: db.prepare(
-    'UPDATE dev SET kick=1, kick_at=?, role=NULL, team=NULL, usr=NULL, loc_lat=NULL, loc_lon=NULL, loc_acc=NULL, loc_err=NULL, loc_at=NULL WHERE did=?'
+    'UPDATE dev SET kick=1, gone=1, kick_at=?, role=NULL, team=NULL, usr=NULL, loc_lat=NULL, loc_lon=NULL, loc_acc=NULL, loc_err=NULL, loc_at=NULL WHERE did=?'
   ),
   dupSub: db.prepare('UPDATE dev SET sub=NULL WHERE sub=? AND did<>?'),
   dropSub: db.prepare('UPDATE dev SET sub=NULL WHERE did=?'),
@@ -2371,7 +2379,6 @@ async function handleApi(req, res, url) {
       seen: r.seen,
       first: r.first,
       ua: r.ua,
-      kick: !!r.kick,
       usr: r.usr, // angemeldeter Benutzer (SAP-User) und sein Name
       uname: r.uname,
       lat: r.loc_lat,
@@ -2391,8 +2398,9 @@ async function handleApi(req, res, url) {
     sql.nameDev.run(name || null, did);
     return sendJson(req, res, 200, { ok: true });
   }
-  // Gerät ausloggen: das Gerät kehrt beim nächsten Abgleich zum Startbildschirm zurück (sync meldet `kicked`), und seine
-  // bisher ausgestellten Disponenten-/Upload-Tokens werden sofort ungültig (siehe tokenValid)
+  // Gerät ausloggen: das Gerät verschwindet sofort aus der Geräteliste (auch wenn es gerade nicht erreichbar ist), kehrt beim
+  // nächsten Abgleich zum Startbildschirm zurück (sync meldet `kicked`), und seine bisher ausgestellten Disponenten-/Upload-Tokens
+  // werden sofort ungültig (siehe tokenValid). Meldet es sich später wieder an, steht es wieder in der Liste.
   if (pathname === '/api/devices/logout' && method === 'POST') {
     const did = validDeviceId((await readBody(req, 1e4)).did);
     let found = false;

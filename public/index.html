@@ -12954,14 +12954,14 @@
         }
         await loadDevices();
       }
-      // Gerät ausloggen: der Server meldet es sofort ab (Rolle/Team weg, Tokens ungültig); das Gerät selbst kehrt zum Startbildschirm
-      // zurück, sobald es sich beim Server meldet (bei offener App sofort)
+      // Gerät ausloggen: der Server meldet es sofort ab (Rolle/Team weg, Tokens ungültig) und nimmt es aus der Liste – ohne zu warten,
+      // bis es sich meldet; das Gerät selbst kehrt zum Startbildschirm zurück, sobald es sich beim Server meldet (bei offener App sofort).
+      // Die Rückmeldung ist eine Kurzmeldung unten (toast): die angetippte Karte verschwindet, ein Hinweis oben würde die Seite verschieben.
       async function logoutDevice(did) {
         deviceLogoutArmed = null;
         try {
           await api('POST', '/api/devices/logout', { did });
-          infoMsg =
-            'Gerät ausgeloggt – es kehrt zum Startbildschirm zurück, sobald es sich beim Server meldet.';
+          toast('Gerät ausgeloggt und aus der Liste entfernt – es kehrt zum Startbildschirm zurück, sobald es sich beim Server meldet.');
         } catch (e) {
           errorMsg = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
         }
@@ -13061,7 +13061,7 @@
             el(
               'p',
               { class: 'mu' },
-              'Hier siehst du, welches Gerät wo angemeldet ist, und kannst Geräten einen Spitznamen geben. „Ausloggen“ meldet ein Gerät sofort ab: Es kehrt zum Startbildschirm zurück (bei geöffneter App gleich, sonst beim nächsten Öffnen), bei Disponenten wird die Anmeldung sofort ungültig. Monteure können sich danach wieder anmelden.'
+              'Hier siehst du, welches Gerät wo angemeldet ist, und kannst Geräten einen Spitznamen geben. „Ausloggen“ meldet ein Gerät sofort ab: Es kehrt zum Startbildschirm zurück (bei geöffneter App gleich, sonst beim nächsten Öffnen), bei Disponenten wird die Anmeldung sofort ungültig. Das Gerät verschwindet dabei sofort aus dieser Liste; Monteure können sich danach wieder anmelden, dann steht es wieder hier.'
             ),
             el(
               'p',
@@ -13183,8 +13183,7 @@
                       'span',
                       { class: 'tag ' + (device.team ? 'st-teil' : 'st-zf') },
                       '👥 ' + (device.team || 'kein Team gewählt')
-                    ),
-                  device.kick && el('span', { class: 'tag st-zf' }, '⏳ Gerät noch nicht informiert')
+                    )
                 ),
                 el(
                   'div',
@@ -13276,7 +13275,6 @@
                           '🔔 Test senden'
                         ),
                       device.role &&
-                        !device.kick &&
                         (deviceLogoutArmed === device.did
                           ? [
                               el(

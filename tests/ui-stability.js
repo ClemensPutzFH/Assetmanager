@@ -732,19 +732,41 @@ async function deviceChecks(browser, base, errors) {
   await probe(dispo, 'Geräte: „Standorte jetzt aktualisieren“', btn('/Standorte jetzt aktualisieren/'), { at: 300, ms: 1500 });
   const again = await waitCard(dispo, didMonteur, /Auf Karte öffnen · ±25 m · (gerade eben|vor 0 Min)/);
   report(/Auf Karte öffnen/.test(again || ''), 'Geräte: nach „jetzt aktualisieren“ weiterhin Standort', (again || '').slice(-60));
-  // Ausloggen: das Gerät kehrt zum Startbildschirm zurück
+  // Ausloggen: die Karte verschwindet SOFORT aus der Liste – das Gerät ist dabei ohne Netz, der Disponent wartet nicht, bis es sich meldet
   const click = (page, did, re) => page.evaluate(({ did, src }) => { const c = [...document.querySelectorAll('#app .card.dv')].find(n => n.dataset.k === 'd' + did); [...c.querySelectorAll('button')].find(b => new RegExp(src).test(b.textContent.trim())).click(); }, { did, src: re });
+  const H = await dispoHeaders(base),
+    listed = async (did = didMonteur) => (await apiJson(base, 'GET', '/api/devices', null, H)).devices.some(d => d.did === did);
+  report(await listed(), 'Geräte: Monteur-Gerät steht vor dem Ausloggen in der Geräteliste');
+  // echte Bedienung gemessen: „Ausloggen“ → „Wirklich ausloggen?“ – die Karte gleitet aus der Liste, die übrigen springen nicht
+  const logoutOf = did => `() => { const c = [...document.querySelectorAll('#app .card.dv')].find(n => n.dataset.k === 'd${did}'); const b = c && [...c.querySelectorAll('button')].find(b => /^Ausloggen$/.test(b.textContent.trim())); if (!b) throw new Error('Knopf „Ausloggen“ fehlt'); return b; }`;
+  await probe(dispo, 'Geräte: Ausloggen bestätigen (Karte gleitet aus der Liste, nichts springt)', logoutOf(didDenied), {
+    at: 400,
+    ms: 1800,
+    act: `el => { const k = el.closest('[data-k]').dataset.k; el.click(); setTimeout(() => { const c = [...document.querySelectorAll('#app .card.dv')].find(n => n.dataset.k === k); [...c.querySelectorAll('button')].find(b => /Wirklich ausloggen/.test(b.textContent)).click(); }, 300); }`
+  });
+  report(!(await listed(didDenied)) && (await deviceCard(dispo, didDenied)) === null, 'Geräte: das zweite ausgeloggte Gerät ist ebenfalls sofort aus der Liste');
+  await monteur.context().setOffline(true);
   await click(dispo, didMonteur, '^Ausloggen$');
   await dispo.waitForTimeout(300);
   await click(dispo, didMonteur, 'Wirklich ausloggen');
+  await dispo.waitForTimeout(1200);
+  const cardGone = await deviceCard(dispo, didMonteur),
+    pageText = await dispo.evaluate(() => document.querySelector('#app').innerText);
+  report(cardGone === null && !(await listed()) && !/noch nicht informiert/.test(pageText), 'Geräte: ausgeloggtes Gerät ist sofort aus der Liste (ohne zu warten, bis es sich meldet)', cardGone ? cardGone.slice(0, 80) : 'Karte weg');
+  report(await dispo.evaluate(() => /ausgeloggt und aus der Liste entfernt/.test((document.querySelector('.toast') || {}).textContent || '')), 'Geräte: Rückmeldung als Kurzmeldung unten (kein Hinweis oben, der die Seite verschiebt)');
+  // erreicht das Gerät den Server wieder, kehrt es zum Startbildschirm zurück – und steht danach NICHT wieder als „Abgemeldet“ in der Liste
+  await monteur.context().setOffline(false);
+  await monteur.evaluate(() => dispatchEvent(new Event('online')));
   await monteur.waitForTimeout(2500);
   const afterKick = await monteur.evaluate(() => ({ start: !!([...document.querySelectorAll('#app button')].find(b => /Ich bin Monteur/.test(b.textContent))), msg: ((document.querySelector('#app .msg') || {}).textContent || '') }));
   report(afterKick.start && /abgemeldet/.test(afterKick.msg), 'Geräte: ausgeloggtes Gerät kehrt zum Startbildschirm zurück', afterKick.msg.slice(0, 60));
+  report(!(await listed()), 'Geräte: die Abmeldemeldung des Geräts bringt die Karte nicht zurück');
   // erneut anmelden: bleibt angemeldet (wird nicht sofort wieder abgemeldet)
   await loginMonteur(monteur);
   await monteur.waitForTimeout(3000);
   const afterLogin = await monteur.evaluate(() => ({ list: !![...document.querySelectorAll('#app button')].find(b => /^Entfernung$/.test(b.textContent.trim())), msg: ((document.querySelector('#app .msg') || {}).textContent || '') }));
   report(afterLogin.list && !/abgemeldet/.test(afterLogin.msg), 'Geräte: erneute Anmeldung nach dem Ausloggen bleibt bestehen', `Liste sichtbar: ${afterLogin.list} · ${afterLogin.msg.slice(0, 60)}`);
+  report(await listed(), 'Geräte: nach der erneuten Anmeldung steht das Gerät wieder in der Liste');
   if (process.env.TEST_DEBUG && !(afterLogin.list && !/abgemeldet/.test(afterLogin.msg))) console.log(trace.slice(-25).join('\n'));
   for (const page of [monteur, denied, dispo]) await page.context().close();
 }
