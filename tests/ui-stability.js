@@ -3663,6 +3663,176 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
     const pend2 = await desk.evaluate(() => document.querySelectorAll('#app .cmsg.pend').length);
     report(pend === 1 && pend2 === 0 && (await syncOf(H, '')).chat.length === n0 + 1, 'Chat Disponent: ohne Netz bleibt die Nachricht mit ⏳ stehen und geht danach genau einmal hinaus', JSON.stringify({ pend, pend2 }));
 
+    // ---------- Nachricht mit Bestätigung: der Disponent verlangt, dass die Monteure sie bestätigen (wie die Nachricht aus „Fortschritt“) ----------
+    const reqApi = async (headers, team, text) => apiJson(base, 'POST', '/api/chat', { side: 'd', team, text, cid: cid(), rq: 1 }, headers),
+      ackApi = (body, headers = {}) => apiJson(base, 'POST', '/api/chat/ack', body, headers),
+      reqState = (id, did) => apiJson(base, 'GET', `/api/chat/state?id=${id}&did=${did}`).then(r => r.open),
+      dispoAcks = async id => (await syncOf(H, '')).cacks.filter(a => a.id === id),
+      // Fenster des Monteurs (Nachricht mit Bestätigung) und die Zeile unter einer Sprechblase (gesucht über den Text)
+      modal = () => phone.evaluate(() => { const d = [...document.querySelectorAll('dialog[open]')].find(x => x.querySelector('#mdt')); return d ? { title: d.querySelector('#mdt').textContent, text: d.querySelector('.mtx').textContent, info: d.querySelector('p.mu').textContent } : null; }),
+      lineOf = (pg, part) => pg.evaluate(part => { const n = [...document.querySelectorAll('#app .cthr .cmsg')].find(x => x.querySelector('.cbub').textContent.includes(part)); if (!n) return null; const q = n.querySelector('.creq'); return { h: Math.round(n.getBoundingClientRect().height * 10) / 10, qh: q ? Math.round(q.getBoundingClientRect().height * 10) / 10 : 0, line: q ? q.textContent : null, go: !!(q && q.querySelector('button.go')), ok: !!(q && q.querySelector('.ok')) }; }, part),
+      modalButton = `() => [...document.querySelectorAll('dialog[open]')].find(x => x.querySelector('#mdt')).querySelector('.sv')`;
+    const mReq = await apiJson(base, 'POST', '/api/chat', { side: 'm', team: TEAM, text: 'Ich will auch eine Bestätigung', cid: cid(), rq: 1 }, TA);
+    report(mReq.ok && !mReq.msg.rq && !mReq.acks, 'Chat Bestätigung: nur der Disponent kann eine Bestätigung verlangen (beim Monteur wird rq ignoriert)', JSON.stringify(mReq.msg));
+    await sleep(800); // (Push dieser Nachricht nicht mitzählen)
+    pushes.length = 0;
+    const T1 = 'Ab morgen gilt Helmpflicht auf allen Baustellen.',
+      r1 = await reqApi(H, TEAM, T1),
+      rcpt = (r1.acks || []).map(a => a.u);
+    report(r1.msg.rq === 1 && rcpt.includes('33NX') && rcpt.includes('34AH') && r1.acks.every(a => a.t === TEAM && !a.at), 'Chat Bestätigung: beim Senden stehen die Empfänger fest (Monteure mit Gerät im Team, alle „offen“)', JSON.stringify(r1.acks));
+    await waitPush(2);
+    await sleep(500);
+    report(pushes.map(x => x.url).sort().join() === '/push/a,/push/b' && pushes.every(x => x.payload.t === 'cq' && x.payload.id === r1.msg.id && x.topic === 'cq' + r1.msg.id && x.payload.title === 'Chat: Disponent – bitte bestätigen' && x.payload.body === T1 && /^[0-9a-f]{32}$/.test(x.payload.did)), 'Chat Bestätigung Push: die Geräte des Teams bekommen die Erinnerung zum Bestätigen (eigenes Thema, mit Geräte-Kennung) statt einer gewöhnlichen Chat-Benachrichtigung', JSON.stringify(pushes.map(x => [x.url, x.topic, x.payload && x.payload.title])));
+    const sB = await syncOf(TB, TEAM);
+    report(sB.chat.some(m => m.id === r1.msg.id && m.rq === 1) && sB.cfg && sB.cfg.hours > 0, 'Chat Bestätigung: der Monteur bekommt die Nachricht mit rq und die Dauer der Erinnerung');
+    report((await reqState(r1.msg.id, didB)) === true, 'Chat Bestätigung: für den Service Worker ist sie noch offen (Benachrichtigung kommt wieder)');
+    // (Uhrzeit am Gerät: kurz nach dem Senden – sie liegt sicher in der Vergangenheit, sonst nähme der Server seine eigene)
+    const ackB = await ackApi({ id: r1.msg.id, did: didB, at: r1.msg.at + 300 });
+    report(ackB.row && ackB.row.u === '34AH' && ackB.row.n === 'Hans Spät' && ackB.row.at === r1.msg.at + 300, '„Bestätigen“ in der Benachrichtigung (nur das Gerät, ohne Anmeldung): gespeichert mit Benutzer und Uhrzeit am Gerät', JSON.stringify(ackB));
+    const seqAck = (await syncOf(H, '')).seq,
+      ackB2 = await ackApi({ id: r1.msg.id, did: didB, at: Date.now() });
+    report(ackB2.row.at === ackB.row.at && (await syncOf(H, '')).seq === seqAck, 'Chat Bestätigung: noch einmal bestätigt – die erste zählt, nichts ändert sich');
+    report((await reqState(r1.msg.id, didB)) === false, 'Chat Bestätigung: danach ist die Benachrichtigung erledigt (kommt nicht wieder)');
+    const alien = await ackApi({ id: r1.msg.id, did: crypto.randomBytes(16).toString('hex') }, TC),
+      stranger = await ackApi({ id: r1.msg.id, did: crypto.randomBytes(16).toString('hex') });
+    let acks1 = await dispoAcks(r1.msg.id);
+    report(alien.ignored && stranger.ignored && !acks1.some(a => a.u === '33SN'), 'Chat Bestätigung: ein Monteur eines anderen Teams oder ein unbekanntes Gerät bestätigt nichts', JSON.stringify([alien, stranger]));
+    report((acks1.find(a => a.u === '34AH') || {}).at === ackB.row.at && acks1.filter(a => a.at).length === 1 && acks1.length === rcpt.length, 'Chat Bestätigung: der Disponent bekommt Empfänger und Bestätigungen im Abgleich', JSON.stringify(acks1));
+    const ownB = await syncOf(TB, TEAM, sB.seq);
+    report(ownB.cacks.length === 1 && ownB.cacks[0].u === '34AH' && ownB.cacks[0].at === ackB.row.at, 'Chat Bestätigung: der Monteur bekommt seine eigene Bestätigung im Abgleich (für seine anderen Geräte)', JSON.stringify(ownB.cacks));
+    report(!(await syncOf(TC, OTHER)).cacks.some(a => a.u !== '33SN'), 'Chat Bestätigung: ein Monteur sieht keine Bestätigungen anderer');
+
+    // Monteur am Handy (im Chat seines Teams): das Fenster erscheint live, im Verlauf steht „Gelesen – bestätigen“
+    await pause(phone, 1200);
+    let mo = await modal(),
+      ln = await lineOf(phone, T1);
+    report(mo && mo.title === '📌 Nachricht vom Disponenten' && mo.text === T1 && /^Chat · Disponent · /.test(mo.info), 'Chat Bestätigung Monteur: das Fenster „Nachricht vom Disponenten“ erscheint von selbst (geht nur mit Bestätigen zu)', JSON.stringify(mo));
+    report(ln && ln.go && /Gelesen – bestätigen/.test(ln.line) && ln.qh >= 28, 'Chat Bestätigung Monteur: im Verlauf steht unter der Nachricht „✓ Gelesen – bestätigen“', JSON.stringify(ln));
+    await phone.keyboard.press('Escape');
+    await pause(phone, 300);
+    report(!!(await modal()), 'Chat Bestätigung Monteur: Esc schließt das Fenster nicht');
+    const h1 = ln.h;
+    await probe(phone, 'Chat Bestätigung Monteur: „Gelesen – bestätigen“ im Fenster – der Verlauf rührt sich nicht', modalButton, { ms: 900 });
+    ln = await lineOf(phone, T1);
+    report(!(await modal()) && ln.ok && /^✓ Bestätigt \d\d:\d\d$/.test(ln.line) && ln.h === h1, 'Chat Bestätigung Monteur: Fenster zu, die Zeile zeigt „✓ Bestätigt“ – die Nachricht bleibt gleich hoch', JSON.stringify({ ln, h1 }));
+    await pause(phone, 800);
+    acks1 = await dispoAcks(r1.msg.id);
+    report((acks1.find(a => a.u === '33NX') || {}).at > r1.msg.at && (await phone.evaluate(() => JSON.parse(localStorage.getItem('cackq') || '[]').length)) === 0, 'Chat Bestätigung Monteur: die Bestätigung ist beim Server (Warteschlange leer)', JSON.stringify(acks1));
+
+    // Disponent am Rechner: Stand unter der Nachricht, Schalter „Bestätigung anfordern“, Senden
+    let dl1 = await lineOf(desk, T1);
+    report(dl1 && /^(📌 2 von \d+ bestätigt|✓ Von allen bestätigt \(2\)) ›$/.test(dl1.line), 'Chat Bestätigung Disponent: unter der Nachricht steht der Stand (live)', JSON.stringify(dl1));
+    await probe(desk, 'Chat Bestätigung Disponent: Schalter „Bestätigung anfordern“ – Eingabe und Verlauf bleiben stehen', `() => document.querySelector('#app .creqt input')`, { ms: 500, tapTol: 2 });
+    const toggleOn = () => desk.evaluate(() => ({ box: document.querySelector('#app .creqt input').checked, comp: document.querySelector('#app .ccomp').classList.contains('rq') }));
+    let tg = await toggleOn();
+    await desk.evaluate(() => render());
+    await pause(desk, 200);
+    const tg2 = await toggleOn();
+    report(tg.box && tg.comp && tg2.box && tg2.comp, 'Chat Bestätigung Disponent: der Schalter ist an und übersteht ein Neuzeichnen', JSON.stringify([tg, tg2]));
+    const T2 = 'Bitte bis 15 Uhr den Wochenbericht schicken.';
+    await desk.fill('.cin', T2);
+    await probe(desk, 'Chat Bestätigung Disponent: Senden mit Bestätigung – Eingabe bleibt stehen, Nachricht gleitet an', `() => document.querySelector('#app .cin')`, { act: `el => { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); }`, ms: 1100, tapTol: 2 });
+    await pause(desk, 400);
+    tg = await toggleOn();
+    let dl2 = await lineOf(desk, T2);
+    const r2 = (await syncOf(H, '')).chat.find(m => m.text === T2);
+    report(r2 && r2.rq === 1 && r2.name === 'Maria Muster' && !tg.box && !tg.comp, 'Chat Bestätigung Disponent: gesendet mit rq und Namen; der Schalter ist danach wieder aus (gilt nur für eine Nachricht)', JSON.stringify({ r2, tg }));
+    report(dl2 && /^📌 0 von \d+ bestätigt ›$/.test(dl2.line), 'Chat Bestätigung Disponent: die neue Nachricht zeigt gleich „0 von … bestätigt“', JSON.stringify(dl2));
+    // Einzelheiten: Fenster, live nachgeführt, ohne dass es wächst
+    await probe(desk, 'Chat Bestätigung Disponent: Tipp auf den Stand öffnet die Einzelheiten – die Seite bleibt stehen', `() => [...document.querySelectorAll('#app .cthr .cmsg')].find(x => x.textContent.includes(${JSON.stringify(T2)})).querySelector('.creq button')`, { ms: 600, tapTol: 2 });
+    const dlg = () => desk.evaluate(() => { const d = [...document.querySelectorAll('dialog[open]')].find(x => x.querySelector('.rql')); return d ? { h: Math.round(d.getBoundingClientRect().height), sum: d.querySelector('.rqs').textContent, rows: [...d.querySelectorAll('.rqr')].map(r => r.textContent), close: !d.querySelector('.rqc').disabled } : null; });
+    let dg = await dlg();
+    report(dg && dg.rows.some(r => /^○ Alexander Reichhart.*offen$/.test(r)) && dg.rows.some(r => /^○ Hans Spät.*offen$/.test(r)) && /^📌 0 von \d+ bestätigt$/.test(dg.sum) && dg.close, 'Chat Bestätigung Disponent: Fenster mit allen Empfängern („offen“) und „Erinnerung beenden“', JSON.stringify(dg));
+    await ackApi({ id: r2.id, did: didB, at: Date.now() });
+    await pause(desk, 900);
+    const dg2 = await dlg();
+    dl2 = await lineOf(desk, T2);
+    report(dg2 && dg2.rows.some(r => /^✓ Hans Spät.*\d\d:\d\d$/.test(r)) && /^📌 1 von \d+ bestätigt$/.test(dg2.sum) && dg2.h === dg.h && dg2.rows.length === dg.rows.length, 'Chat Bestätigung Disponent: eine Bestätigung kommt live ins offene Fenster – es bleibt gleich groß', JSON.stringify({ dg2, h: dg.h }));
+    report(/^📌 1 von \d+ bestätigt ›$/.test(dl2.line), 'Chat Bestätigung Disponent: … und in die Zeile unter der Nachricht', dl2.line);
+    // „Erinnerung beenden“: der Monteur, der noch nicht bestätigt hat, wird nicht mehr gefragt (das Fenster geht von selbst zu), kann aber im Verlauf bestätigen
+    mo = await modal();
+    report(mo && mo.text === T2, 'Chat Bestätigung Monteur: die zweite Nachricht erscheint ebenfalls als Fenster', JSON.stringify(mo));
+    await desk.click('dialog[open] .rqc');
+    await pause(desk, 1200);
+    const dg3 = await dlg(),
+      r2b = (await syncOf(H, '')).chat.find(m => m.id === r2.id);
+    report(dg3 && !dg3.close && /Erinnerung beendet$/.test(dg3.sum) && r2b.rqe > 0 && (await reqState(r2.id, didA)) === false, 'Chat Bestätigung Disponent: „Erinnerung beenden“ – gespeichert, Knopf gesperrt, Stand nennt es', JSON.stringify({ dg3, rqe: r2b.rqe }));
+    ln = await lineOf(phone, T2);
+    report(!(await modal()) && ln && ln.go, 'Chat Bestätigung Monteur: das Fenster geht von selbst zu, im Verlauf kann er weiterhin bestätigen', JSON.stringify(ln));
+    await desk.click('dialog[open] button:has-text("Schließen")');
+    await pause(desk, 300);
+    const h2 = ln.h;
+    await probe(phone, 'Chat Bestätigung Monteur: „Gelesen – bestätigen“ im Verlauf – die Zeile bleibt stehen', `() => [...document.querySelectorAll('#app .cthr .cmsg')].find(x => x.textContent.includes(${JSON.stringify(T2)})).querySelector('.creq button')`, { ms: 800, tapTol: 2 });
+    ln = await lineOf(phone, T2);
+    report(ln.ok && ln.h === h2, 'Chat Bestätigung Monteur: danach „✓ Bestätigt“, gleich hoch', JSON.stringify(ln));
+    await pause(desk, 1000);
+    dl2 = await lineOf(desk, T2);
+    report(/^(📌 2 von \d+ bestätigt · Erinnerung beendet|✓ Von allen bestätigt \(2\)) ›$/.test(dl2.line), 'Chat Bestätigung Disponent: auch die späte Bestätigung kommt an', dl2.line);
+    // ohne Netz bestätigen: sofort erledigt, später mit der echten Uhrzeit gesendet
+    const T3 = 'Bitte heute den Schlüssel im Büro abgeben.',
+      r3 = await reqApi(H, TEAM, T3);
+    await pause(phone, 1200);
+    await phone.context().setOffline(true);
+    const offAt = Date.now();
+    await phone.evaluate(src => new Function('return (' + src + ')()')().click(), modalButton);
+    await pause(phone, 600);
+    const queuedAck = await phone.evaluate(() => JSON.parse(localStorage.getItem('cackq') || '[]'));
+    ln = await lineOf(phone, T3);
+    report(!(await modal()) && ln.ok && queuedAck.length === 1 && queuedAck[0].id === r3.msg.id, 'Chat Bestätigung Monteur: ohne Netz – Fenster zu, „✓ Bestätigt“, die Bestätigung wartet im Gerät', JSON.stringify(queuedAck));
+    await sleep(2500);
+    await phone.context().setOffline(false);
+    await phone.evaluate(() => dispatchEvent(new Event('online')));
+    await pause(phone, 2500);
+    const off = (await dispoAcks(r3.msg.id)).find(a => a.u === '33NX') || {};
+    report(off.at >= offAt - 1000 && off.at <= offAt + 1500 && (await phone.evaluate(() => JSON.parse(localStorage.getItem('cackq') || '[]').length)) === 0, 'Chat Bestätigung Monteur: mit Netz geht sie hinaus – mit der Uhrzeit, zu der bestätigt wurde', JSON.stringify({ at: off.at, offAt }));
+    // Gruppenchat: alle Monteure müssen bestätigen; die übrigen Disponenten bekommen eine gewöhnliche Benachrichtigung
+    await sleep(500);
+    pushes.length = 0;
+    const T4 = 'An alle: Freitag ist um 12 Uhr Dienstschluss.', // (ohne das Wort „Teams“: andere Prüfungen suchen den Knopf „← Teams“ über den Text)
+      r4 = await reqApi(D1, '*', T4);
+    await waitPush(3);
+    await sleep(600);
+    const byUrl4 = Object.fromEntries(pushes.map(x => [x.url, x.payload || {}]));
+    report(byUrl4['/push/a'] && byUrl4['/push/a'].t === 'cq' && byUrl4['/push/a'].title === 'Gruppenchat: Disponent – bitte bestätigen' && byUrl4['/push/b'] && byUrl4['/push/b'].t === 'cq' && byUrl4['/push/d2'] && byUrl4['/push/d2'].t === 'chat' && !byUrl4['/push/d1'], 'Chat Bestätigung Gruppenchat: Monteure aller Teams bekommen die Erinnerung, die anderen Disponenten eine gewöhnliche Benachrichtigung', JSON.stringify(Object.entries(byUrl4).map(([u, p]) => [u, p.t, p.title])));
+    await pause(phone, 1000);
+    mo = await modal();
+    report(mo && mo.title === '📌 Nachricht an alle Teams' && mo.text === T4 && /^Gruppenchat · /.test(mo.info), 'Chat Bestätigung Gruppenchat: beim Monteur erscheint das Fenster „Nachricht an alle Teams“ (auch im Chat seines Teams)', JSON.stringify(mo));
+    await phone.evaluate(src => new Function('return (' + src + ')()')().click(), modalButton);
+    await pause(phone, 900);
+    report(!(await modal()) && ((await dispoAcks(r4.msg.id)).find(a => a.u === '33NX') || {}).at > 0, 'Chat Bestätigung Gruppenchat: bestätigt – beim Server gespeichert');
+
+    // Dokumentation: Karte im Tab „Fortschritt“ und Excel-Export
+    await probe(desk, 'Chat Bestätigung: Tab „Fortschritt“ mit der Karte „Chat-Nachrichten mit Bestätigung“', btn('/^Fortschritt/', '#app .tabs'), { reflow: true, ms: 800, anim: true });
+    const card = await desk.evaluate(() => { const c = document.querySelector('#app [data-k="cq"]'); return c ? { rows: [...c.querySelectorAll('.cqr')].map(r => ({ text: r.textContent, h: Math.round(r.getBoundingClientRect().height) })), text: c.textContent } : null; });
+    report(card && card.rows.length === 4 && card.rows[0].text.includes('Alle Teams: ' + T4) && card.rows.every(r => r.h === card.rows[0].h), 'Chat Bestätigung: die Karte zeigt die neuesten Nachrichten mit Bestätigung (gleich hohe Zeilen, Stand rechts)', JSON.stringify(card && card.rows));
+    await desk.evaluate(() => document.querySelector('#app [data-k="cq"]').scrollIntoView({ block: 'center' }));
+    await pause(desk, 300);
+    await probe(desk, 'Chat Bestätigung: Zeile der Karte öffnet die Einzelheiten – die Seite bleibt stehen', `() => document.querySelector('#app [data-k="cq"] .cqr')`, { ms: 600, tapTol: 2 });
+    report(!!(await dlg()) && (await desk.evaluate(() => document.querySelector('dialog[open] .rqtx').textContent)) === T4, 'Chat Bestätigung: das Fenster zeigt die gewählte Nachricht');
+    await desk.click('dialog[open] button:has-text("Schließen")');
+    await pause(desk, 300);
+    const download = desk.waitForEvent('download', { timeout: 15000 });
+    await probe(desk, 'Chat Bestätigung: „Protokoll (Excel)“ – die Seite bleibt stehen', `() => document.querySelector('#app [data-k="cq"] > button')`, { ms: 600, tapTol: 2 });
+    const file = await download,
+      xlsxPath = path.join(os.tmpdir(), 'chat-acks-' + process.pid + '.xlsx');
+    await file.saveAs(xlsxPath);
+    const XLSX = require(path.join(ROOT, 'public', 'vendor', 'xlsx.full.min.js')),
+      wb = XLSX.read(fs.readFileSync(xlsxPath), { cellNF: true }),
+      sheetRows = name => XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null });
+    fs.rmSync(xlsxPath, { force: true });
+    const xm = sheetRows('Nachrichten'),
+      xb = sheetRows('Bestätigungen'),
+      head = xb[0] || [],
+      col = name => head.indexOf(name),
+      helm = xb.filter(r => r[col('Nachricht')] === T1),
+      hans = helm.find(r => r[col('SAP-User')] === '34AH') || [];
+    report(file.suggestedFilename().startsWith('Chat_Bestaetigungen_') && wb.SheetNames.join() === 'Nachrichten,Bestätigungen' && xm.length === 5 && xm[1][3] === T4, 'Chat Bestätigung Excel: Datei mit den Blättern „Nachrichten“ (neueste zuerst) und „Bestätigungen“', JSON.stringify({ name: file.suggestedFilename(), sheets: wb.SheetNames, n: xm.length }));
+    report(helm.length === rcpt.length && hans[col('Name')] === 'Hans Spät' && hans[col('Status')] === 'bestätigt' && typeof hans[col('Bestätigt am')] === 'number' && /dd\.mm\.yyyy hh:mm/.test((wb.Sheets['Bestätigungen'][XLSX.utils.encode_cell({ r: xb.indexOf(hans), c: col('Bestätigt am') })] || {}).z || '') && /…[0-9a-f]{4}/.test(hans[col('Gerät')] || ''), 'Chat Bestätigung Excel: je Empfänger eine Zeile – Name, Status, Zeitpunkt als echtes Datum mit Uhrzeit, Gerät', JSON.stringify(hans));
+    report(xb.some(r => r[col('Nachricht')] === T4 && r[col('Status')] === 'offen'), 'Chat Bestätigung Excel: wer nicht bestätigt hat, steht als „offen“ drin', JSON.stringify(xb.filter(r => r[col('Nachricht')] === T4).map(r => [r[col('SAP-User')], r[col('Status')]])));
+    report(/Protokoll exportiert: 4 Nachrichten/.test(await desk.evaluate(() => (document.querySelector('.toast.on') || {}).textContent || '')), 'Chat Bestätigung Excel: Rückmeldung als Kurzmeldung unten');
+    await desk.click('#app .tabs button[data-tab="ch"]');
+    await pause(desk, 700);
+
     // ---------- Disponent am Handy: erst die Liste, dann der Verlauf ----------
     const dphone = await newPage(browser, base, { width: 390, height: 844 }, errors);
     pages.push(dphone);
@@ -3679,6 +3849,22 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
     await probe(dphone, 'Chat Disponent (Handy): ← Teams zurück zur Liste', btn('/Teams/'), { reflow: true, ms: 900, anim: true });
     l = await layout();
     report(l.list && !l.pane, 'Chat Disponent (Handy): wieder die Teamliste');
+    // schmal (320 px): Schalter „Bestätigung anfordern“ und die Zeilen unter den Nachrichten passen, die Eingabe bleibt unten
+    await dphone.setViewportSize({ width: 320, height: 640 });
+    await dphone.click(`.crow[data-team="${TEAM}"]`);
+    await pause(dphone, 800);
+    const nq = await dphone.evaluate(() => ({
+      wide: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      scrolls: document.documentElement.scrollHeight > innerHeight + 1,
+      over: [...document.querySelectorAll('#app .ccomp *, #app .cthr *')].filter(n => n.getBoundingClientRect().right > innerWidth + 1).length,
+      lines: document.querySelectorAll('#app .creq').length,
+      toggle: Math.round(document.querySelector('#app .creqt').getBoundingClientRect().height),
+      comp: Math.round(document.querySelector('#app .ccomp').getBoundingClientRect().bottom)
+    }));
+    report(!nq.wide && !nq.scrolls && !nq.over && nq.lines >= 2 && nq.toggle >= 24 && nq.comp > 600 && nq.comp <= 640, 'Chat Bestätigung Disponent (320 px): Schalter und Zeilen „bestätigt“ passen, nichts ragt über den Rand', JSON.stringify(nq));
+    await dphone.click('#app .cback');
+    await dphone.setViewportSize({ width: 390, height: 844 });
+    await pause(dphone, 600);
     await shot(dphone, 'chat-dispo-handy');
     // Dunkelmodus: Sprechblasen bleiben lesbar (Farben kommen aus den Variablen)
     await dphone.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
@@ -4160,6 +4346,16 @@ async function securityChecks(browser, geocoder, errors) {
       const before = await seqOf();
       for (const body of [{ id: 424242, did: 'cd'.repeat(16) }, { id: 1, did: 'cd'.repeat(16) }, { id: 424242, did }]) await j2('POST', '/api/msg/ack', body);
       report((await seqOf()) === before, 'Sicherheit: eine Bestätigung für unbekanntes Gerät oder unbekannte Nachricht ändert nichts', `${before} → ${await seqOf()}`);
+      // Chat-Nachricht mit Bestätigung: ohne Anmeldung nur für ein bekanntes Monteur-Gerät (das Gerät oben ist ein Disponent) – sonst nichts;
+      // Erinnerung beenden und das Protokoll nur mit PIN
+      const rqMsg = await apiJson(b2, 'POST', '/api/chat', { side: 'd', team: 'FW-IH01', text: 'Sicherheit: bitte bestätigen', cid: 'sec' + Date.now(), rq: 1 }, H),
+        before2 = await seqOf();
+      for (const body of [{ id: 424242, did: 'cd'.repeat(16) }, { id: rqMsg.msg.id, did: 'cd'.repeat(16) }, { id: rqMsg.msg.id, did }]) await j2('POST', '/api/chat/ack', body);
+      report((await seqOf()) === before2 && !(await apiJson(b2, 'GET', '/api/sync?since=0&team=', null, H)).cacks.some(a => a.id === rqMsg.msg.id && a.at), 'Sicherheit: Chat-Nachricht bestätigen ohne bekanntes Monteur-Gerät ändert nichts', `${before2} → ${await seqOf()}`);
+      const closeNo = await j2('POST', '/api/chat/close', { id: rqMsg.msg.id }),
+        exportNo = await j2('GET', '/api/chat/acks');
+      report(closeNo.status === 401 && exportNo.status === 401, 'Sicherheit: Erinnerung beenden und Protokoll der Bestätigungen nur mit PIN', `${closeNo.status} / ${exportNo.status}`);
+      await apiJson(b2, 'POST', '/api/chat/close', { id: rqMsg.msg.id }, H);
 
       // Monteur mit festem Team: darf nur Ergebnisse für Aufträge SEINES Teams speichern (das „team“ im Body kommt vom Gerät)
       const orders = (await apiJson(b2, 'GET', '/api/sync?since=0&team=', null, H)).orders.filter(o => o.kind === 'war'),

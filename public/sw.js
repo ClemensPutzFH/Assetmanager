@@ -6,6 +6,8 @@
  *      Wegwischen wiederkommt, bis „Bestätigen“ getippt wird.
  *   3) Push „Auftrag disponiert / geändert“: gewöhnliche Benachrichtigung (nichts gesperrt, keine Bestätigung); Tipp öffnet die App.
  *   4) Push „Chat“ (Nachricht vom Disponenten oder von einem Kollegen des Teams): gewöhnliche Benachrichtigung; Tipp öffnet die App im Chat.
+ *   5) Push „Chat mit Bestätigung“ (t: 'cq'): wie 2) – bleibt stehen, kommt wieder, bis „Bestätigen“ getippt wird –, aber je Nachricht eine eigene
+ *      Benachrichtigung (Tag „cq<Nummer>“), bestätigt über /api/chat/ack; Tipp öffnet die App im Chat.
  * ================================================================================================= */
 // Name des Caches; ändert sich die Dateiliste, hochzählen – alte Caches werden beim Aktivieren gelöscht
 const CACHE_NAME = 'auftraege-v4';
@@ -64,11 +66,11 @@ self.addEventListener('fetch', e => {
 // ---- Push: Nachricht vom Disponenten ----
 // bleibt stehen, vibriert, kommt nach dem Wegwischen sofort wieder – bis auf „Bestätigen“ getippt wird
 const DEFAULT_TITLE = 'Nachricht vom Disponenten';
-// Optionen der Benachrichtigung: bleibt stehen (requireInteraction), vibriert, ersetzt die vorige (Tag „nachricht“),
-// Button „Bestätigen“. data = { id, did, … } wird für die Bestätigung gebraucht.
+// Optionen der Benachrichtigung: bleibt stehen (requireInteraction), vibriert, ersetzt die vorige (Tag „nachricht“; Chat mit Bestätigung: je
+// Nachricht „cq<Nummer>“), Button „Bestätigen“. data = { id, did, … } wird für die Bestätigung gebraucht.
 const notificationOptions = d => ({
   body: d.body || '',
-  tag: 'nachricht',
+  tag: d.t === 'cq' ? 'cq' + d.id : 'nachricht',
   renotify: true,
   requireInteraction: true,
   silent: false,
@@ -127,12 +129,12 @@ self.addEventListener('push', e => {
   e.waitUntil(Promise.all([d.t === 'chat' ? showChat(d) : d.t === 'dispo' ? showDispo(d) : showMessage(d), notifyApp()]));
 });
 
-// Bestätigung direkt aus der Benachrichtigung an den Server melden (POST /api/msg/ack); true bei Erfolg
+// Bestätigung direkt aus der Benachrichtigung an den Server melden (POST /api/msg/ack, Chat: /api/chat/ack); true bei Erfolg
 const acknowledge = d =>
-  fetch('/api/msg/ack', {
+  fetch(d.t === 'cq' ? '/api/chat/ack' : '/api/msg/ack', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: d.id, did: d.did })
+    body: JSON.stringify({ id: d.id, did: d.did, at: Date.now() })
   })
     .then(r => r.ok)
     .catch(() => false);
@@ -153,7 +155,7 @@ self.addEventListener('notificationclick', e => {
     return;
   }
   // Tipp auf die Nachricht: App öffnen, dort wird bestätigt (Chat: die App öffnet den Chat, bei geschlossener App über ?chat=1)
-  const chat = d.t === 'chat';
+  const chat = d.t === 'chat' || d.t === 'cq';
   e.waitUntil(
     self.clients
       .matchAll({ type: 'window', includeUncontrolled: true })
@@ -169,7 +171,7 @@ self.addEventListener('notificationclose', e => {
   const d = e.notification.data || {};
   if (!d.id) return;
   e.waitUntil(
-    fetch(`/api/msg/state?id=${d.id}&did=${encodeURIComponent(d.did || '')}`)
+    fetch(`/api/${d.t === 'cq' ? 'chat' : 'msg'}/state?id=${d.id}&did=${encodeURIComponent(d.did || '')}`)
       .then(r => r.json())
       .then(s => s.open)
       .catch(() => true)

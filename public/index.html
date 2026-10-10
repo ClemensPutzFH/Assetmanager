@@ -837,6 +837,157 @@
         padding: 3px 9px;
         font-size: 0.8125rem;
       }
+      /* Chat-Nachricht mit Bestätigung: eine Zeile unter der Sprechblase (Disponent: Stand der Bestätigungen, Tipp = Einzelheiten; Monteur:
+         „Bestätigen“ bzw. „✓ Bestätigt“). Sie steht von Anfang an da und hat immer dieselbe Höhe – ändert sich der Stand, wächst nichts */
+      .creq {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        height: 2rem;
+        margin: 3px 2px 0;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .creq > * {
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.8125rem;
+      }
+      .creq button {
+        box-sizing: border-box;
+        height: 1.75rem;
+        padding: 0 10px;
+        border-radius: 14px;
+        line-height: 1;
+      }
+      .creq button.go {
+        background: var(--ac);
+        border-color: var(--ac);
+        color: #fff;
+        font-weight: 600;
+      }
+      .creq .ok {
+        color: var(--ok);
+        font-weight: 600;
+      }
+      .creq button:disabled {
+        cursor: default;
+        opacity: 0.7;
+      }
+      /* Disponent: Schalter „Bestätigung anfordern“ über der Eingabe (eigene Zeile mit fester Höhe; er ändert nur Farben, nie die Größe) */
+      .ccomp.dq {
+        flex-wrap: wrap;
+      }
+      .creqt {
+        flex: 1 0 100%;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 1.75rem;
+        min-width: 0;
+        font-size: 0.875rem;
+        cursor: pointer;
+        user-select: none;
+      }
+      .creqt input {
+        flex: 0 0 auto;
+        width: 1.125rem;
+        height: 1.125rem;
+        margin: 0;
+        accent-color: var(--ac);
+      }
+      .creqt b {
+        flex: 0 0 auto;
+        font-weight: 600;
+      }
+      .creqt .mu {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ccomp.rq textarea {
+        border-color: var(--ac);
+        box-shadow: 0 0 0 1px var(--ac);
+      }
+      /* Einzelheiten zu einer Nachricht mit Bestätigung (Fenster des Disponenten): die Liste hat beim Öffnen eine feste Höhe, neue Zeilen
+         kommen unten dazu und rollen in ihr – das Fenster ändert seine Größe nicht, wenn jemand bestätigt */
+      .rqtx {
+        max-height: 6.5em;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .rqs {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: 600;
+      }
+      .rql {
+        overflow-y: auto;
+        border: 1px solid var(--bd);
+        border-radius: 8px;
+      }
+      .rqr {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 2.5rem;
+        box-sizing: border-box;
+        padding: 0 10px;
+        font-size: 0.875rem;
+        border-bottom: 1px solid var(--bd);
+      }
+      .rqr .rqn {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .rqr .rqt {
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .rqr.ok .rqt {
+        color: var(--ok);
+        font-weight: 600;
+      }
+      .rqr.no .rqt {
+        color: var(--er);
+        font-weight: 600;
+      }
+      /* Karte „Chat-Nachrichten mit Bestätigung“ (Fortschritt): je Nachricht eine Zeile fester Höhe */
+      .cqrs {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 8px 0;
+      }
+      .cqr {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        height: 2.75rem;
+        box-sizing: border-box;
+        padding: 0 12px;
+        text-align: left;
+        font-size: 0.875rem;
+      }
+      .cqr > span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cqr .cqs.ok {
+        color: var(--ok);
+      }
       .ccomp {
         position: relative;
         z-index: 6;
@@ -5979,6 +6130,8 @@
         melMeta = null;
         messages = [];
         chatMsgs = new Map();
+        chatAcks = new Map();
+        chatAcksUser = '';
         chatVer++;
         devices = {};
         dispoTeamNames = [];
@@ -6010,6 +6163,8 @@
           for (const g of cached.gas || []) gasRows.set(g.d + '|' + g.t, g);
           messages = cached.msgs || [];
           chatApply(cached.chat || []);
+          chatAckApply(cached.cacks || []);
+          chatAcksUser = cached.cu || '';
           devices = cached.devs || {};
           dispoTeamNames = cached.dt || [];
           if (cached.pcfg) pushConfig = cached.pcfg;
@@ -6039,6 +6194,8 @@
             mel: [...meldungen.values()],
             msgs: messages,
             chat: [...chatMsgs.values()],
+            cacks: [...chatAcks.values()],
+            cu: chatAcksUser,
             devs: devices,
             pcfg: pushConfig,
             dt: dispoTeamNames,
@@ -6074,10 +6231,13 @@
             render();
           }
           const team = session.role === 'monteur' ? session.team || '-' : '',
-            sentAt = Date.now();
+            sentAt = Date.now(),
+            // anderer Benutzer am Gerät: seine Bestätigungen von Chat-Nachrichten vollständig holen (die gemerkten gehören dem vorigen)
+            ackUser = session.role === 'monteur' ? chatMe() : '',
+            ackFull = ackUser !== chatAcksUser;
           const response = await api(
             'GET',
-            `/api/sync?since=${syncSeq}&team=${urlEncode(team)}&did=${deviceId}&uv=${userNamesVer}`,
+            `/api/sync?since=${syncSeq}&team=${urlEncode(team)}&did=${deviceId}&uv=${userNamesVer}${ackFull && ackUser ? '&cf=1' : ''}`,
             undefined,
             20000
           );
@@ -6124,7 +6284,13 @@
             locateRoundSeen !== null && !!response.locate && response.locate !== locateRoundSeen;
           locateRoundSeen = response.locate || 0;
           if (response.locate) reportLocationIfAsked(response.locate, announceLocate);
-          let chatTouched = false;
+          let chatTouched = false,
+            reqTouched = false;
+          // Bestätigungen von Chat-Nachrichten (cackFull = vollständige Liste, ersetzt die bisherige; kommt auch ohne sonstige Änderung)
+          if (response.cacks) {
+            if (chatAckApply(response.cacks, !!response.cackFull)) chatTouched = reqTouched = true;
+            if (response.cackFull) chatAcksUser = ackUser;
+          }
           if (!response.same) {
             if (response.full) {
               ordersMap = new Map();
@@ -6136,8 +6302,12 @@
             }
             // Chat: neue Nachrichten melden (Kurzmeldung), aber nicht den ganzen Verlauf, den ein erster oder vollständiger Abgleich bringt
             if (response.chat) {
-              const fresh = chatApply(response.chat, { full: !!response.chatFull, notify: dataReady && !response.chatFull });
-              chatTouched = !!fresh.length || !!response.chatFull;
+              const v = chatVer;
+              chatApply(response.chat, { full: !!response.chatFull, notify: dataReady && !response.chatFull });
+              chatTouched = chatTouched || chatVer !== v; // (neue Nachrichten, vollständiger Verlauf, beendete Erinnerung)
+              if (response.chat.some(m => m.rq)) reqTouched = true;
+              // (die Bestätigungen kamen schon vorher: nach einem vollständigen Verlauf, der sie vergessen haben kann, noch einmal übernehmen)
+              if (response.chatFull && response.cacks) chatAckApply(response.cacks);
             }
             for (const m of response.meldungen || []) {
               if (m.del) meldungen.delete(m.nr);
@@ -6190,6 +6360,8 @@
             const sig = JSON.stringify([response.teams, response.meta, response.msgs, response.devs, response.cfg, !!response.users, response.dteams]),
               viewChanged =
                 response.full ||
+                // (Nachrichten mit Bestätigung und ihr Stand stehen auch im Tab „Fortschritt“; im Chat selbst wird nur ergänzt, siehe unten)
+                (reqTouched && session.role === 'dispo' && dispoTab === 'st') ||
                 sig !== lastSyncSig ||
                 (response.orders && response.orders.length) ||
                 (response.meldungen && response.meldungen.length) ||
@@ -6199,13 +6371,21 @@
             lastSyncSig = sig;
             const a = document.activeElement;
             // (nur der Chat hat sich geändert: der Verlauf wird ergänzt, die Seite bleibt, wie sie ist – Eingabefeld, Tastatur, Scroll-Stelle)
-            if (viewChanged && editIndex === null && !gDrag && !(a && a.dataset && a.dataset.nr)) render();
-            else if (chatTouched) chatPatchAll();
+            if (viewChanged && editIndex === null && !gDrag && !(a && a.dataset && a.dataset.nr)) {
+              render();
+              if (chatTouched && reqDialogId) reqDialogSync();
+            } else if (chatTouched) chatPatchAll();
+          } else if (chatTouched) {
+            chatPatchAll();
+            if (reqTouched && session.role === 'dispo' && dispoTab === 'st') render();
+            clearTimeout(cacheSaveTimer);
+            cacheSaveTimer = setTimeout(saveCache, 1500);
           }
           if (outboxOffline && !outbox.size) outboxOffline = false;
           if (outbox.size) sendAllPending();
           if (chatQueue.length) chatFlush();
           if (ackQueue.length) sendAcks();
+          if (chatAckQueue.length) sendChatAcks();
           if (gasQueue.length) sendGas();
           gasReady = true;
           showGasCheck();
@@ -6370,9 +6550,16 @@
           for (const a of d.ids) marks.set(a, { v: d.v, at: d.at, sq: m.s });
           dropEditsOfLockedOrder(); // der offene Auftrag wurde abgehakt: Eingaben schließen
         } else if (d.k === 'c') {
-          // Chat-Nachricht: an den Verlauf anhängen, die Seite wird nicht neu gezeichnet (Eingabefeld, Tastatur und Scroll-Stelle bleiben)
+          // Chat-Nachricht: an den Verlauf anhängen, die Seite wird nicht neu gezeichnet (Eingabefeld, Tastatur und Scroll-Stelle bleiben).
+          // (Kommt eine Nachricht mit Bestätigung wieder, hat der Disponent die Erinnerung beendet: Fenster des Monteurs schließen, Karte im Tab
+          // „Fortschritt“ des Disponenten auffrischen)
           chatApply([d.row], { notify: true });
           chatPatchAll();
+          if (d.row.rq && session.role === 'dispo' && dispoTab === 'st') {
+            liveDirty = true;
+            if (!liveRenderTimer) liveRenderTimer = setTimeout(renderLive, liveRenderDelay);
+          }
+          if (d.row.rq) showUnreadMessage();
           if (!liveSaveTimer)
             liveSaveTimer = setTimeout(() => {
               liveSaveTimer = null;
@@ -8028,20 +8215,24 @@
                 Date.now() - m.at < pushConfig.hours * 3600e3
             )
           : [];
-      // schließt bereits angezeigte System-Benachrichtigungen (Push) dieser App
-      const closeNotifications = () => {
+      // schließt bereits angezeigte System-Benachrichtigungen (Push) dieser App, die eine Bestätigung verlangen: Nachricht aus „Fortschritt“ (Tag
+      // „nachricht“) und Chat-Nachrichten mit Bestätigung („cq<Nummer>“); which(tag) wählt aus, Standard: alle
+      const closeNotifications = (which = tag => tag === 'nachricht' || /^cq\d+$/.test(tag)) => {
         if ('serviceWorker' in navigator)
           navigator.serviceWorker
             .getRegistration()
-            .then(r => (r && r.getNotifications ? r.getNotifications({ tag: 'nachricht' }) : []))
-            .then(ns => ns.forEach(n => n.close()))
+            .then(r => (r && r.getNotifications ? r.getNotifications() : []))
+            .then(ns => ns.forEach(n => which(n.tag || '') && n.close()))
             .catch(() => {});
       };
-      // Zeigt die erste offene Nachricht im Fenster (nach jedem Abgleich aufgerufen); ohne offene Nachricht Fenster schließen
+      // Zeigt die erste offene Nachricht im Fenster (nach jedem Abgleich aufgerufen); ohne offene Nachricht Fenster schließen. Erst die Nachricht aus
+      // „Fortschritt“, dann Chat-Nachrichten mit Bestätigung (unreadChatReqs) – beide gehen nur mit „Gelesen – bestätigen“ zu
       function showUnreadMessage() {
         if (gasDialog.open) return; // erst das Gaswarngerät bestätigen, danach kommen die Nachrichten
-        const message = unreadMessages()[0];
-        if (!message) {
+        const message = unreadMessages()[0],
+          req = message ? null : unreadChatReqs()[0],
+          key = message ? 'm' + message.id : req ? 'c' + req.id : '';
+        if (!key) {
           if (readDialog.open) {
             shownMessage = null;
             readDialog.close();
@@ -8049,19 +8240,20 @@
           if (session.role === 'monteur') closeNotifications();
           return;
         }
-        if (readDialog.open && shownMessage && shownMessage.id === message.id) return;
-        shownMessage = message;
+        if (readDialog.open && shownMessage && shownMessage.key === key) return;
+        shownMessage = { key };
         readDialog.replaceChildren(
           el(
             'div',
             { class: 'dlg-b', role: 'alertdialog', 'aria-labelledby': 'mdt' },
-            el('div', { class: 'dlg-t', id: 'mdt' }, '📣 Nachricht vom Disponenten'),
-            el('p', { class: 'mtx' }, message.text),
+            el('div', { class: 'dlg-t', id: 'mdt' }, message ? '📣 Nachricht vom Disponenten' : req.team === CHAT_ALL ? '📌 Nachricht an alle Teams' : '📌 Nachricht vom Disponenten'),
+            el('p', { class: 'mtx' }, (message || req).text),
             el(
               'p',
               { class: 'mu' },
-              'Gesendet ' +
-                formatDateTime(message.at) +
+              (message
+                ? 'Gesendet ' + formatDateTime(message.at)
+                : `${req.team === CHAT_ALL ? 'Gruppenchat' : 'Chat'} · ${chatSenderName(req)} · ${formatDateTime(req.at)}`) +
                 '. Bitte bestätige, dass du die Nachricht gelesen hast.'
             ),
             el(
@@ -8069,7 +8261,7 @@
               { class: 'ob' },
               el(
                 'button',
-                { class: 'sv', onclick: () => acknowledgeMessage(message) },
+                { class: 'sv', onclick: () => (message ? acknowledgeMessage(message) : acknowledgeChatReq(req)) },
                 '✓ Gelesen – bestätigen'
               )
             )
@@ -8091,9 +8283,15 @@
         } catch (e) {}
         shownMessage = null;
         readDialog.close();
-        closeNotifications();
+        closeNotifications(tag => tag === 'nachricht');
         sendAcks();
         showUnreadMessage();
+      }
+      // Chat-Nachricht mit Bestätigung im Fenster bestätigt (chatAcknowledge zeigt danach die nächste offene)
+      function acknowledgeChatReq(req) {
+        shownMessage = null;
+        readDialog.close();
+        chatAcknowledge(req.id);
       }
       async function sendAcks() {
         // Bestätigungen senden (ohne Netz gemerkt, später automatisch)
@@ -12280,7 +12478,8 @@
             totalCard(totals, workingDays, deadlineText),
             teamProgressCard(stats, totals, workingDays)
           ),
-          gasCard()
+          gasCard(),
+          chatReqCard()
         );
         if (uploadMeta)
           app.append(
@@ -13415,7 +13614,8 @@
         login: 'Angemeldet',
         ergebnis: 'Ergebnis gespeichert',
         gas: 'Gaswarngerät bestätigt',
-        ack: 'Nachricht bestätigt'
+        ack: 'Nachricht bestätigt',
+        cack: 'Chat-Nachricht bestätigt'
       };
       /**
        * Dispo-Tab „Benutzer“: alle Monteur-Benutzer (SAP-User, Name, Team) mit letzter Anmeldung und Geräten. Anlegen, Ändern
@@ -13779,6 +13979,11 @@
       //   · Gesendet wird über eine Warteschlange (chatQueue, auch in localStorage): jede Nachricht hat eine Kennung (cid), die der Server nur einmal
       //     annimmt. Ohne Netz bleibt sie mit ⏳ im Verlauf und geht später hinaus; abgelehnte (Fehler 4xx) zeigen „Erneut senden / Verwerfen“.
       //   · Ungelesen: je Gerät und Rolle die Nummer der letzten gelesenen Nachricht je Team (chatReadAll, localStorage).
+      //   · Nachricht mit Bestätigung (rq): der Disponent schaltet über der Eingabe „Bestätigung anfordern“ ein (chatReq). Die Monteure müssen sie
+      //     bestätigen – Fenster wie bei der Nachricht aus „Fortschritt“ (showUnreadMessage) und „nervige“ Benachrichtigung, bis bestätigt. Unter der
+      //     Sprechblase steht eine Zeile fester Höhe: beim Disponenten der Stand („2 von 3 bestätigt“, Tipp = Einzelheiten, openReqDialog), beim
+      //     Monteur „Bestätigen“ bzw. „✓ Bestätigt“. Bestätigungen (chatAcks) kommen mit dem Abgleich (response.cacks); ohne Netz bestätigt der
+      //     Monteur sofort und das Gerät sendet später (chatAckQueue, mit der echten Uhrzeit). Dokumentation: Excel-Export (exportChatAcks).
       const CHAT_MAX = 1000,
         CHAT_KEEP_MS = 30 * 864e5,
         CHAT_ALL = '*'; // Raum „Gruppenchat“ (alle Teams und alle Disponenten) statt eines Teamnamens
@@ -13798,7 +14003,12 @@
         chatScrollRaf = 0,
         chatToastAt = 0,
         chatToastTeam = '', // Team der Kurzmeldung, die gerade steht (wird ausgeblendet, sobald der Chat gelesen ist)
-        chatStats = null;
+        chatStats = null,
+        chatAcks = new Map(), // Bestätigungen: „Nachricht|SAP-User“ -> { id, u, n (Name), t (Team), at (bestätigt am Gerät, 0 = offen), sq }
+        chatAcksUser = '', // Monteur: Benutzer, dessen Bestätigungen chatAcks enthält (anderer Benutzer am Gerät -> vollständig neu holen)
+        chatAckQueue = [], // Monteur: bestätigt, aber noch nicht beim Server: { id, at }
+        chatAcking = false,
+        chatReq = {}; // Disponent: Raum -> Schalter „Bestätigung anfordern“ für die nächste Nachricht
       const chatFresh = new Map(); // neue Nachrichten (Schlüssel -> Startzeit der Einblendung): laufen beim nächsten Neuzeichnen weiter
       const BASE_TITLE = document.title;
       try {
@@ -13807,6 +14017,8 @@
         const r = JSON.parse(localStorage.getItem('chatread') || '{}');
         if (r && typeof r === 'object') chatReadAll = r;
         chatName = String(localStorage.getItem('chatname') || '').slice(0, 40);
+        const aq = JSON.parse(localStorage.getItem('cackq') || '[]');
+        if (Array.isArray(aq)) chatAckQueue = aq.filter(x => x && x.id > 0 && x.at > 0);
       } catch (e) {}
       const chatSaveQueue = () => {
         try {
@@ -13845,6 +14057,120 @@
       }
       // Nachrichten eines Teams, die älteste zuerst
       const chatList = team => [...chatMsgs.values()].filter(m => m.team === team).sort((a, b) => a.id - b.id);
+      // ---- Nachrichten mit Bestätigung ----
+      const chatSaveAckQueue = () => {
+        try {
+          localStorage.setItem('cackq', JSON.stringify(chatAckQueue));
+        } catch (e) {}
+      };
+      // Bestätigungen übernehmen (Abgleich, Antwort des Servers); full = vollständige Liste (ersetzt die bisherige). true = es hat sich etwas geändert
+      function chatAckApply(rows, full = false) {
+        let changed = false;
+        if (full && chatAcks.size) {
+          chatAcks = new Map();
+          changed = true;
+        }
+        for (const r of rows || []) {
+          if (!r || !r.id || !r.u) continue;
+          const key = r.id + '|' + r.u,
+            old = chatAcks.get(key);
+          if (old && (old.sq > r.sq || (old.sq === r.sq && old.at === r.at))) continue;
+          chatAcks.set(key, r);
+          changed = true;
+        }
+        if (changed) chatVer++;
+        return changed;
+      }
+      // Empfänger und Bestätigungen einer Nachricht
+      const chatAcksOf = id => [...chatAcks.values()].filter(a => a.id === id);
+      // Monteur: wann hat dieser Benutzer die Nachricht bestätigt? (auch noch ungesendet) – 0 = noch nicht
+      function chatMyAckAt(id) {
+        const a = chatAcks.get(id + '|' + chatMe());
+        if (a && a.at) return a.at;
+        const q = chatAckQueue.find(x => x.id === id);
+        return q ? q.at : 0;
+      }
+      // Erinnerung läuft noch (nicht beendet, nicht älter als die Erinnerungsdauer des Servers)
+      const chatReqActive = m => !!m.rq && !m.rqe && Date.now() - m.at < pushConfig.hours * 3600e3;
+      // Stand für den Disponenten: bestätigt / Empfänger (Empfänger beim Senden und jeder, der seither bestätigt hat)
+      function chatReqCount(id) {
+        let done = 0,
+          total = 0;
+        for (const a of chatAcks.values())
+          if (a.id === id) {
+            total++;
+            if (a.at) done++;
+          }
+        return { done, total };
+      }
+      const chatWhen = t => (chatDayKey(t) === today() ? timeText(t) : chatDayLabel(t) + ' ' + timeText(t));
+      const chatSenderName = m => (m.name && m.name !== 'Disponent' ? m.name + ' (Disponent)' : 'Disponent');
+      // Stand als eine Zeile: „📌 2 von 3 bestätigt“, „✓ Von allen bestätigt (3)“; offen und Erinnerung vorbei: Grund dahinter
+      function chatReqText(m) {
+        const { done, total } = chatReqCount(m.id),
+          rest = done < total || !total ? (m.rqe ? ' · Erinnerung beendet' : !chatReqActive(m) ? ' · Erinnerung abgelaufen' : '') : '';
+        return (!total ? '📌 Bestätigung angefordert – noch keine' : done >= total ? `✓ Von allen bestätigt (${done})` : `📌 ${done} von ${total} bestätigt`) + rest;
+      }
+      // Zeile unter der Sprechblase einer Nachricht mit Bestätigung: { kind, text } – kind: 'wait' (noch nicht gesendet), 'info' (Disponent: Stand,
+      // Tipp = Einzelheiten), 'ask' (Monteur: noch zu bestätigen), 'done' (Monteur: bestätigt); null ohne Bestätigung
+      function chatReqLine(m, pending) {
+        if (!m.rq) return null;
+        if (m.side !== 'd') return null;
+        if (session.role === 'dispo') return pending ? { kind: 'wait', text: '📌 Bestätigung angefordert' } : { kind: 'info', text: chatReqText(m) + ' ›' };
+        const at = chatMyAckAt(m.id);
+        return at ? { kind: 'done', text: '✓ Bestätigt ' + chatWhen(at) } : { kind: 'ask', text: '✓ Gelesen – bestätigen' };
+      }
+      // Monteur: offene Nachrichten mit Bestätigung (Chat des Teams und Gruppenchat), die dieser Benutzer noch nicht bestätigt hat – nur solange die
+      // Erinnerung läuft (danach kann er im Verlauf weiterhin bestätigen). Die älteste zuerst; das Fenster zeigt sie wie eine Nachricht aus „Fortschritt“
+      function unreadChatReqs() {
+        if (session.role !== 'monteur' || !session.team || !userToken) return [];
+        return [...chatMsgs.values()]
+          .filter(m => m.side === 'd' && chatReqActive(m) && (m.team === session.team || m.team === CHAT_ALL) && !chatMyAckAt(m.id))
+          .sort((a, b) => a.id - b.id);
+      }
+      // Monteur bestätigt (Fenster oder Knopf im Verlauf): sofort im Gerät, dann beim Server (ohne Netz später, mit der echten Uhrzeit)
+      function chatAcknowledge(id) {
+        if (session.role !== 'monteur' || chatMyAckAt(id)) return;
+        chatAckQueue.push({ id, at: Date.now() });
+        chatSaveAckQueue();
+        // „Gelesen“: die Nachricht zählt nicht mehr als ungelesen – wenn davor nichts Ungelesenes liegt (das bliebe sonst unbemerkt)
+        const m = chatMsgs.get(id);
+        if (m) {
+          const before = chatList(m.team).filter(x => x.id < id && !chatIsMine(x)).pop();
+          if (!before || before.id <= chatReadOf(m.team)) chatSetRead(m.team, id);
+        }
+        chatVer++;
+        chatPatchAll();
+        closeNotifications(tag => tag === 'cq' + id);
+        sendChatAcks();
+        showUnreadMessage();
+      }
+      async function sendChatAcks() {
+        if (chatAcking || !userToken || !chatAckQueue.length) return;
+        chatAcking = true;
+        try {
+          for (const item of [...chatAckQueue]) {
+            try {
+              const r = await api('POST', '/api/chat/ack', { id: item.id, did: deviceId, at: item.at });
+              if (r.row) {
+                if (chatAckApply([r.row])) chatPatchAll();
+              } else {
+                // (nichts gespeichert – z. B. Nachricht eines fremden Teams: im Gerät bleibt sie bestätigt, sonst käme das Fenster gleich wieder)
+                const key = item.id + '|' + chatMe(),
+                  old = chatAcks.get(key);
+                chatAcks.set(key, { id: item.id, u: chatMe(), n: '', t: '', ...old, at: item.at, sq: (old && old.sq) || 0 });
+                chatVer++;
+              }
+            } catch (e) {
+              if (e.net || !e.status || e.status >= 500 || e.status === 401 || e.status === 429) break; // später erneut
+            }
+            chatAckQueue = chatAckQueue.filter(x => x !== item);
+            chatSaveAckQueue();
+          }
+        } finally {
+          chatAcking = false;
+        }
+      }
       // Zähler je Team: ungelesene Nachrichten der Gegenseite und die jeweils letzte Nachricht (gemerkt, bis sich etwas ändert)
       function chatInfo() {
         const key = chatVer + '|' + chatRoleKey() + '|' + session.role;
@@ -13907,8 +14233,9 @@
             prev = null;
           }
           const isMine = chatIsMine(row.m),
-            showName = !isMine && (!prev || prev.side !== row.m.side || prev.usr !== row.m.usr || row.m.at - prev.at > 5 * 60e3);
-          out.push({ ...row, type: 'msg', mine: isMine, showName, group, sig: [row.pending, row.err, showName, group, row.m.name, row.m.steam, row.m.text, row.m.at].join('|') });
+            showName = !isMine && (!prev || prev.side !== row.m.side || prev.usr !== row.m.usr || row.m.at - prev.at > 5 * 60e3),
+            req = chatReqLine(row.m, row.pending);
+          out.push({ ...row, type: 'msg', mine: isMine, showName, group, req, sig: [row.pending, row.err, showName, group, row.m.name, row.m.steam, row.m.text, row.m.at, req ? req.kind + req.text : ''].join('|') });
           prev = row.m;
         }
         if (!out.length) out.push({ type: 'empty', key: 'ce', sig: session.role });
@@ -13935,6 +14262,24 @@
             m.text,
             el('span', { class: 'cmeta' }, timeText(m.at), status && el('span', { class: 'cst', title: it.err ? 'Nicht gesendet' : it.pending ? 'Wird gesendet, sobald Netz da ist' : 'Gesendet' }, status))
           ),
+          // Nachricht mit Bestätigung: Zeile fester Höhe (Stand bzw. „Bestätigen“), steht von Anfang an da
+          it.req &&
+            el(
+              'div',
+              { class: 'creq' },
+              it.req.kind === 'done'
+                ? el('span', { class: 'ok' }, it.req.text)
+                : el(
+                    'button',
+                    {
+                      class: it.req.kind === 'ask' ? 'go' : null,
+                      disabled: it.req.kind === 'wait' ? '' : null,
+                      title: it.req.kind === 'info' ? 'Wer hat wann bestätigt?' : null,
+                      onclick: () => (it.req.kind === 'ask' ? chatAcknowledge(m.id) : it.req.kind === 'info' ? openReqDialog(m.id) : null)
+                    },
+                    it.req.text
+                  )
+            ),
           it.err &&
             el(
               'div',
@@ -14108,20 +14453,33 @@
           chatAutoRead();
         }
         chatPatchBadges();
+        if (reqDialogId) reqDialogSync();
       }
       // Nachrichten übernehmen (Abgleich, Live, Antwort des Servers). full = der Server schickt den ganzen Verlauf (ersetzt den bisherigen);
       // notify = neue Nachrichten der Gegenseite melden (Kurzmeldung, Ton). Rückgabe: die neuen Nachrichten
       function chatApply(rows, { full = false, notify = false } = {}) {
         const cut = Date.now() - CHAT_KEEP_MS,
           added = [];
+        let changed = false;
         if (full) chatMsgs = new Map();
         for (const r of rows || []) {
-          if (!r || !r.id || !(r.at >= cut) || chatMsgs.has(r.id)) continue;
+          if (!r || !r.id || !(r.at >= cut)) continue;
+          const old = chatMsgs.get(r.id);
+          if (old) {
+            // (eine bekannte Nachricht kommt wieder, wenn der Disponent die Erinnerung beendet hat: rqe)
+            if ((old.rqe || 0) !== (r.rqe || 0) || (old.rq || 0) !== (r.rq || 0)) {
+              chatMsgs.set(r.id, r);
+              changed = true;
+            }
+            continue;
+          }
           chatMsgs.set(r.id, r);
           added.push(r);
         }
         for (const [id, m] of chatMsgs) if (m.at < cut) chatMsgs.delete(id);
-        if (added.length || full) chatVer++;
+        // Bestätigungen von Nachrichten, die das Gerät nicht mehr hat, vergessen
+        if (full || chatAcks.size > 5000) for (const [k, a] of chatAcks) if (!chatMsgs.has(a.id)) chatAcks.delete(k);
+        if (added.length || full || changed) chatVer++;
         // erstes Mal auf diesem Gerät: alles bisher Geschriebene gilt als gelesen (sonst stünde „Chat (87)“ an einem neuen Handy)
         if (full && !chatReadAll[chatRoleKey()]) {
           for (const m of chatMsgs.values()) chatSetRead(m.team, m.id);
@@ -14134,7 +14492,8 @@
       function chatNotify(rows) {
         if (!(session.role === 'dispo' ? dispoUnlocked : !!userToken)) return;
         const open = team => chatShown() && chatTeamNow() === team && !document.hidden && chatPinned,
-          unseen = rows.filter(m => !chatIsMine(m) && Date.now() - m.at < 5 * 60e3 && !open(m.team));
+          // (eine Nachricht mit Bestätigung erscheint beim Monteur ohnehin als Fenster)
+          unseen = rows.filter(m => !chatIsMine(m) && Date.now() - m.at < 5 * 60e3 && !open(m.team) && !(m.rq && session.role === 'monteur'));
         if (!unseen.length || Date.now() - chatToastAt < 1500) return;
         chatToastAt = Date.now();
         const m = unseen[unseen.length - 1];
@@ -14190,9 +14549,18 @@
       function chatSend(team) {
         const text = (chatDraft[team] || '').replace(/\r\n?/g, '\n').trim();
         if (!text || text.length > CHAT_MAX) return;
-        chatQueue.push({ cid: crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '').slice(0, 20) : Math.random().toString(36).slice(2, 12) + Date.now().toString(36), team, side: chatSide(), text, at: Date.now(), ...(chatSide() === 'd' ? { name: chatName.trim().slice(0, 40) } : {}) });
+        const rq = chatSide() === 'd' && !!chatReq[team];
+        chatQueue.push({ cid: crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '').slice(0, 20) : Math.random().toString(36).slice(2, 12) + Date.now().toString(36), team, side: chatSide(), text, at: Date.now(), ...(chatSide() === 'd' ? { name: chatName.trim().slice(0, 40) } : {}), ...(rq ? { rq: 1 } : {}) });
         chatSaveQueue();
         chatDraft[team] = '';
+        // „Bestätigung anfordern“ gilt nur für diese eine Nachricht
+        if (rq) {
+          chatReq[team] = false;
+          const box = app.querySelector('.creqt input'),
+            comp = app.querySelector('.ccomp');
+          if (box) box.checked = false;
+          if (comp) comp.classList.remove('rq');
+        }
         const ta = app.querySelector('.cin');
         if (ta) {
           ta.value = '';
@@ -14217,10 +14585,11 @@
             const q = chatQueue.find(x => !x.err && chatCanSend(x));
             if (!q) break;
             try {
-              const r = await api('POST', '/api/chat', { team: q.team, text: q.text, cid: q.cid, side: q.side, ...(q.side === 'd' ? { name: q.name || '' } : {}) }, 15000);
+              const r = await api('POST', '/api/chat', { team: q.team, text: q.text, cid: q.cid, side: q.side, ...(q.side === 'd' ? { name: q.name || '' } : {}), ...(q.rq ? { rq: 1 } : {}) }, 15000);
               chatQueue = chatQueue.filter(x => x !== q);
               chatSaveQueue();
               chatApply([r.msg]);
+              if (r.acks) chatAckApply(r.acks); // (Empfänger einer Nachricht mit Bestätigung: der Stand steht sofort da)
               serverReachable = true;
             } catch (e) {
               if (e.status === 429) retryIn = 8000;
@@ -14289,10 +14658,31 @@
               }
             }
           });
+        // Disponent: Schalter „Bestätigung anfordern“ (eigene Zeile über der Eingabe; Zustand je Raum in chatReq, übersteht jedes Neuzeichnen)
+        const dispo = session.role === 'dispo',
+          toggle =
+            dispo &&
+            el(
+              'label',
+              { class: 'creqt', title: 'Die Monteure müssen die Nachricht bestätigen – sie erscheint bei ihnen als Fenster und als Benachrichtigung, bis sie bestätigen.' },
+              el('input', {
+                type: 'checkbox',
+                'data-keep': 'creq',
+                checked: chatReq[team] ? '' : null,
+                onchange: e => {
+                  chatReq[team] = e.target.checked;
+                  const comp = e.target.closest('.ccomp');
+                  if (comp) comp.classList.toggle('rq', e.target.checked);
+                }
+              }),
+              el('b', {}, '📌 Bestätigung anfordern'),
+              el('span', { class: 'mu' }, team === CHAT_ALL ? 'alle Monteure müssen bestätigen' : 'die Monteure müssen bestätigen')
+            );
         return el(
           'div',
-          { class: 'ccomp' },
+          { class: 'ccomp' + (dispo ? ' dq' : '') + (dispo && chatReq[team] ? ' rq' : '') },
           el('button', { class: 'cpill' + (chatPill ? ' on' : ''), onclick: () => chatToBottom(true) }, '↓ Neue Nachrichten'),
+          toggle,
           ta,
           el('button', { class: 'pri csend', disabled: (chatDraft[team] || '').trim() ? null : '', onclick: send }, 'Senden')
         );
@@ -14440,6 +14830,199 @@
             el('span', { class: 'mu sm' }, room === 'all' ? 'Alle Teams und alle Disponenten' : 'Fragen, Hinweise, Rückmeldungen')
           ),
           el('span', { class: 'cbadge' + (n ? ' on' : '') }, n ? chatCount(n) : '0')
+        );
+      }
+      // ---- Disponent: Einzelheiten zu einer Nachricht mit Bestätigung, Dokumentation (Excel) ----
+      // Fenster (kein Teil der Seite: nichts darunter verschiebt sich): Raum, Absender, Text, Stand und je Monteur „✓ Uhrzeit“ oder „offen“. Es bleibt
+      // offen und wird live nachgeführt (reqDialogSync aus chatPatchAll): Zeilen ändern nur ihren Inhalt, neue kommen unten dazu – die Liste hat ihre Höhe
+      // beim Öffnen bekommen und rollt in sich, das Fenster wächst nicht.
+      const reqDialog = el('dialog', { class: 'dlg' });
+      document.body.append(reqDialog);
+      let reqDialogId = 0;
+      reqDialog.addEventListener('close', () => (reqDialogId = 0));
+      const chatRoomName = team => (team === CHAT_ALL ? 'Gruppenchat (alle Teams)' : team);
+      function reqRowContent(m, a) {
+        const label = (a.n || a.u) + (a.t && (m.team === CHAT_ALL || a.t !== m.team) ? ' · ' + a.t : '');
+        return [el('span', { class: 'rqn', title: a.u }, (a.at ? '✓ ' : '○ ') + label), el('span', { class: 'rqt' }, a.at ? chatWhen(a.at) : 'offen')];
+      }
+      const reqRowSig = a => [a.n, a.t, a.at].join('|');
+      function openReqDialog(id) {
+        const m = chatMsgs.get(id);
+        if (!m) return;
+        hideTooltip();
+        reqDialogId = id;
+        // bestätigte zuerst (nach Zeit), dann die offenen (nach Namen); spätere Änderungen ändern die Reihenfolge nicht mehr
+        const rows = chatAcksOf(id).sort((a, b) => !a.at - !b.at || (a.at && b.at ? a.at - b.at : (a.n || a.u).localeCompare(b.n || b.u, 'de')));
+        const errorLine = el('p', { class: 'mu er rqe' }),
+          closeButton = el('button', { class: 'er rqc', disabled: chatReqActive(m) ? null : '' }, 'Erinnerung beenden'),
+          exportButton = el('button', { class: 'rqx' }, '⬇ Protokoll (Excel)');
+        closeButton.onclick = async () => {
+          closeButton.disabled = true;
+          errorLine.textContent = '';
+          try {
+            const r = await api('POST', '/api/chat/close', { id });
+            if (r.msg) chatApply([r.msg]);
+            chatPatchAll();
+            if (dispoTab === 'st') render();
+          } catch (e) {
+            errorLine.textContent = e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e);
+            closeButton.disabled = !chatReqActive(chatMsgs.get(id) || m);
+          }
+        };
+        exportButton.onclick = () => exportChatAcks(exportButton, errorLine);
+        reqDialog.replaceChildren(
+          el(
+            'div',
+            { class: 'dlg-b' },
+            el('div', { class: 'dlg-t' }, '📌 Bestätigungen'),
+            el('p', { class: 'mu' }, `${chatRoomName(m.team)} · ${chatSenderName(m)} · ${formatDateTime(m.at)}`),
+            el('div', { class: 'amsg rqtx' }, m.text),
+            el('p', { class: 'rqs' }, chatReqText(m)),
+            el(
+              'div',
+              { class: 'rql', style: `height: ${Math.min(Math.max(rows.length, 1), 6) * 2.5}rem` },
+              rows.length
+                ? rows.map(a => el('div', { class: 'rqr ' + (a.at ? 'ok' : 'no'), 'data-u': a.u, 'data-sig': reqRowSig(a) }, ...reqRowContent(m, a)))
+                : el('div', { class: 'rqr' }, el('span', { class: 'rqn mu' }, 'Beim Senden war kein Monteur angemeldet.'))
+            ),
+            el(
+              'p',
+              { class: 'mu' },
+              `Die Monteure bekommen ein Fenster und eine Benachrichtigung, die ${pushConfig.nag === 1 ? 'jede Minute' : 'alle ' + pushConfig.nag + ' Minuten'} wiederkommt, bis sie bestätigen (längstens ${pushConfig.hours} Stunden). Im Chat können sie auch danach bestätigen.`
+            ),
+            errorLine,
+            el('div', { class: 'ob' }, exportButton, closeButton, el('button', { onclick: () => reqDialog.close() }, 'Schließen'))
+          )
+        );
+        if (!reqDialog.open) reqDialog.showModal();
+      }
+      // Fenster live nachführen (Bestätigung kam an, Erinnerung beendet): nur Inhalte ändern, neue Zeilen unten anhängen
+      function reqDialogSync() {
+        const m = chatMsgs.get(reqDialogId);
+        if (!reqDialog.open || !m) return;
+        const sum = reqDialog.querySelector('.rqs'),
+          list = reqDialog.querySelector('.rql'),
+          close = reqDialog.querySelector('.rqc');
+        if (sum && sum.textContent !== chatReqText(m)) sum.textContent = chatReqText(m);
+        if (close && !chatReqActive(m)) close.disabled = true;
+        if (!list) return;
+        const have = new Map([...list.querySelectorAll('.rqr[data-u]')].map(n => [n.dataset.u, n]));
+        for (const a of chatAcksOf(m.id)) {
+          const n = have.get(a.u),
+            sig = reqRowSig(a);
+          if (n && n.dataset.sig === sig) continue;
+          const made = el('div', { class: 'rqr ' + (a.at ? 'ok' : 'no'), 'data-u': a.u, 'data-sig': sig }, ...reqRowContent(m, a));
+          if (n) n.replaceWith(made);
+          else {
+            const empty = list.querySelector('.rqr:not([data-u])');
+            if (empty) empty.remove();
+            list.append(made);
+          }
+        }
+      }
+      // Excel-Zeitpunkt (Tage seit 1900, Ortszeit) aus Millisekunden
+      const msToExcel = t => {
+        const d = new Date(t);
+        return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()) / 864e5 + 25569;
+      };
+      /**
+       * Dokumentation der Bestätigungen als Excel (GET /api/chat/acks: alle Nachrichten mit Bestätigung seit Beginn, auch ältere als die 30 Tage des
+       * Chats). Blatt „Nachrichten“: je Nachricht Zeitpunkt, Raum, Absender, Text, Empfänger / bestätigt / offen, Ende der Erinnerung. Blatt
+       * „Bestätigungen“: je Nachricht und Monteur Name, SAP-User, Team, Status, bestätigt am, Gerät und – wenn ohne Netz bestätigt und später
+       * gesendet – der Eingang beim Server. Neueste Nachricht zuerst. Rückmeldung als Kurzmeldung unten (im Chat verschöbe ein Hinweis oben den Verlauf).
+       */
+      async function exportChatAcks(button, errorLine) {
+        if (button) button.disabled = true;
+        if (errorLine) errorLine.textContent = '';
+        try {
+          const { msgs, acks } = await api('GET', '/api/chat/acks', undefined, 30000);
+          if (!msgs.length) {
+            toast('Noch keine Chat-Nachricht mit Bestätigung.');
+            return;
+          }
+          const xl = t => (t ? msToExcel(t) : null),
+            byMsg = new Map(msgs.map(m => [m.id, { m, rows: [] }]));
+          for (const a of acks) if (byMsg.has(a.id)) byMsg.get(a.id).rows.push(a);
+          const newest = [...byMsg.values()].sort((a, b) => b.m.id - a.m.id),
+            M = [['Gesendet am', 'Raum', 'Gesendet von', 'Nachricht', 'Empfänger', 'Bestätigt', 'Offen', 'Erinnerung beendet am']],
+            B = [['Gesendet am', 'Raum', 'Nachricht', 'Name', 'SAP-User', 'Team', 'Status', 'Bestätigt am', 'Gerät', 'Beim Server eingegangen (wenn später)']];
+          let confirmed = 0;
+          for (const { m, rows } of newest) {
+            const done = rows.filter(a => a.at).length;
+            confirmed += done;
+            M.push([xl(m.at), chatRoomName(m.team), chatSenderName(m), m.text, rows.length, done, rows.length - done, xl(m.rqend)]);
+            rows
+              .sort((a, b) => !a.at - !b.at || (a.at && b.at ? a.at - b.at : String(a.name || a.usr).localeCompare(String(b.name || b.usr), 'de')))
+              .forEach(a =>
+                B.push([
+                  xl(m.at),
+                  chatRoomName(m.team),
+                  m.text,
+                  a.name || '',
+                  a.usr,
+                  a.team || '',
+                  a.at ? 'bestätigt' : 'offen',
+                  xl(a.at),
+                  a.did ? (a.dname ? a.dname + ' ' : '') + '(…' + a.did + ')' : '',
+                  a.at && a.rec && Math.abs(a.rec - a.at) > 120e3 ? xl(a.rec) : null
+                ])
+              );
+          }
+          const out = await runExcelWorker({
+            type: 'sheets',
+            sheets: [
+              { name: 'Nachrichten', rows: M, dt: [0, 7] },
+              { name: 'Bestätigungen', rows: B, dt: [0, 7, 9] }
+            ]
+          });
+          const url = URL.createObjectURL(new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })),
+            link = document.createElement('a');
+          link.href = url;
+          link.download = 'Chat_Bestaetigungen_' + today() + '.xlsx';
+          document.body.append(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+          toast(`Protokoll exportiert: ${msgs.length} ${msgs.length === 1 ? 'Nachricht' : 'Nachrichten'}, ${confirmed} ${confirmed === 1 ? 'Bestätigung' : 'Bestätigungen'}`);
+        } catch (e) {
+          const text = e.net ? 'Keine Verbindung – Protokoll konnte nicht geladen werden' : 'Export fehlgeschlagen: ' + errorMessageOf(e);
+          if (errorLine && reqDialog.open) errorLine.textContent = text;
+          else toast(text);
+        } finally {
+          if (button) button.disabled = false;
+        }
+      }
+      // Tab „Fortschritt“: Karte „Chat-Nachrichten mit Bestätigung“ – die neuesten (bis 5) mit Stand, Tipp = Einzelheiten; dazu das Protokoll als Excel
+      function chatReqCard() {
+        const list = [...chatMsgs.values()].filter(m => m.rq).sort((a, b) => b.id - a.id),
+          shown = list.slice(0, 5);
+        return el(
+          'div',
+          { class: 'card', 'data-k': 'cq' },
+          el('b', {}, 'Chat-Nachrichten mit Bestätigung'),
+          shown.length
+            ? el(
+                'div',
+                { class: 'cqrs' },
+                shown.map(m => {
+                  const { done, total } = chatReqCount(m.id);
+                  return el(
+                    'button',
+                    { class: 'cqr', 'data-k': 'cq-' + m.id, title: m.text, onclick: () => openReqDialog(m.id) },
+                    el('span', { class: 'mu' }, chatWhen(m.at)),
+                    el('span', {}, (m.team === CHAT_ALL ? 'Alle Teams' : m.team) + ': ' + m.text.replace(/\s+/g, ' ')),
+                    el('span', { class: 'cqs' + (total && done >= total ? ' ok' : '') }, total && done >= total ? '✓ alle' : `${done} / ${total}`)
+                  );
+                })
+              )
+            : el('p', { class: 'mu' }, 'Noch keine in den letzten 30 Tagen.'),
+          el(
+            'p',
+            { class: 'mu' },
+            'Im Chat „📌 Bestätigung anfordern“ einschalten: Die Monteure müssen die Nachricht dann bestätigen. Das Protokoll enthält alle Nachrichten mit Bestätigung seit Beginn – wer wann bestätigt hat und wer nicht.' +
+              (list.length > shown.length ? ` (${list.length - shown.length} ältere hier nicht gezeigt)` : '')
+          ),
+          el('button', { onclick: e => exportChatAcks(e.currentTarget) }, '⬇ Protokoll (Excel)')
         );
       }
       // Disponent: Kopfzeile + Tabs (Übersicht, Disposition, Fortschritt | Chat, Upload, Vergleich | Geräte, Benutzer) und je nach Tab die passende Ansicht.

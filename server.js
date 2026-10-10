@@ -35,14 +35,16 @@
  *             Teams und alle Disponenten. side = 'd' Disponent | 'm' Monteur; usr/name = Absender (Monteur: SAP-User und Name, steam = sein Team;
  *             Disponent: usr = „D:“ + Anfang der Geräte-Kennung, name = frei gewählter Name oder „Disponent“); cid = Kennung, die das Gerät vergibt
  *             (gleiche Nachricht zweimal gesendet = einmal gespeichert). Wird nach CHAT_DAYS Tagen gelöscht. Die Nachrichten laufen wie alles
- *             andere über die Änderungsnummer (seq) und die Live-Verbindung
+ *             andere über die Änderungsnummer (seq) und die Live-Verbindung. rq = 1: der Disponent verlangt eine Bestätigung (rqend = Erinnerung
+ *             beendet) – solche Nachrichten bleiben (Dokumentation)
+ *   cack      Bestätigungen dieser Nachrichten je Monteur (Empfänger beim Senden mit at = NULL, bestätigt: at, rec, did, team) – wird nie gelöscht
  *   gas       tägliche Bestätigung des Gaswarngeräts je Team (Tag, Team, Uhrzeit, Gerät, Benutzer) – wird nur angefügt, nie geändert
  *   usr       Benutzer der Monteure (SAP-User, Name, Team, Passwort als scrypt-Hash); beim ersten Start aus users.json befüllt
  *   act       Protokoll: wer (Benutzer, Gerät) hat wann was getan (Anmeldung, Ergebnis, Gaswarngerät, Bestätigung, Benutzerverwaltung)
  *   geo       Koordinaten der Auftragsadressen (PLZ|Straße -> Breite/Länge) für die Sortierung der Monteur-Liste nach Entfernung
  *
  * ZUGRIFFSSTUFEN
- *   offen            Anmeldung (Monteur: SAP-User + Passwort, Disponent: PIN), Nachricht bestätigen, Push-Erneuerung, Standort
+ *   offen            Anmeldung (Monteur: SAP-User + Passwort, Disponent: PIN), Nachricht bestätigen (auch Chat, nur bekanntes Gerät), Push-Erneuerung, Standort
  *   Monteur          Header „X-User-Token“ (Token nach der Anmeldung, 60 Tage): Abgleich, Prüfobjekte lesen, Ergebnis speichern,
  *                    Gaswarngerät bestätigen, Push-Anmeldung als Monteur
  *   Disponent        Header „Authorization: Bearer <Token>“ (Token nach PIN-Eingabe, 12 h)
@@ -175,6 +177,12 @@ CREATE TABLE IF NOT EXISTS chat(id INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT 
 CREATE INDEX IF NOT EXISTS chat_team ON chat(team, id);
 CREATE INDEX IF NOT EXISTS chat_seq ON chat(seq);
 CREATE UNIQUE INDEX IF NOT EXISTS chat_cid ON chat(cid) WHERE cid IS NOT NULL;
+-- Bestätigungen von Chat-Nachrichten, für die der Disponent eine Bestätigung verlangt hat (chat.rq = 1): je Nachricht (id = chat.id) und Monteur
+-- (usr = SAP-User) eine Zeile. Beim Senden entsteht eine Zeile für jeden Monteur, der den Raum sieht (at = NULL: noch nicht bestätigt); bestätigt er,
+-- stehen dort at = Zeitpunkt am Gerät, rec = Eingang beim Server, did = Gerät, team = Team des Geräts, name = Name zu diesem Zeitpunkt. Wird nie gelöscht
+-- (Dokumentation; Export GET /api/chat/acks)
+CREATE TABLE IF NOT EXISTS cack(id INTEGER NOT NULL, usr TEXT NOT NULL, name TEXT, team TEXT, did TEXT, at INTEGER, rec INTEGER, seq INTEGER NOT NULL, PRIMARY KEY(id, usr));
+CREATE INDEX IF NOT EXISTS cack_seq ON cack(seq);
 -- Gaswarngerät: ein Team bestätigt es vor der Arbeit jeden Tag. at = Zeitpunkt der Bestätigung am Gerät, rec = Eingang beim Server
 -- (weicht ab, wenn ohne Netz bestätigt wurde), did = bestätigendes Gerät. Je Tag und Team zählt die erste Bestätigung.
 CREATE TABLE IF NOT EXISTS gas(day TEXT NOT NULL, team TEXT NOT NULL, at INTEGER NOT NULL, rec INTEGER NOT NULL, did TEXT, seq INTEGER NOT NULL, PRIMARY KEY(day, team));
@@ -231,6 +239,12 @@ addColumn('dev', 'usr', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS dev_usr ON dev(usr)');
 addColumn('gas', 'usr', 'TEXT');
 addColumn('chat', 'steam', 'TEXT'); // (ältere Datenbank mit Chat ohne Gruppenchat)
+// rq = 1: der Disponent verlangt, dass die Monteure die Nachricht bestätigen (Bestätigungen in `cack`); rqend = Zeitpunkt, zu dem er die Erinnerung
+// beendet hat (NULL = sie läuft, höchstens MESSAGE_HOURS Stunden)
+addColumn('chat', 'rq', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('chat', 'rqend', 'INTEGER');
+// (die Erinnerung sucht alle 15 Sekunden nach offenen Nachrichten mit Bestätigung, der Abgleich nach denen der letzten 30 Tage)
+db.exec('CREATE INDEX IF NOT EXISTS chat_rq ON chat(at) WHERE rq=1');
 addColumn('mack', 'usr', 'TEXT');
 addColumn('ergebnis', 'usr', 'TEXT');
 // team_lock = 1: der Monteur darf sein Team nicht selbst wechseln (der Disponent kann es immer ändern)
@@ -341,7 +355,7 @@ const sql = {
   ordersOfIds: db.prepare('SELECT auftrag, mteam team FROM orders WHERE auftrag IN (SELECT value FROM json_each(?))'),
   pruefOne: db.prepare('SELECT items FROM pruef WHERE auftrag=?'),
   maxSeq: db.prepare(
-    'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM meldung UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas UNION ALL SELECT MAX(seq) FROM chat)'
+    'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM meldung UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas UNION ALL SELECT MAX(seq) FROM chat UNION ALL SELECT MAX(seq) FROM cack)'
   ),
   upMark: db.prepare(
     'INSERT INTO dmark(auftrag,v,at,seq) VALUES(?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET v=excluded.v, at=excluded.at, seq=excluded.seq'
@@ -453,22 +467,52 @@ const sql = {
   ),
   // Chat: Nachricht speichern, doppelte erkennen (cid), beim Abgleich holen. Vollständig = die letzten Nachrichten je Team (Disponent: aller
   // Teams) der letzten CHAT_DAYS Tage; teilweise = alles mit größerer Änderungsnummer (mehr als 2000 -> lieber vollständig, siehe /api/sync)
-  addChat: db.prepare('INSERT INTO chat(team,side,usr,name,text,at,cid,seq,steam) VALUES(?,?,?,?,?,?,?,?,?)'),
+  addChat: db.prepare('INSERT INTO chat(team,side,usr,name,text,at,cid,seq,steam,rq) VALUES(?,?,?,?,?,?,?,?,?,?)'),
   chatByCid: db.prepare('SELECT * FROM chat WHERE cid=?'),
   chatFullAll: db.prepare(
-    'SELECT id,team,side,usr,name,text,at,cid,steam FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY team ORDER BY id DESC) rn FROM chat WHERE at>?1) WHERE rn<=?2 ORDER BY id'
+    'SELECT id,team,side,usr,name,text,at,cid,steam,rq,rqend FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY team ORDER BY id DESC) rn FROM chat WHERE at>?1) WHERE rn<=?2 ORDER BY id'
   ),
   chatFullTeam: db.prepare(
-    'SELECT id,team,side,usr,name,text,at,cid,steam FROM (SELECT * FROM chat WHERE team=?1 AND at>?2 ORDER BY id DESC LIMIT ?3) ORDER BY id'
+    'SELECT id,team,side,usr,name,text,at,cid,steam,rq,rqend FROM (SELECT * FROM chat WHERE team=?1 AND at>?2 ORDER BY id DESC LIMIT ?3) ORDER BY id'
   ),
-  chatSinceAll: db.prepare('SELECT id,team,side,usr,name,text,at,cid,steam FROM chat WHERE seq>? ORDER BY id LIMIT 2001'),
+  chatSinceAll: db.prepare('SELECT id,team,side,usr,name,text,at,cid,steam,rq,rqend FROM chat WHERE seq>? ORDER BY id LIMIT 2001'),
   // ein Monteur bekommt den Verlauf seines Teams und den Gruppenchat
-  chatSinceTeam: db.prepare("SELECT id,team,side,usr,name,text,at,cid,steam FROM chat WHERE seq>?1 AND team IN (?2, '*') ORDER BY id LIMIT 2001"),
+  chatSinceTeam: db.prepare("SELECT id,team,side,usr,name,text,at,cid,steam,rq,rqend FROM chat WHERE seq>?1 AND team IN (?2, '*') ORDER BY id LIMIT 2001"),
   // Geräte mit Push-Abo, die eine Chat-Nachricht bekommen können: Monteur-Geräte (alle Teams; ?1 = Team des Chats oder '*') und Geräte von Disponenten
   chatDevs: db.prepare(
     "SELECT did, sub, role, team, seen FROM dev WHERE sub IS NOT NULL AND ((role='monteur' AND (?1='*' OR team=?1)) OR role='dispo')"
   ),
-  delOldChat: db.prepare('DELETE FROM chat WHERE at<?'),
+  // (Nachrichten mit Bestätigung bleiben: sie sind die Dokumentation der Bestätigungen)
+  delOldChat: db.prepare('DELETE FROM chat WHERE at<? AND rq=0'),
+  // Chat-Nachrichten mit Bestätigung (siehe Tabelle cack). Empfänger beim Senden: die Monteure (Benutzer), die in den letzten 30 Tagen mit einem
+  // Gerät in diesem Team (?1, beim Gruppenchat '*': in irgendeinem Team) angemeldet waren – je Benutzer das Team seines jüngsten Geräts
+  chatRcpt: db.prepare(
+    "SELECT d.usr, d.team, trim(u.first || ' ' || u.last) name FROM dev d JOIN usr u ON u.sap=d.usr WHERE d.role='monteur' AND d.gone=0 AND u.active=1 AND d.seen>?2 AND (?1='*' OR d.team=?1) ORDER BY d.seen"
+  ),
+  addCackRcpt: db.prepare('INSERT OR IGNORE INTO cack(id,usr,name,team,seq) VALUES(?,?,?,?,?)'),
+  // Bestätigung: eine bestehende Bestätigung bleibt, wie sie ist (die erste zählt) – changes = 0
+  upCack: db.prepare(
+    'INSERT INTO cack(id,usr,name,team,did,at,rec,seq) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id,usr) DO UPDATE SET name=excluded.name, team=excluded.team, did=excluded.did, at=excluded.at, rec=excluded.rec, seq=excluded.seq WHERE cack.at IS NULL'
+  ),
+  getCack: db.prepare('SELECT id, usr, name, team, at, seq FROM cack WHERE id=? AND usr=?'),
+  cacksOf: db.prepare('SELECT id, usr, name, team, at, seq FROM cack WHERE id=?'),
+  getChat: db.prepare('SELECT * FROM chat WHERE id=?'),
+  closeChatReq: db.prepare('UPDATE chat SET rqend=?, seq=? WHERE id=? AND rq=1 AND rqend IS NULL'),
+  // Abgleich: Disponent alle Bestätigungen (vollständig: die der Nachrichten der letzten CHAT_DAYS Tage), Monteur nur seine eigenen
+  cackFullAll: db.prepare('SELECT id, usr, name, team, at, seq FROM cack WHERE id IN (SELECT id FROM chat WHERE rq=1 AND at>?)'),
+  cackSinceAll: db.prepare('SELECT id, usr, name, team, at, seq FROM cack WHERE seq>?'),
+  cackFullUsr: db.prepare('SELECT id, usr, name, team, at, seq FROM cack WHERE usr=?1 AND at IS NOT NULL AND id IN (SELECT id FROM chat WHERE rq=1 AND at>?2)'),
+  cackSinceUsr: db.prepare('SELECT id, usr, name, team, at, seq FROM cack WHERE usr=? AND seq>?'),
+  // Erinnerung (Push, bis bestätigt): offene Nachrichten mit Bestätigung und die Monteur-Geräte des Raums, deren Benutzer noch nicht bestätigt hat
+  activeChatReqs: db.prepare('SELECT id, team, name, text, at FROM chat WHERE rq=1 AND rqend IS NULL AND at>?'),
+  chatNagDevs: db.prepare(
+    "SELECT did, sub FROM dev WHERE role='monteur' AND sub IS NOT NULL AND usr IS NOT NULL AND (?1='*' OR team=?1) AND usr NOT IN (SELECT usr FROM cack WHERE id=?2 AND at IS NOT NULL)"
+  ),
+  // Export: alle Nachrichten mit Bestätigung (seit Beginn) und alle Zeilen dazu, mit Spitzname und Ende der Kennung des Geräts
+  chatReqAll: db.prepare('SELECT id, team, name, usr, text, at, rqend FROM chat WHERE rq=1 ORDER BY id'),
+  cackAll: db.prepare(
+    'SELECT c.id, c.usr, c.name, c.team, c.at, c.rec, substr(c.did, -4) did, v.name dname FROM cack c LEFT JOIN dev v ON v.did=c.did ORDER BY c.id, c.at IS NULL, c.at, c.name'
+  ),
   // Benutzer und Protokoll
   getUsr: db.prepare('SELECT * FROM usr WHERE sap=?'),
   listUsr: db.prepare(
@@ -668,7 +712,8 @@ for (const sig of ['SIGINT', 'SIGTERM'])
 //   { s, n: 1 }  Änderung betrifft das Gerät, ist aber größer (Upload, Nachricht, Gaswarngerät …): das Gerät gleicht ab
 // Reißt die Kette ab (ein Gerät verpasst eine Nummer), gleicht es mit /api/sync ab – dort bleibt alles wie bisher.
 // Clients: { res, kind: 'dispo' (Disponent mit Token, sieht alles) | 'team' (Monteur mit Token, nur sein Team) | 'anon' (ohne Anmeldung
-// bzw. ältere App: bekommt bei jeder Änderung { s, n: 1 }), team }
+// bzw. ältere App: bekommt bei jeder Änderung { s, n: 1 }), team, usr (SAP-User des Monteurs) }
+// scope von announce: 'all' | 'dispo' | { team } | { teams: Set } | { usr } (auch kombiniert: { team, usr }) – Disponenten bekommen immer alles
 const sseClients = new Set();
 const MAX_LIVE_CLIENTS = 5000, // Live-Verbindungen insgesamt
   MAX_LIVE_ANON = 200; // davon ohne Anmeldung (die aktuelle App verbindet sich nur angemeldet)
@@ -693,7 +738,7 @@ function announce(sq, scope = 'all', delta = null) {
       scope === 'all' ||
       (scope !== 'dispo' &&
         c.kind === 'team' &&
-        (scope.team === c.team || (scope.teams !== undefined && scope.teams.has(c.team))));
+        (scope.team === c.team || (scope.teams !== undefined && scope.teams.has(c.team)) || (scope.usr !== undefined && scope.usr === c.usr)));
     let data = shared;
     if (relevant && typeof delta === 'function') {
       const d = delta(c);
@@ -1111,11 +1156,30 @@ async function sendReminders(message, first = false) {
     message.team
   );
 }
+// Chat-Nachricht mit Bestätigung (chat.rq = 1): dieselbe „nervige“ Benachrichtigung wie eine Nachricht des Disponenten (bleibt stehen, kommt wieder,
+// Knopf „Bestätigen“), aber je Nachricht ein eigenes Thema und eigener Tag (mehrere offene ersetzen einander nicht) und bestätigt wird je Monteur
+// (Benutzer), nicht je Gerät: hat er auf einem Gerät bestätigt, bekommen seine anderen Geräte nichts mehr. t: 'cq' sagt dem Service Worker, wohin er
+// die Bestätigung schickt (POST /api/chat/ack) und dass ein Tipp den Chat öffnet
+const dispoWho = name => (name && name !== 'Disponent' ? `${name} (Disponent)` : 'Disponent');
+async function sendChatReminders(row, first = false) {
+  lastNagAt.set('c' + row.id, Date.now());
+  const group = row.team === CHAT_ALL,
+    title = `${group ? 'Gruppenchat' : 'Chat'}: ${dispoWho(row.name)} – bitte bestätigen`;
+  return pushToDevices(
+    sql.chatNagDevs.all(row.team, row.id),
+    d => ({ t: 'cq', id: row.id, did: d.did, team: row.team, title, body: clipString(row.text, 500), at: row.at }),
+    { topic: 'cq' + row.id },
+    first ? `„Bitte bestätigen“ (Chat) an ${group ? 'alle' : 'Team ' + row.team}` : '',
+    group ? '' : row.team
+  );
+}
 setInterval(async () => {
   // „nervig“: wiederholen, bis bestätigt (höchstens MESSAGE_HOURS Stunden)
   try {
     for (const m of sql.activeMsgs.all(Date.now() - MESSAGE_HOURS * 3600e3))
       if (Date.now() - (lastNagAt.get(m.id) || 0) >= NAG_INTERVAL_MIN * 60e3 - 2e3) await sendReminders(m);
+    for (const m of sql.activeChatReqs.all(Date.now() - MESSAGE_HOURS * 3600e3))
+      if (Date.now() - (lastNagAt.get('c' + m.id) || 0) >= NAG_INTERVAL_MIN * 60e3 - 2e3) await sendChatReminders(m);
   } catch (e) {
     console.error('Erinnerung fehlgeschlagen:', e.message); // ein Fehler darf den Server nicht beenden
   }
@@ -1234,7 +1298,21 @@ setInterval(flushDispoNotes, Math.min(10e3, Math.max(250, DISPO_NOTE_MS / 4))).u
 // Nachricht ist nur ein Eintrag in `chat` mit eigener Änderungsnummer – Abgleich und Live-Verbindung bringen sie wie alles andere zu den
 // Geräten (announce mit { k: 'c', row }). Dazu gibt es für die Monteure eine gewöhnliche Push-Benachrichtigung (der Disponent sitzt in der
 // geöffneten App und sieht Zähler und Kurzmeldung dort; er hat kein Push-Abo).
-const chatRow = r => ({ id: r.id, team: r.team, side: r.side, usr: r.usr || '', name: r.name || '', text: r.text, at: r.at, cid: r.cid || '', steam: r.steam || '' });
+// rq = 1: Bestätigung verlangt (nur dann steht es da), rqe = Zeitpunkt, zu dem der Disponent die Erinnerung beendet hat
+const chatRow = r => ({
+  id: r.id,
+  team: r.team,
+  side: r.side,
+  usr: r.usr || '',
+  name: r.name || '',
+  text: r.text,
+  at: r.at,
+  cid: r.cid || '',
+  steam: r.steam || '',
+  ...(r.rq ? { rq: 1, ...(r.rqend ? { rqe: r.rqend } : {}) } : {})
+});
+// Bestätigung für den Abgleich: u = SAP-User, n = Name, t = Team, at = bestätigt am Gerät (0 = noch offen), sq = Änderungsnummer
+const cackRow = r => ({ id: r.id, u: r.usr, n: r.name || '', t: r.team || '', at: r.at || 0, sq: r.seq });
 // Alte Nachrichten entfernen (beim Start und stündlich); Geräte verwerfen sie selbst nach derselben Zeit
 const deleteOldChat = () => sql.delOldChat.run(Date.now() - CHAT_DAYS * 864e5);
 deleteOldChat();
@@ -1261,18 +1339,22 @@ setInterval(() => {
 //   Nachricht im Chat eines Teams: von einem Disponenten -> die Monteur-Geräte des Teams · von einem Monteur -> seine Kollegen und alle Geräte von
 //   Disponenten · Gruppenchat: alle Monteur-Geräte und alle Geräte von Disponenten – jeweils ohne das Gerät, das gesendet hat.
 // Geräte von Disponenten, die seit 30 Tagen nicht mehr aktiv waren, werden übergangen. Der Titel nennt den Absender (und für Disponenten das Team).
+// Eine Nachricht mit Bestätigung (rq) bekommen die Monteure als Erinnerung bis zur Bestätigung (sendChatReminders) – hier gehen nur die Geräte der
+// übrigen Disponenten (Gruppenchat), die gewöhnliche Benachrichtigung bekommen.
 const DISPO_PUSH_ACTIVE_MS = 30 * 864e5;
 async function pushChat(row, fromDid) {
+  if (row.rq && row.team !== CHAT_ALL) return;
   try {
     const group = row.team === CHAT_ALL,
       text = clipString(row.text.replace(/\s+/g, ' ').trim(), 180),
       fromDispo = row.side === 'd',
-      who = fromDispo ? (row.name && row.name !== 'Disponent' ? `${row.name} (Disponent)` : 'Disponent') : row.name || 'Kollege',
+      who = fromDispo ? dispoWho(row.name) : row.name || 'Kollege',
       devices = sql.chatDevs
         .all(row.team)
         .filter(d => d.did !== fromDid && (d.role === 'monteur' || (d.seen || 0) > Date.now() - DISPO_PUSH_ACTIVE_MS))
         // Disponenten bekommen Nachrichten der Teams und alles im Gruppenchat; was ein Disponent im Chat eines Teams schreibt, bekommt nur das Team
-        .filter(d => d.role === 'monteur' || group || !fromDispo),
+        .filter(d => d.role === 'monteur' || group || !fromDispo)
+        .filter(d => !row.rq || d.role !== 'monteur'),
       title = d =>
         group
           ? `Gruppenchat: ${who}${!fromDispo && row.steam ? ' · ' + row.steam : ''}`
@@ -1782,6 +1864,7 @@ async function handleApi(req, res, url) {
       const user = userFromRequest(req);
       if (user) {
         client.kind = 'team';
+        client.usr = user.sap; // (Bestätigungen von Chat-Nachrichten gehen an alle Geräte des Benutzers, siehe /api/chat/ack)
         client.team = clipString(params.get('team'), 100);
         if (!teamAllowed(user, client.team)) client.team = user.team || '';
       }
@@ -1863,6 +1946,8 @@ async function handleApi(req, res, url) {
         gday: dayOf(Date.now()),
         me: meOf(me)
       });
+    // cf=1: das Gerät braucht die Bestätigungen von Chat-Nachrichten dieses Monteurs vollständig (anderer Benutzer am Gerät) – auch ohne sonstige Änderung
+    const cackFullFor = me && params.get('cf') === '1' ? { cacks: sql.cackFullUsr.all(me.sap, Date.now() - CHAT_DAYS * 864e5).map(cackRow), cackFull: true } : {};
     if (since === changeSeq)
       return sendJson(req, res, 200, {
         seq: changeSeq,
@@ -1871,7 +1956,8 @@ async function handleApi(req, res, url) {
         gday: dayOf(Date.now()),
         ...(me ? { me: meOf(me) } : {}),
         ...devState,
-        ...locateField()
+        ...locateField(),
+        ...(team !== '-' ? cackFullFor : {})
       });
     const full = since === 0 || since > changeSeq || since < minSeq,
       from = full ? 0 : since;
@@ -1954,6 +2040,21 @@ async function handleApi(req, res, url) {
       }
       out.chat = chatRows.map(chatRow);
       if (chatFull) out.chatFull = true;
+      // Bestätigungen von Chat-Nachrichten (cack): der Disponent alle (Empfänger und wer wann bestätigt hat), ein Monteur nur seine eigenen –
+      // vollständig die der Nachrichten der letzten CHAT_DAYS Tage, sonst alles mit größerer Änderungsnummer
+      const cackCut = Date.now() - CHAT_DAYS * 864e5;
+      if (full || cackFullFor.cackFull) out.cackFull = true; // (vollständige Liste: das Gerät ersetzt seine)
+      out.cacks = (
+        me
+          ? out.cackFull
+            ? sql.cackFullUsr.all(me.sap, cackCut)
+            : sql.cackSinceUsr.all(me.sap, from)
+          : full
+            ? sql.cackFullAll.all(cackCut)
+            : sql.cackSinceAll.all(from)
+      ).map(cackRow);
+      // (auch der Monteur: wie lange eine Nachricht mit Bestätigung abgefragt wird)
+      if (me) out.cfg = { nag: NAG_INTERVAL_MIN, hours: MESSAGE_HOURS };
     }
     return sendJson(req, res, 200, out);
   }
@@ -2273,10 +2374,11 @@ async function handleApi(req, res, url) {
       row: { d: row.day, t: row.team, at: row.at, rec: row.rec, sq: row.seq }
     });
   }
-  // Chat: eine Nachricht an den Verlauf eines Teams. Body: { team, text, cid, side }. side = 'd' (Disponent, braucht das PIN-Token) oder 'm'
+  // Chat: eine Nachricht an den Verlauf eines Teams. Body: { team, text, cid, side, rq? }. side = 'd' (Disponent, braucht das PIN-Token) oder 'm'
   // (Monteur, braucht die Anmeldung; er darf nur in den Verlauf eines Teams schreiben, das er sehen darf). Das Gerät vergibt die Kennung `cid`
-  // selbst: sendet es dieselbe Nachricht noch einmal (Antwort kam nicht an, Netz weg), wird sie nicht doppelt gespeichert. Antwort: die
-  // gespeicherte Nachricht (`msg`).
+  // selbst: sendet es dieselbe Nachricht noch einmal (Antwort kam nicht an, Netz weg), wird sie nicht doppelt gespeichert. rq = 1 (nur Disponent):
+  // die Monteure müssen die Nachricht bestätigen (Tabelle cack, Erinnerung per Push wie bei einer Nachricht des Disponenten). Antwort: die
+  // gespeicherte Nachricht (`msg`), bei rq die Empfänger (`acks`, siehe cackRow).
   if (pathname === '/api/chat' && method === 'POST') {
     const body = await readBody(req, 10e3),
       side = body.side === 'd' ? 'd' : 'm',
@@ -2307,24 +2409,102 @@ async function handleApi(req, res, url) {
     if (dup) {
       // dieselbe Nachricht noch einmal: nichts speichern und nichts melden – nur dem Absender bestätigen (einem anderen nicht verraten)
       if (dup.team !== team || dup.side !== side || (dup.usr || '') !== sender.usr) return sendJson(req, res, 409, { error: 'Kennung schon vergeben' });
-      return sendJson(req, res, 200, { ok: true, dup: true, msg: chatRow(dup), sq: changeSeq });
+      return sendJson(req, res, 200, { ok: true, dup: true, msg: chatRow(dup), ...(dup.rq ? { acks: sql.cacksOf.all(dup.id).map(cackRow) } : {}), sq: changeSeq });
     }
     if (chatThrottled(sender.key)) return sendJson(req, res, 429, { error: 'Zu viele Nachrichten in kurzer Zeit – bitte einen Moment warten.' });
+    const rq = side === 'd' && (body.rq === 1 || body.rq === true) ? 1 : 0;
     let row;
     transaction(() => {
       changeSeq++;
       const at = Date.now();
-      row = chatRow({ id: Number(sql.addChat.run(team, side, sender.usr || null, sender.name, text, at, cid, changeSeq, sender.steam || null).lastInsertRowid), team, side, usr: sender.usr, name: sender.name, text, at, cid, steam: sender.steam });
+      row = chatRow({ id: Number(sql.addChat.run(team, side, sender.usr || null, sender.name, text, at, cid, changeSeq, sender.steam || null, rq).lastInsertRowid), team, side, usr: sender.usr, name: sender.name, text, at, cid, steam: sender.steam, rq });
+      if (rq) {
+        // Empfänger festhalten (je Benutzer das Team seines jüngsten Geräts): so steht in der Dokumentation auch, wer NICHT bestätigt hat
+        const rcpt = new Map();
+        for (const r of sql.chatRcpt.all(team, at - 30 * 864e5)) rcpt.set(r.usr, r);
+        for (const r of rcpt.values()) sql.addCackRcpt.run(row.id, r.usr, r.name, r.team, changeSeq);
+      }
     });
-    // (der Gruppenchat geht an alle Geräte, der Chat eines Teams an dieses Team und die Disponenten)
-    announce(changeSeq, team === CHAT_ALL ? 'all' : { team }, { k: 'c', row });
+    // (der Gruppenchat geht an alle Geräte, der Chat eines Teams an dieses Team und die Disponenten). Mit Bestätigung gleichen die Geräte ab:
+    // dort kommen auch die Empfänger mit (dieselbe Änderungsnummer)
+    announce(changeSeq, team === CHAT_ALL ? 'all' : { team }, rq ? null : { k: 'c', row });
     pushChat(row, sender.did); // (nicht abwarten: die Antwort soll nicht auf den Push-Dienst warten)
-    return sendJson(req, res, 200, { ok: true, msg: row, sq: changeSeq });
+    if (rq) sendChatReminders(row, true).catch(e => console.error('Erinnerung (Chat) fehlgeschlagen:', e.message));
+    return sendJson(req, res, 200, { ok: true, msg: row, ...(rq ? { acks: sql.cacksOf.all(row.id).map(cackRow) } : {}), sq: changeSeq });
+  }
+  // Monteur bestätigt eine Chat-Nachricht, für die der Disponent eine Bestätigung verlangt hat. Body: { id, did, at }. Mit Anmeldung (App) zählt der
+  // Benutzer des Tokens; ohne (Knopf „Bestätigen“ in der Benachrichtigung, Service Worker) der am Gerät angemeldete Benutzer – nur für ein bekanntes
+  // Monteur-Gerät, das den Raum sieht (sonst könnte jeder die Datenbank füllen). `at` = Zeitpunkt am Gerät (ohne Netz bestätigt und später gesendet);
+  // unplausible Zeiten (vor der Nachricht, in der Zukunft) ersetzt der Server durch seine. Je Monteur zählt die erste Bestätigung. Antwort: { ok, row }
+  if (pathname === '/api/chat/ack' && method === 'POST') {
+    const body = await readBody(req, 1e4),
+      id = +body.id | 0,
+      msg = id ? sql.getChat.get(id) : null,
+      user = userFromRequest(req),
+      // (mit Anmeldung zählt das Gerät aus dem Token, nicht die Angabe im Body)
+      did = (user && user.did) || validDeviceId(body.did) || '';
+    if (!msg || !msg.rq) return sendJson(req, res, 200, { ok: true, ignored: true });
+    let who = null;
+    if (user) {
+      // (nur im eigenen Team – laut Gerät oder Benutzerverwaltung – oder im Gruppenchat: wer den Raum nicht sieht, bestätigt nichts)
+      const devTeam = (did && (sql.getDev.get(did) || {}).team) || '';
+      if (msg.team === CHAT_ALL || (teamAllowed(user, msg.team) && (devTeam === msg.team || user.team === msg.team)))
+        who = { sap: user.sap, name: user.name, team: devTeam || user.team || '' };
+    } else {
+      const dev = did ? sql.getDev.get(did) : null,
+        u = dev && dev.role === 'monteur' && dev.usr ? sql.getUsr.get(dev.usr) : null;
+      if (u && u.active && (msg.team === CHAT_ALL || dev.team === msg.team)) who = { sap: u.sap, name: fullName(u), team: dev.team || '' };
+    }
+    if (!who) return sendJson(req, res, 200, { ok: true, ignored: true });
+    const now = Date.now();
+    let at = Number(body.at);
+    if (!(at >= msg.at && at <= now + 5 * 60e3)) at = now;
+    at = Math.min(at, now);
+    let added = false;
+    transaction(() => {
+      if ((sql.getCack.get(id, who.sap) || {}).at) return; // schon bestätigt (anderes Gerät, Benachrichtigung und App zugleich)
+      changeSeq++;
+      added = sql.upCack.run(id, who.sap, who.name, who.team, did || null, at, now, changeSeq).changes > 0;
+    });
+    if (added) {
+      logAct('cack', who.sap, did, who.team, msg.team === CHAT_ALL ? 'Gruppenchat' : 'Chat ' + msg.team, clipString(msg.text.replace(/\s+/g, ' '), 120));
+      // an die Disponenten und an alle Geräte dieses Monteurs (auch in einem anderen Team): sie gleichen ab
+      announce(changeSeq, { usr: who.sap });
+    }
+    return sendJson(req, res, 200, { ok: true, row: cackRow(sql.getCack.get(id, who.sap)) });
+  }
+  // für den Service Worker: muss die Benachrichtigung zu dieser Chat-Nachricht wieder erscheinen? (weggewischt ohne Bestätigung)
+  if (pathname === '/api/chat/state' && method === 'GET') {
+    const msg = sql.getChat.get(+params.get('id') | 0),
+      dev = sql.getDev.get(clipString(params.get('did'), 64)),
+      open =
+        !!msg && !!msg.rq && !msg.rqend && msg.at > Date.now() - MESSAGE_HOURS * 3600e3 && !!dev && dev.role === 'monteur' && !!dev.usr &&
+        (msg.team === CHAT_ALL || dev.team === msg.team) && !(sql.getCack.get(msg.id, dev.usr) || {}).at;
+    return sendJson(req, res, 200, { open });
   }
   // ab hier nur Disponent
   if (!isDispo(req)) return sendJson(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
   // gesamtes Protokoll der Gaswarngerät-Bestätigungen (für den Export; die Abgleich-Antwort enthält nur die letzten 60 Tage)
   if (pathname === '/api/gas' && method === 'GET') return sendJson(req, res, 200, { rows: sql.gasAll.all() });
+  // Chat-Nachrichten mit Bestätigung: Erinnerung beenden (die Nachricht bleibt, der Push hört auf, die Monteure werden nicht mehr gefragt –
+  // bestätigen können sie im Verlauf weiterhin). Body: { id }
+  if (pathname === '/api/chat/close' && method === 'POST') {
+    const id = +(await readBody(req, 1e4)).id | 0;
+    let changed = false;
+    transaction(() => {
+      const open = sql.getChat.get(id);
+      if (!open || !open.rq || open.rqend) return;
+      changeSeq++;
+      changed = sql.closeChatReq.run(Date.now(), changeSeq, id).changes > 0;
+    });
+    const row = sql.getChat.get(id);
+    if (changed) announce(changeSeq, row.team === CHAT_ALL ? 'all' : { team: row.team }, { k: 'c', row: chatRow(row) });
+    return sendJson(req, res, 200, { ok: true, msg: row ? chatRow(row) : null });
+  }
+  // Dokumentation der Bestätigungen (Excel-Export): alle Nachrichten mit Bestätigung seit Beginn (msgs) und je Nachricht alle Empfänger und
+  // Bestätigungen (acks: at = bestätigt am Gerät oder null, rec = Eingang beim Server, did = Ende der Geräte-Kennung, dname = Spitzname des Geräts)
+  if (pathname === '/api/chat/acks' && method === 'GET')
+    return sendJson(req, res, 200, { msgs: sql.chatReqAll.all(), acks: sql.cackAll.all() });
   if (pathname === '/api/msg' && method === 'POST') {
     // Nachricht an ein Team (ersetzt eine noch offene)
     const body = await readBody(req, 1e4),

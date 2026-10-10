@@ -6,6 +6,8 @@
  *                                       hochladen; wanted = 'auftraege' | 'vorgaenge' | 'meldungen', siehe parseSource)
  *   type 'pruef'   { buf }          -> { by: { Auftrag: [Kurztexte] } }                (Prüflos-Excel hochladen)
  *   type 'cmp'     { buf }          -> { rows, hasStatus }                             (Vergleich Excel <-> Export)
+ *   type 'sheets'  { sheets: [{ name, rows, dt }] } -> ArrayBuffer der fertigen .xlsx (beliebige Tabellen; dt = Spalten mit Datum und Uhrzeit,
+ *                                       z. B. Bestätigungen der Chat-Nachrichten)
  *   sonst          { A, P, dc, tc, E } -> ArrayBuffer der fertigen .xlsx                (Export; E = Tageseinträge der Daueraufträge)
  * ================================================================================================= */
 importScripts('/vendor/xlsx.full.min.js');
@@ -275,34 +277,41 @@ function parseForComparison(buf) {
   for (const x of sheetsData) if (x.st === hasStatus) for (const o of x.rows) out.set(o.auftrag, o);
   return { rows: [...out.values()], hasStatus };
 }
+// Tabelle aus Zeilen (Kopfzeile in Zeile 1): dc / tc = Spalte mit Datum bzw. Uhrzeit, dt = Spalten mit Datum und Uhrzeit (echte Excel-Formate
+// dd.mm.yyyy / hh:mm / dd.mm.yyyy hh:mm:ss), Spaltenbreite nach Inhalt (höchstens 60; Datum mit Uhrzeit 21), Autofilter über alle Spalten
+function makeSheet(aoa, dc = -1, tc = -1, dt = []) {
+  const ws = XLSX.utils.aoa_to_sheet(aoa),
+    format = (c, z) => {
+      for (let i = 1; i < aoa.length; i++) {
+        const a = XLSX.utils.encode_cell({ r: i, c });
+        if (ws[a] && ws[a].t === 'n') ws[a].z = z;
+      }
+    };
+  if (dc >= 0) format(dc, 'dd.mm.yyyy');
+  if (tc >= 0) format(tc, 'hh:mm');
+  for (const c of dt) format(c, 'dd.mm.yyyy hh:mm:ss');
+  ws['!cols'] = aoa[0].map((h, c) => {
+    let m = String(h).length;
+    if (dt.includes(c)) m = Math.max(m, 19);
+    else for (let i = 1; i < Math.min(aoa.length, 500); i++) m = Math.max(m, String(aoa[i][c] ?? '').length);
+    return { wch: Math.min(60, m + 2) };
+  });
+  ws['!autofilter'] = {
+    ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } })
+  };
+  return ws;
+}
+// Datei aus beliebigen Blättern: [{ name, rows, dt }] (siehe makeSheet)
+function buildSheets(sheets) {
+  const workbook = XLSX.utils.book_new();
+  for (const sh of sheets) XLSX.utils.book_append_sheet(workbook, makeSheet(sh.rows, -1, -1, sh.dt || []), sh.name);
+  return XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+}
 /**
  * Erzeugt die Export-Datei: Blatt „Aufträge“ (A) und Blatt „Prüfobjekte“ (P) als Tabellen mit Kopfzeile in Zeile 1.
  * dc / tc = Spaltenindex der Datums- bzw. Uhrzeit-Spalte in A (bekommen echte Excel-Formate dd.mm.yyyy / hh:mm).
  */
 function buildExport(A, P, dc, tc, E) {
-  // Tabelle aus Zeilen: Datums-/Uhrzeitformat, Spaltenbreite nach Inhalt (höchstens 60), Autofilter über alle Spalten
-  const makeSheet = (aoa, dc = -1, tc = -1) => {
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    if (dc >= 0)
-      for (let i = 1; i < aoa.length; i++) {
-        const a = XLSX.utils.encode_cell({ r: i, c: dc });
-        if (ws[a] && ws[a].t === 'n') ws[a].z = 'dd.mm.yyyy';
-      }
-    if (tc >= 0)
-      for (let i = 1; i < aoa.length; i++) {
-        const a = XLSX.utils.encode_cell({ r: i, c: tc });
-        if (ws[a] && ws[a].t === 'n') ws[a].z = 'hh:mm';
-      }
-    ws['!cols'] = aoa[0].map((h, c) => {
-      let m = String(h).length;
-      for (let i = 1; i < Math.min(aoa.length, 500); i++) m = Math.max(m, String(aoa[i][c] ?? '').length);
-      return { wch: Math.min(60, m + 2) };
-    });
-    ws['!autofilter'] = {
-      ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } })
-    };
-    return ws;
-  };
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, makeSheet(A, dc, tc), 'Aufträge');
   XLSX.utils.book_append_sheet(workbook, makeSheet(P), 'Prüfobjekte');
@@ -321,7 +330,9 @@ onmessage = e => {
           ? parseChecklists(buf)
           : type === 'cmp'
             ? parseForComparison(buf)
-            : buildExport(A, P, dc, tc, E);
+            : type === 'sheets'
+              ? buildSheets(e.data.sheets)
+              : buildExport(A, P, dc, tc, E);
     const tr =
       res instanceof ArrayBuffer ? [res] : res && res.buffer instanceof ArrayBuffer ? [res.buffer] : [];
     postMessage({ res }, tr);
