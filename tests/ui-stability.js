@@ -3561,6 +3561,32 @@ async function securityChecks(browser, geocoder, errors) {
     } finally {
       second.stop();
     }
+    // HTTPS mit selbst erzeugtem Zertifikat (nur wenn openssl da ist): HSTS nur für richtige Rechnernamen, nie für localhost und IP-Adressen
+    let made = false;
+    const certDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-cert-'));
+    try {
+      execSync(`openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 2 -subj "/CN=localhost"`, { cwd: certDir, stdio: 'ignore' });
+      made = true;
+    } catch (e) {}
+    if (made) {
+      const secure = await startServer(geocoder.url, null, { DISPO_NOTE_S: '1000000', TLS_CERT: path.join(certDir, 'cert.pem'), TLS_KEY: path.join(certDir, 'key.pem') });
+      try {
+        const hsts = host =>
+          new Promise(resolve => {
+            const req = require('https').request({ host: '127.0.0.1', port: secure.port, path: '/', headers: { Host: host }, rejectUnauthorized: false }, res => (res.resume(), resolve(res.headers['strict-transport-security'] || '')));
+            req.on('error', () => resolve('Fehler'));
+            req.end();
+          });
+        const named = await hsts('auftraege.firma.at'),
+          withPort = await hsts('auftraege.firma.at:8443');
+        const local = [await hsts('localhost:3443'), await hsts('127.0.0.1:3443'), await hsts('[::1]:3443'), await hsts('app.localhost')];
+        report(/max-age=\d+/.test(named) && /max-age=\d+/.test(withPort), 'Sicherheit: mit HTTPS sendet der Server HSTS für einen richtigen Rechnernamen', named);
+        report(local.every(v => v === ''), 'Sicherheit: HSTS wird für localhost und IP-Adressen nicht gesendet (sonst würden lokale http://-Server gesperrt)', JSON.stringify(local));
+      } finally {
+        secure.stop();
+      }
+    }
+    fs.rmSync(certDir, { recursive: true, force: true });
   } finally {
     server.stop();
   }

@@ -56,6 +56,7 @@ const http = require('http'),
   fs = require('fs'),
   path = require('path'),
   crypto = require('crypto'),
+  net = require('net'),
   zlib = require('zlib');
 let DatabaseSync;
 try {
@@ -2704,6 +2705,12 @@ function contentSecurityPolicy(html) {
     "frame-ancestors 'none'"
   ].join('; ');
 }
+// HSTS gilt für den Rechnernamen, nicht für den Port: auf „localhost“ würde es lokale http://-Server (auch auf anderen Ports) aussperren, und
+// bei IP-Adressen ignorieren es Browser ohnehin – dort also nicht senden
+const hstsApplies = host => {
+  const name = String(host || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return !!name && name !== 'localhost' && !name.endsWith('.localhost') && !net.isIP(name);
+};
 // Schutz-Header für jede Antwort (Seite, Dateien, API)
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -2783,7 +2790,7 @@ const requestHandler = async (req, res) => {
     return res.end('Ungültige Anfrage');
   }
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
-  if (TLS) res.setHeader('Strict-Transport-Security', 'max-age=15552000'); // 180 Tage: Browser nutzen dann nur noch https://
+  if (TLS && hstsApplies(req.headers.host)) res.setHeader('Strict-Transport-Security', 'max-age=15552000'); // 180 Tage: Browser nutzen dann nur noch https://
   try {
     url.pathname.startsWith('/api/') ? await handleApi(req, res, url) : serveStatic(req, res, url);
   } catch (e) {
