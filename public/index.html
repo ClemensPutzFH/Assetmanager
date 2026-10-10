@@ -511,8 +511,8 @@
         width: 1.4em;
       }
       /* ---- Tabs der Disponentenansicht, Texteingaben ---- */
-      /* Tabs: füllen immer die ganze Breite, nichts wird abgeschnitten und nichts muss gewischt werden. Am Handy zwei Zeilen (3 + 4 Tabs,
-         jede Zeile in gleich breite Tabs geteilt), ab Tablet-Breite eine Zeile mit sieben gleich breiten Tabs (siehe @media unten).
+      /* Tabs: füllen immer die ganze Breite, nichts wird abgeschnitten und nichts muss gewischt werden. Am Handy drei Zeilen (3 + 3 + 2 Tabs,
+         jede Zeile in gleich breite Tabs geteilt), ab 52 em Breite eine Zeile mit acht gleich breiten Tabs (siehe @media unten).
          Die Breite hängt nicht vom Text ab (flex-basis 0): wird der aktive Tab fett oder ändert sich die Zahl am Tab „Disposition“,
          bleiben die Nachbarn stehen. Nur wenn ein Text sonst nicht hineinpasste, wird sein Tab breiter (min-width: auto) statt ihn zu kappen.
          Die Schrift schrumpft auf sehr schmalen Handys (320 px) von 14 auf 12 px, damit auch „Disposition (123)“ in seine Zeile passt. */
@@ -542,8 +542,9 @@
         font-weight: 600;
         box-shadow: 0 1px 2px color-mix(in srgb, var(--ac) 45%, transparent);
       }
-      /* ab Tablet-Breite alle sieben Tabs in einer Zeile (die Zeilen lösen sich auf: display: contents) */
-      @media (min-width: 45em) {
+      /* ab 52 em alle acht Tabs in einer Zeile (die Zeilen lösen sich auf: display: contents); darunter bleiben es drei Zeilen – acht Tabs mit
+         „Disposition (123)“ brauchen etwa 780 px */
+      @media (min-width: 52em) {
         .tabs {
           display: flex;
         }
@@ -554,6 +555,312 @@
         .tabs .trow:first-child button:nth-child(2) {
           flex: 1 1 0;
           padding: 10px;
+        }
+      }
+      /* ---- Chat (Team <-> Disponent) ----
+         Die Seite selbst rollt im Chat nicht: <main> ist genau so hoch wie der Bildschirm (body[data-chat]), der Verlauf (.cthr) rollt in sich,
+         Eingabe (.ccomp) steht fest darunter. Neue Nachrichten verändern so nur den Verlauf, nie die Seite (kein Anker, kein Springen), und
+         Kopfzeile und Tabs bleiben immer erreichbar. Der Verlauf steht unten (erstes Kind: margin-top auto; justify-content: flex-end verlöre
+         beim Rollen den Anfang). */
+      body[data-chat] main {
+        box-sizing: border-box;
+        height: calc(100vh - var(--toph, 52px));
+        height: calc(100dvh - var(--toph, 52px));
+        display: flex;
+        flex-direction: column;
+        padding-bottom: 8px;
+      }
+      body[data-chat] main > * {
+        flex: 0 0 auto;
+      }
+      body[data-chat] main > .cwrap {
+        flex: 1 1 0;
+        min-height: 12rem;
+      }
+      body[data-chat] .made {
+        display: none;
+      }
+      .cwrap {
+        display: flex;
+        gap: 12px;
+        min-height: 0;
+      }
+      .clist {
+        flex: 0 0 18rem;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-height: 0;
+        padding: 1px;
+      }
+      .crow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 2px 8px;
+        align-items: baseline;
+        width: 100%;
+        text-align: left;
+        padding: 9px 12px;
+        flex: 0 0 auto;
+      }
+      .crow.on {
+        border-color: var(--ac);
+        background: var(--acs);
+      }
+      .crow .crn {
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .crow.un .crn {
+        color: var(--act);
+      }
+      .crow .crt,
+      .crow .crp {
+        font-size: 0.8125rem;
+        color: var(--mu);
+      }
+      .crow .crp {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .crow.un .crp {
+        color: var(--tx);
+        font-weight: 500;
+      }
+      /* Zähler: nimmt immer denselben Platz ein (unsichtbar bei 0), damit die Zeile nicht breiter oder höher wird, wenn eine Nachricht kommt */
+      .cbadge {
+        display: inline-block;
+        box-sizing: border-box;
+        min-width: 1.5rem;
+        padding: 0 6px;
+        border-radius: 10px;
+        background: var(--ac);
+        color: #fff;
+        font-size: 0.75rem;
+        font-weight: 700;
+        line-height: 1.4rem;
+        text-align: center;
+        visibility: hidden;
+      }
+      .cbadge.on {
+        visibility: visible;
+      }
+      .cpane {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--card);
+        border: 1px solid var(--bd);
+        border-radius: var(--rc);
+        box-shadow: var(--sh1);
+        overflow: hidden;
+      }
+      .cpane.chat1 {
+        min-height: 12rem;
+      }
+      body[data-chat] main > .cpane {
+        flex: 1 1 0;
+      }
+      .chead {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--bd);
+        min-height: 2.75rem;
+        box-sizing: border-box;
+      }
+      .chead b {
+        flex: 0 0 auto;
+        font-size: 1.0625rem;
+        white-space: nowrap;
+      }
+      .chead .mu {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .chead .cback {
+        display: none;
+        padding: 6px 10px;
+        flex: 0 0 auto;
+      }
+      .cthr {
+        flex: 1 1 0;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        padding: 10px 14px;
+      }
+      .cthr > :first-child {
+        margin-top: auto;
+      }
+      .cday {
+        align-self: center;
+        flex: 0 0 auto;
+        margin: 10px 0 6px;
+        padding: 1px 10px;
+        border-radius: 10px;
+        background: var(--bg);
+        color: var(--mu);
+        font-size: 0.75rem;
+        font-weight: 500;
+      }
+      .cempty {
+        align-self: center;
+        text-align: center;
+        margin-bottom: auto;
+      }
+      .cmsg {
+        flex: 0 0 auto;
+        align-self: flex-start;
+        display: flex;
+        flex-direction: column;
+        max-width: min(34rem, 88%);
+      }
+      .cmsg.me {
+        align-self: flex-end;
+        align-items: flex-end;
+      }
+      .cby {
+        margin: 6px 10px 2px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--mu);
+      }
+      .cbub {
+        box-sizing: border-box;
+        padding: 7px 12px 6px;
+        border-radius: 16px 16px 16px 4px;
+        background: var(--bg);
+        border: 1px solid var(--bd);
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+        line-height: 1.35;
+      }
+      .cmsg.me .cbub {
+        border-radius: 16px 16px 4px 16px;
+        background: var(--ac);
+        border-color: var(--ac);
+        color: #fff;
+      }
+      /* Uhrzeit und Zustand stehen rechts unten in der letzten Zeile der Nachricht */
+      .cmeta {
+        float: right;
+        margin: 6px 0 -3px 12px;
+        font-size: 0.6875rem;
+        line-height: 1;
+        opacity: 0.75;
+        white-space: nowrap;
+        user-select: none;
+      }
+      .cst {
+        display: inline-block;
+        width: 1.1em;
+        margin-left: 3px;
+        text-align: center;
+      }
+      .cmsg.pend .cbub {
+        opacity: 0.7;
+      }
+      .cfail {
+        margin: 3px 4px 0;
+        font-size: 0.8125rem;
+        color: var(--er);
+        text-align: right;
+      }
+      .cfail button {
+        margin-left: 6px;
+        padding: 3px 9px;
+        font-size: 0.8125rem;
+      }
+      .ccomp {
+        position: relative;
+        z-index: 6;
+        flex: 0 0 auto;
+        display: flex;
+        gap: 8px;
+        align-items: flex-end;
+        padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+        border-top: 1px solid var(--bd);
+        background: var(--card);
+      }
+      .ccomp textarea {
+        flex: 1 1 auto;
+        min-width: 0;
+        width: auto;
+        margin: 0;
+        resize: none;
+        box-sizing: border-box;
+        min-height: 2.75rem;
+        max-height: 8rem;
+        field-sizing: content;
+        padding: 10px 14px;
+        border-radius: 20px;
+        font-size: 1rem;
+        line-height: 1.3;
+        background: var(--bg);
+      }
+      .ccomp .csend {
+        flex: 0 0 auto;
+        height: 2.75rem;
+        border-radius: 20px;
+        padding: 0 18px;
+      }
+      .ccomp .csend:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .cpill {
+        position: absolute;
+        right: 14px;
+        bottom: 100%;
+        margin-bottom: 8px;
+        display: none;
+        padding: 6px 12px;
+        border-radius: 16px;
+        font-size: 0.8125rem;
+        background: var(--ac);
+        border-color: var(--ac);
+        color: #fff;
+        box-shadow: var(--sh2);
+      }
+      .cpill.on {
+        display: block;
+      }
+      /* Kachel „Chat“ auf der Startseite des Monteurs: Zeile mit der letzten Nachricht ist immer genau eine Zeile */
+      .kind.chat .cprev {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .kind.chat .cbadge {
+        align-self: flex-start;
+        flex: 0 0 auto;
+      }
+      /* Handy und schmale Fenster: entweder die Teamliste oder der Verlauf des gewählten Teams */
+      @media (max-width: 51.99em) {
+        .cwrap .clist {
+          flex: 1 1 auto;
+        }
+        .cwrap.t .clist,
+        .cwrap:not(.t) .cpane {
+          display: none;
+        }
+        .chead .cback {
+          display: block;
         }
       }
       .tools select {
@@ -3226,8 +3533,9 @@
        *             Teams, bewertet bei Wartungen die Prüfobjekte (OK / Nicht OK mit Text) und meldet die Zeit zurück. Ein Auftrag gilt als
        *             „erledigt“, wenn alle Prüfobjekte bewertet sind (nur Wartung) UND die Zeit vollständig ist (Datum + Beginn + Dauer).
        *   Disponent PIN-geschützt: Übersicht (Filter, Excel-Export, Abhaken), Fortschritt aller Teams (+ Nachricht ans
-       *             Team), Upload (eigener PIN), Vergleich (Aufträge-Excel gegen Export) und Geräte (wer ist wo
-       *             angemeldet, Spitznamen, Geräte ausloggen, Standort der Monteur-Geräte).
+       *             Team), Chat (mit jedem Team, siehe „Chat zwischen einem Team und dem Disponenten“), Upload (eigener PIN),
+       *             Vergleich (Aufträge-Excel gegen Export) und Geräte (wer ist wo angemeldet, Spitznamen, Geräte ausloggen,
+       *             Standort der Monteur-Geräte). Der Monteur hat dazu die Kachel „Chat“ auf der Startseite.
        *
        * DATENFLUSS
        *   Server (SQLite) <-> poll(): holt nur Änderungen seit der Änderungsnummer `syncSeq`; der Server meldet Änderungen
@@ -3263,7 +3571,7 @@
        *   Zustand · Gerät/Schriftgröße/Theme · Upload · Prüfobjekt-Texte · Excel-Export · Ergebnisse & Status ·
        *   Zeitrückmeldung · Prüfobjekte bewerten · Outbox · Server-Zugriff & Cache · Skeleton-Platzhalter · Abgleich (poll) · Abhaken ·
        *   Filter & Karten · Fortschritt/Frist · Vergleich · Fortschritt aller Teams · Geräteübersicht · Update · Nachrichten & Push ·
-       *   Tooltip & Suche · Verlassen-Warnung · Zeichnen (draw …) · Start
+       *   Tooltip & Suche · Verlassen-Warnung · Zeichnen (draw …) · Chat · Start
        * ================================================================================================= */
       // Wurzelelement der Seite (<main id="app">); draw() baut hier alles hinein
       const app = document.getElementById('app');
@@ -5419,10 +5727,17 @@
       // Kurzmeldung unten am Bildschirm – sichtbar egal wie weit gescrollt ist; geht nach einigen Sekunden oder per Tipp weg
       const toastEl = el('div', { class: 'toast', role: 'status', 'aria-live': 'polite' });
       document.body.append(toastEl);
-      let toastTimer = null;
-      toastEl.addEventListener('click', () => toastEl.classList.remove('on'));
-      // zeigt text 10 Sekunden lang als Kurzmeldung
-      function toast(text) {
+      let toastTimer = null,
+        toastTap = null; // Aktion beim Antippen (z. B. zum Chat wechseln), sonst schließt der Tipp nur die Meldung
+      toastEl.addEventListener('click', () => {
+        toastEl.classList.remove('on');
+        const tap = toastTap;
+        toastTap = null;
+        if (tap) tap();
+      });
+      // zeigt text 10 Sekunden lang als Kurzmeldung; onTap (optional) läuft, wenn man sie antippt
+      function toast(text, onTap) {
+        toastTap = onTap || null;
         toastEl.textContent = text;
         toastEl.classList.add('on');
         clearTimeout(toastTimer);
@@ -5612,6 +5927,8 @@
         vorgMeta = null;
         melMeta = null;
         messages = [];
+        chatMsgs = new Map();
+        chatVer++;
         devices = {};
         dispoTeamNames = [];
         gasRows = new Map();
@@ -5641,6 +5958,7 @@
           rebuildMeldungen();
           for (const g of cached.gas || []) gasRows.set(g.d + '|' + g.t, g);
           messages = cached.msgs || [];
+          chatApply(cached.chat || []);
           devices = cached.devs || {};
           dispoTeamNames = cached.dt || [];
           if (cached.pcfg) pushConfig = cached.pcfg;
@@ -5669,6 +5987,7 @@
             kd: 1, // Stand mit Disposition
             mel: [...meldungen.values()],
             msgs: messages,
+            chat: [...chatMsgs.values()],
             devs: devices,
             pcfg: pushConfig,
             dt: dispoTeamNames,
@@ -5754,6 +6073,7 @@
             locateRoundSeen !== null && !!response.locate && response.locate !== locateRoundSeen;
           locateRoundSeen = response.locate || 0;
           if (response.locate) reportLocationIfAsked(response.locate, announceLocate);
+          let chatTouched = false;
           if (!response.same) {
             if (response.full) {
               ordersMap = new Map();
@@ -5762,6 +6082,11 @@
               marks = new Map();
               gasRows = new Map();
               meldungen = new Map();
+            }
+            // Chat: neue Nachrichten melden (Kurzmeldung), aber nicht den ganzen Verlauf, den ein erster oder vollständiger Abgleich bringt
+            if (response.chat) {
+              const fresh = chatApply(response.chat, { full: !!response.chatFull, notify: dataReady && !response.chatFull });
+              chatTouched = !!fresh.length || !!response.chatFull;
             }
             for (const m of response.meldungen || []) {
               if (m.del) meldungen.delete(m.nr);
@@ -5822,10 +6147,13 @@
                 (response.marks && response.marks.length);
             lastSyncSig = sig;
             const a = document.activeElement;
+            // (nur der Chat hat sich geändert: der Verlauf wird ergänzt, die Seite bleibt, wie sie ist – Eingabefeld, Tastatur, Scroll-Stelle)
             if (viewChanged && editIndex === null && !gDrag && !(a && a.dataset && a.dataset.nr)) render();
+            else if (chatTouched) chatPatchAll();
           }
           if (outboxOffline && !outbox.size) outboxOffline = false;
           if (outbox.size) sendAllPending();
+          if (chatQueue.length) chatFlush();
           if (ackQueue.length) sendAcks();
           if (gasQueue.length) sendGas();
           gasReady = true;
@@ -5990,6 +6318,16 @@
         } else if (d.k === 'm') {
           for (const a of d.ids) marks.set(a, { v: d.v, at: d.at, sq: m.s });
           dropEditsOfLockedOrder(); // der offene Auftrag wurde abgehakt: Eingaben schließen
+        } else if (d.k === 'c') {
+          // Chat-Nachricht: an den Verlauf anhängen, die Seite wird nicht neu gezeichnet (Eingabefeld, Tastatur und Scroll-Stelle bleiben)
+          chatApply([d.row], { notify: true });
+          chatPatchAll();
+          if (!liveSaveTimer)
+            liveSaveTimer = setTimeout(() => {
+              liveSaveTimer = null;
+              saveCache();
+            }, 3000);
+          return;
         } else if (d.k === 'o') {
           // Disposition geändert (Disponent): die geänderten Aufträge und die neue Teamliste. Stimmen sie mit dem überein, was das Gerät
           // schon zeigt (eigenes Speichern, siehe dispoSave), muss nichts neu gezeichnet werden
@@ -8460,6 +8798,7 @@
         }
         searchText = '';
         teamFilter = '';
+        chatTeam = '';
         viewKind = role === 'dispo' ? 'war' : ''; // Monteur: Startseite mit der Auswahl der Auftragsart, Disponent: Wartung
         deviceTeamFilter = '';
         monteurFilter = 'open';
@@ -10406,7 +10745,8 @@
         // stehen, die Seite würde nicht nachgeführt und das Diagramm spränge).
         const pane = app.querySelector('.gt-pps'),
           fixedPane = pane && getComputedStyle(pane).position === 'sticky' ? pane : null,
-          still = n => !!n.closest('.gt-sheet, .gt.full') || (!!fixedPane && fixedPane.contains(n)),
+          // (ebenso alles im Chat: Teamliste und Verlauf rollen in sich, die Seite steht)
+          still = n => !!n.closest('.gt-sheet, .gt.full, .cwrap, .cpane') || (!!fixedPane && fixedPane.contains(n)),
           marked = [...app.querySelectorAll('[data-k]')].filter(n => !still(n)),
           tappedNode = lastTapCtl ? anchorNode(lastTapCtl) : null,
           control = tappedNode && still(tappedNode) ? null : tappedNode;
@@ -10479,11 +10819,14 @@
           okBefore = okSnapshot(),
           aokBefore = aokSnapshot(),
           bannersBefore = bannerSnapshot(),
-          rowsBefore = ganttRowSnap();
+          rowsBefore = ganttRowSnap(),
+          chatBefore = chatSnapshot();
         const scrollBefore = scrollY;
         gNoAnchor = false;
         app.style.paddingBottom = ''; // Platz vom letzten Tippen in der Suche (siehe keepScrollRoom) wieder freigeben
         draw();
+        chatRestore(chatBefore); // (der Verlauf des Chats rollt in sich: seine Stelle wiederherstellen)
+        chatTitleSync();
         // draw() baut die Seite stückweise auf und misst dabei zwischendurch (z. B. die Tab-Leiste des Disponenten). Dieses Layout
         // der halbfertigen, kurzen Seite kappt die Scroll-Stelle auf 0 – ohne Anker bliebe die Seite dann oben hängen
         if (scrollY !== scrollBefore) scrollTo(0, scrollBefore);
@@ -10590,7 +10933,9 @@
                 (session.role === 'dispo'
                   ? // (Disposition: steht die Offen-Liste im Extra-Fenster, hat das Diagramm eine andere Breite – das ist eine eigene Ansicht;
                     // ebenso das Vollbild des Diagramms)
-                    dispoTab + '|' + (dispoTab === 'ue' ? viewKind : '') + (dispoTab === 'di' && poolWinAlive() ? 'solo' : '') + (dispoTab === 'di' && gFull ? 'full' : '')
+                    dispoTab + '|' + (dispoTab === 'ue' ? viewKind : '') + (dispoTab === 'di' && poolWinAlive() ? 'solo' : '') + (dispoTab === 'di' && gFull ? 'full' : '') +
+                    // (Chat: Teamliste <-> Verlauf eines Teams ist eine eigene Ansicht, ein anderes Team ebenso)
+                    (dispoTab === 'ch' ? chatTeam : '')
                   : ''),
           filters = [
             teamFilter,
@@ -10651,6 +10996,15 @@
             }
             const bar = app.querySelector(`.gt-bar[data-k="gb-${k}"]`);
             return bar && !viewChanged ? fadeIn([bar], 'scale(0.9)', start, 260, 0) : [];
+          }),
+          // neue Chat-Nachrichten blenden ein (wie die Tageseinträge: mit eigener Startzeit, läuft bei weiterem Neuzeichnen weiter)
+          ...[...chatFresh].flatMap(([k, start]) => {
+            if (performance.now() - start > 600) {
+              chatFresh.delete(k);
+              return [];
+            }
+            const node = app.querySelector(`.cthr [data-k="${k}"]`);
+            return node && !viewChanged ? fadeIn([node], 'translateY(8px)', start, LIST_MS, 0) : [];
           }),
           // neue Tageseinträge eines Dauerauftrags blenden ein (mit eigener Startzeit, läuft bei weiterem Neuzeichnen weiter)
           ...[...entryFresh].flatMap(([k, start]) => {
@@ -11676,7 +12030,8 @@
                     c.today > 0 && el('span', { class: 'tag st-zf' }, `📅 ${c.today} heute`)
                   )
               );
-            })
+            }),
+            chatTile()
           )
         );
       }
@@ -11727,7 +12082,7 @@
               'div',
               { class: 'row' },
               !(userInfo && userInfo.lock) && el('button', { onclick: () => switchRole('monteur') }, 'Team wechseln'),
-              viewKind ? el('button', { onclick: closeKind }, '← Auftragsarten') : back
+              viewKind ? el('button', { onclick: closeKind }, viewKind === 'chat' ? '← Zurück' : '← Auftragsarten') : back
             )
           ),
           ...(userInfo
@@ -11764,6 +12119,10 @@
           drawKindHome(counts);
           if (uploadMeta)
             app.append(el('p', { class: 'mu' }, 'Stand: ' + new Date(uploadMeta.at).toLocaleString('de-AT')));
+          return;
+        }
+        if (viewKind === 'chat') {
+          drawChatView();
           return;
         }
         app.append(gasLine);
@@ -13347,15 +13706,617 @@
           )
         );
       }
-      // Disponent: Kopfzeile + Tabs (Übersicht, Disposition, Fortschritt | Upload, Vergleich, Geräte, Benutzer) und je nach Tab die passende Ansicht.
-      // Die Tabs füllen die ganze Breite: am Handy zwei Zeilen (3 + 4), breit eine (siehe CSS .tabs) – nichts wird abgeschnitten oder gewischt
+      // ---- Chat zwischen einem Team und dem Disponenten ----
+      // EIN Verlauf je Team: der Disponent schreibt mit dem ganzen Team, die Monteure eines Teams sehen auch, was Kollegen schreiben. Monteur:
+      // Kachel „Chat“ auf der Startseite (viewKind 'chat' – eine Ebene wie die Liste einer Auftragsart). Disponent: Tab „Chat“ (links die Teams,
+      // rechts der Verlauf; am Handy erst die Liste, dann der Verlauf).
+      //   · Nachrichten kommen mit dem Abgleich (response.chat) und live ({ k: 'c', row }); sie werden NICHT mit render() gezeichnet, sondern an den
+      //     Verlauf angehängt (chatPatchAll) – ein Neuzeichnen der Seite würde das Eingabefeld (Tastatur!) und die Scroll-Stelle stören.
+      //   · Die Seite rollt im Chat nicht (body[data-chat]): der Verlauf (.cthr) rollt in sich. Ist er unten (chatPinned), folgt er neuen Nachrichten;
+      //     steht er weiter oben, bleibt er stehen und „↓ Neue Nachrichten“ erscheint. render() merkt sich die Stelle (chatSnapshot/chatRestore).
+      //   · Gesendet wird über eine Warteschlange (chatQueue, auch in localStorage): jede Nachricht hat eine Kennung (cid), die der Server nur einmal
+      //     annimmt. Ohne Netz bleibt sie mit ⏳ im Verlauf und geht später hinaus; abgelehnte (Fehler 4xx) zeigen „Erneut senden / Verwerfen“.
+      //   · Ungelesen: je Gerät und Rolle die Nummer der letzten gelesenen Nachricht je Team (chatReadAll, localStorage).
+      const CHAT_MAX = 1000,
+        CHAT_KEEP_MS = 30 * 864e5;
+      let chatMsgs = new Map(), // Nachrichten-Nr. -> { id, team, side ('d' Disponent | 'm' Monteur), usr, name, text, at, cid }
+        chatQueue = [], // noch nicht bestätigte Nachrichten dieses Geräts: { cid, team, side, text, at, err? }
+        chatReadAll = {}, // Rolle -> { Team -> Nr. der letzten gelesenen Nachricht }
+        chatDraft = {}, // Team -> getippter, noch nicht gesendeter Text
+        chatTeam = '', // Disponent: geöffnetes Team ('' = Teamliste)
+        chatPinned = true, // der Verlauf steht unten (folgt neuen Nachrichten)
+        chatPill = false, // „↓ Neue Nachrichten“ zeigen
+        chatVer = 0, // zählt jede Änderung (Zwischenspeicher der Zähler)
+        chatBusy = false,
+        chatAgain = false,
+        chatRetryTimer = null,
+        chatScrollRaf = 0,
+        chatToastAt = 0,
+        chatToastTeam = '', // Team der Kurzmeldung, die gerade steht (wird ausgeblendet, sobald der Chat gelesen ist)
+        chatStats = null;
+      const chatFresh = new Map(); // neue Nachrichten (Schlüssel -> Startzeit der Einblendung): laufen beim nächsten Neuzeichnen weiter
+      const BASE_TITLE = document.title;
+      try {
+        const q = JSON.parse(localStorage.getItem('chatq') || '[]');
+        if (Array.isArray(q)) chatQueue = q.filter(x => x && x.cid && x.team && x.text);
+        const r = JSON.parse(localStorage.getItem('chatread') || '{}');
+        if (r && typeof r === 'object') chatReadAll = r;
+      } catch (e) {}
+      const chatSaveQueue = () => {
+        try {
+          localStorage.setItem('chatq', JSON.stringify(chatQueue));
+        } catch (e) {}
+      };
+      const chatSide = () => (session.role === 'dispo' ? 'd' : 'm');
+      const chatMe = () => (userInfo && userInfo.sap) || '';
+      const chatIsMine = m => (session.role === 'dispo' ? m.side === 'd' : m.side === 'm' && m.usr === chatMe());
+      const chatRoleKey = () => (session.role === 'dispo' ? 'd' : 'm:' + chatMe());
+      const chatCanSend = x => (x.side === 'd' ? !!dispoToken : !!userToken);
+      // Ist der Chat gerade auf dem Bildschirm? (Monteur: Kachel geöffnet, Disponent: Tab „Chat“)
+      const chatShown = () =>
+        !openOrder &&
+        ((session.role === 'monteur' && viewKind === 'chat' && !!userToken && !!session.team) ||
+          (session.role === 'dispo' && dispoUnlocked && dispoTab === 'ch'));
+      const chatTeamNow = () => (session.role === 'dispo' ? chatTeam : session.team || '');
+      const chatReadOf = team => (chatReadAll[chatRoleKey()] || {})[team] | 0;
+      function chatSetRead(team, id) {
+        const key = chatRoleKey(),
+          r = chatReadAll[key] || (chatReadAll[key] = {});
+        if (id <= (r[team] | 0)) return false;
+        r[team] = id;
+        chatVer++;
+        // die Kurzmeldung zu diesem Chat hat sich erledigt
+        if (chatToastTeam === team && toastTap) toastEl.classList.remove('on');
+        try {
+          localStorage.setItem('chatread', JSON.stringify(chatReadAll));
+        } catch (e) {}
+        return true;
+      }
+      // Nachrichten eines Teams, die älteste zuerst
+      const chatList = team => [...chatMsgs.values()].filter(m => m.team === team).sort((a, b) => a.id - b.id);
+      // Zähler je Team: ungelesene Nachrichten der Gegenseite und die jeweils letzte Nachricht (gemerkt, bis sich etwas ändert)
+      function chatInfo() {
+        const key = chatVer + '|' + chatRoleKey() + '|' + session.role;
+        if (chatStats && chatStats.key === key) return chatStats;
+        const unread = new Map(),
+          last = new Map();
+        for (const m of chatMsgs.values()) {
+          if (!last.has(m.team) || last.get(m.team).id < m.id) last.set(m.team, m);
+          if (!chatIsMine(m) && m.id > chatReadOf(m.team)) unread.set(m.team, (unread.get(m.team) || 0) + 1);
+        }
+        return (chatStats = { key, unread, last });
+      }
+      // Monteur: nur das eigene Team zählt; Disponent: alle Teams
+      const chatTotalUnread = () => {
+        const { unread } = chatInfo();
+        return session.role === 'dispo' ? [...unread.values()].reduce((a, b) => a + b, 0) : unread.get(session.team) || 0;
+      };
+      const chatCount = n => (n > 99 ? '99+' : String(n));
+      const chatTabLabel = () => 'Chat' + (chatTotalUnread() ? ` (${chatCount(chatTotalUnread())})` : '');
+      // Teams in der Liste des Disponenten: alle Teams, auf die disponiert werden kann, dazu jedes mit Chatverlauf
+      const chatTeams = () =>
+        [...new Set([...dispoTeamNames, ...teamList.map(t => t[0]), ...[...chatMsgs.values()].map(m => m.team)])]
+          .filter(Boolean)
+          .sort(naturalCompare);
+      const chatPreviewOf = m => {
+        const who = chatIsMine(m) ? 'Du' : m.side === 'd' ? 'Disponent' : (m.name || m.usr || '').split(' ')[0];
+        return who + ': ' + m.text.replace(/\s+/g, ' ').trim();
+      };
+      const chatDayKey = t => new Date(t).toLocaleDateString('sv-SE');
+      function chatDayLabel(t) {
+        const k = chatDayKey(t);
+        if (k === today()) return 'Heute';
+        if (k === chatDayKey(Date.now() - 864e5)) return 'Gestern';
+        const d = new Date(t);
+        return d.toLocaleDateString('de-AT', { weekday: 'short', day: '2-digit', month: '2-digit', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+      }
+      // Anzeige-Liste des Verlaufs: Tagesmarken und Nachrichten (erst die bestätigten, dann die noch nicht gesendeten dieses Geräts).
+      // key = stabile Kennung (die cid der Nachricht – eine gesendete Nachricht behält ihre Stelle), sig = alles, was man sieht
+      function chatItems(team) {
+        const msgs = chatList(team),
+          known = new Set(msgs.map(m => m.cid)),
+          mine = chatSide(),
+          rows = [
+            ...msgs.map(m => ({ key: m.cid ? 'cm-' + m.cid : 'cm-#' + m.id, m, pending: false, err: '' })),
+            ...chatQueue
+              .filter(q => q.team === team && q.side === mine && !known.has(q.cid))
+              .map(q => ({ key: 'cm-' + q.cid, m: { ...q, id: 0, usr: chatMe(), name: '' }, pending: true, err: q.err || '' }))
+          ],
+          out = [];
+        let prev = null,
+          prevDay = '';
+        for (const row of rows) {
+          const day = chatDayKey(row.m.at);
+          if (day !== prevDay) {
+            out.push({ type: 'day', key: 'cd-' + day, sig: chatDayLabel(row.m.at), label: chatDayLabel(row.m.at) });
+            prevDay = day;
+            prev = null;
+          }
+          const isMine = chatIsMine(row.m),
+            showName = !isMine && (!prev || prev.side !== row.m.side || prev.usr !== row.m.usr || row.m.at - prev.at > 5 * 60e3);
+          out.push({ ...row, type: 'msg', mine: isMine, showName, sig: [row.pending, row.err, showName, row.m.name, row.m.text, row.m.at].join('|') });
+          prev = row.m;
+        }
+        if (!out.length) out.push({ type: 'empty', key: 'ce', sig: session.role });
+        return out;
+      }
+      function chatNode(it) {
+        if (it.type === 'day') return el('div', { class: 'cday', 'data-k': it.key, 'data-sig': it.sig }, it.label);
+        if (it.type === 'empty')
+          return el(
+            'p',
+            { class: 'mu cempty', 'data-k': it.key, 'data-sig': it.sig },
+            session.role === 'dispo' ? 'Noch keine Nachrichten. Schreib dem Team etwas.' : 'Noch keine Nachrichten. Schreib dem Disponenten, wenn du Fragen hast.'
+          );
+        const m = it.m,
+          status = it.mine ? (it.err ? '⚠' : it.pending ? '⏳' : '✓') : '';
+        return el(
+          'div',
+          { class: 'cmsg' + (it.mine ? ' me' : '') + (it.pending ? ' pend' : '') + (it.err ? ' fail' : ''), 'data-k': it.key, 'data-sig': it.sig },
+          it.showName && el('div', { class: 'cby' }, m.side === 'd' ? 'Disponent' : m.name || m.usr || 'Monteur'),
+          el(
+            'div',
+            { class: 'cbub' },
+            m.text,
+            el('span', { class: 'cmeta' }, timeText(m.at), status && el('span', { class: 'cst', title: it.err ? 'Nicht gesendet' : it.pending ? 'Wird gesendet, sobald Netz da ist' : 'Gesendet' }, status))
+          ),
+          it.err &&
+            el(
+              'div',
+              { class: 'cfail' },
+              'Nicht gesendet: ' + it.err,
+              el('button', { onclick: () => chatRetry(m.cid) }, 'Erneut senden'),
+              el('button', { onclick: () => chatDiscard(m.cid) }, 'Verwerfen')
+            )
+        );
+      }
+      // Verlauf auf den Soll-Stand bringen, ohne unveränderte Nachrichten anzufassen: vorhandene bleiben als Element stehen, neue kommen dazu,
+      // geänderte (⏳ -> ✓) werden ersetzt, überzählige verschwinden. Rückgabe: die neuen Elemente
+      function chatReconcile(thr, items) {
+        const old = new Map([...thr.children].map(n => [n.dataset.k, n])),
+          fresh = [];
+        items.forEach((it, i) => {
+          let n = old.get(it.key);
+          if (n && n.dataset.sig === it.sig) old.delete(it.key);
+          else {
+            const made = chatNode(it);
+            if (n) {
+              n.replaceWith(made);
+              old.delete(it.key);
+            } else fresh.push(made);
+            n = made;
+          }
+          if (thr.children[i] !== n) thr.insertBefore(n, thr.children[i] || null);
+        });
+        for (const n of old.values()) n.remove();
+        return fresh;
+      }
+      const chatAtBottom = thr => thr.scrollHeight - thr.scrollTop - thr.clientHeight < 40;
+      function chatToBottom(smooth) {
+        const thr = app.querySelector('.cthr');
+        chatPinned = true;
+        chatPill = false;
+        const pill = app.querySelector('.cpill');
+        if (pill) pill.classList.remove('on');
+        if (thr) thr.scrollTo({ top: thr.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+        if (chatAutoRead()) chatPatchBadges();
+      }
+      // Verlauf des geöffneten Teams als gelesen markieren – nur wenn der Verlauf unten steht und die Seite sichtbar ist. true = hat sich geändert
+      function chatAutoRead() {
+        if (!chatShown() || document.hidden || !chatPinned) return false;
+        const team = chatTeamNow();
+        let last = 0;
+        for (const m of chatMsgs.values()) if (m.team === team && m.id > last) last = m.id;
+        return last ? chatSetRead(team, last) : false;
+      }
+      // Rollen im Verlauf: merkt, ob er unten steht, blendet „Neue Nachrichten“ aus und markiert als gelesen
+      function chatOnScroll(e) {
+        const thr = e.currentTarget;
+        if (chatScrollRaf) return;
+        chatScrollRaf = requestAnimationFrame(() => {
+          chatScrollRaf = 0;
+          if (!thr.isConnected) return;
+          chatPinned = chatAtBottom(thr);
+          if (chatPinned && chatPill) {
+            chatPill = false;
+            const pill = app.querySelector('.cpill');
+            if (pill) pill.classList.remove('on');
+          }
+          if (chatAutoRead()) chatPatchBadges();
+        });
+      }
+      // vor render(): Rollstelle des Verlaufs merken, danach wiederherstellen (steht er unten, bleibt er unten; sonst an derselben Stelle)
+      const chatSnapshot = () => {
+        const thr = app.querySelector('.cthr');
+        // steht noch kein Verlauf dieses Teams da (gerade geöffnet / anderes Team), beginnt er unten
+        if (!thr || thr.dataset.team !== chatTeamNow()) chatPinned = true;
+        return thr ? { team: thr.dataset.team, top: thr.scrollTop, pinned: chatAtBottom(thr) } : null;
+      };
+      function chatRestore(snap) {
+        const thr = app.querySelector('.cthr');
+        if (!thr) return;
+        if (!snap || snap.team !== thr.dataset.team || snap.pinned) {
+          thr.scrollTop = thr.scrollHeight;
+          chatPinned = true;
+        } else {
+          thr.scrollTop = snap.top;
+          chatPinned = false;
+        }
+      }
+      // Neue Nachricht(en) im sichtbaren Verlauf: anhängen (ohne Neuzeichnen). Steht der Verlauf unten oder habe ich selbst geschrieben, rollt er mit;
+      // die bisherigen Nachrichten gleiten dabei nach oben (statt zu springen), die neuen blenden ein. Sonst bleibt alles stehen und
+      // „↓ Neue Nachrichten“ erscheint.
+      function chatThreadPatch(thr) {
+        const items = chatItems(thr.dataset.team),
+          anchor = [...thr.children].reverse().find(n => n.dataset.k && n.dataset.k.startsWith('cm-')),
+          topBefore = anchor ? anchor.getBoundingClientRect().top : 0,
+          fresh = chatReconcile(thr, items);
+        if (!fresh.length) return;
+        const follow = chatPinned || fresh.some(n => n.classList.contains('me')),
+          reduce = !thr.animate || matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (follow) {
+          thr.scrollTop = thr.scrollHeight;
+          chatPinned = true;
+          chatPill = false;
+          const pill = app.querySelector('.cpill');
+          if (pill) pill.classList.remove('on');
+          const dy = anchor && anchor.isConnected ? anchor.getBoundingClientRect().top - topBefore : 0;
+          if (!reduce && Math.abs(dy) > 1)
+            viewAnim = (viewAnim || []).concat(thr.animate([{ transform: `translateY(${-dy}px)` }, { transform: 'none' }], { duration: AOK_MS, easing: AOK_EASE }));
+        } else if (fresh.some(n => !n.classList.contains('me'))) {
+          chatPill = true;
+          const pill = app.querySelector('.cpill');
+          if (pill) pill.classList.add('on');
+        }
+        const now = performance.now();
+        for (const n of fresh) chatFresh.set(n.dataset.k, now);
+        if (!reduce) viewAnim = (viewAnim || []).concat(fadeIn(fresh, 'translateY(8px)', now, LIST_MS, 0));
+      }
+      // einzelne Zeile der Teamliste (Disponent)
+      const chatRowSig = team => {
+        const { unread, last } = chatInfo(),
+          m = last.get(team);
+        return [chatTeamNow() === team, unread.get(team) || 0, m ? m.id + '|' + m.text : '', m ? m.at : ''].join('|');
+      };
+      function chatRowContent(team) {
+        const { unread, last } = chatInfo(),
+          m = last.get(team),
+          n = unread.get(team) || 0;
+        return [
+          el('span', { class: 'crn' }, team),
+          el('span', { class: 'crt' }, m ? (chatDayKey(m.at) === today() ? timeText(m.at) : chatDayLabel(m.at)) : ''),
+          el('span', { class: 'crp' }, m ? chatPreviewOf(m) : 'Noch keine Nachrichten'),
+          el('span', { class: 'cbadge' + (n ? ' on' : '') }, n ? chatCount(n) : '0')
+        ];
+      }
+      function chatListPatch() {
+        for (const row of app.querySelectorAll('.crow[data-team]')) {
+          const team = row.dataset.team,
+            sig = chatRowSig(team);
+          if (row.dataset.sig === sig) continue;
+          row.dataset.sig = sig;
+          row.className = 'crow' + (chatTeamNow() === team ? ' on' : '') + (chatInfo().unread.get(team) ? ' un' : '');
+          row.replaceChildren(...chatRowContent(team));
+        }
+      }
+      // Zähler an allen Stellen, die ihn zeigen (Tab, Kachel, Fenstertitel) – ohne Neuzeichnen
+      function chatPatchBadges() {
+        const total = chatTotalUnread();
+        const tab = app.querySelector('.tabs button[data-tab="ch"]');
+        if (tab && tab.textContent !== chatTabLabel()) tab.textContent = chatTabLabel();
+        const tile = app.querySelector('.kind.chat');
+        if (tile) {
+          const prev = tile.querySelector('.cprev'),
+            text = chatTilePreview(),
+            badge = tile.querySelector('.cbadge');
+          if (prev && prev.textContent !== text) prev.textContent = text;
+          if (badge) {
+            badge.classList.toggle('on', total > 0);
+            badge.textContent = total ? chatCount(total) : '0';
+          }
+        }
+        chatListPatch();
+        chatTitleSync();
+      }
+      // Fenstertitel mit der Zahl ungelesener Nachrichten: „(3) Heiz-Hawara“ (zeigt sie auch im Hintergrund-Tab)
+      function chatTitleSync() {
+        const n = session.role === 'dispo' ? (dispoUnlocked ? chatTotalUnread() : 0) : session.role === 'monteur' && userToken ? chatTotalUnread() : 0,
+          title = (n ? `(${chatCount(n)}) ` : '') + BASE_TITLE;
+        if (document.title !== title) document.title = title;
+      }
+      // alles aktualisieren, was vom Chat abhängt (Verlauf, Teamliste, Zähler), ohne die Seite neu zu zeichnen
+      function chatPatchAll() {
+        if (chatShown()) {
+          const thr = app.querySelector('.cthr');
+          if (thr && thr.dataset.team === chatTeamNow()) chatThreadPatch(thr);
+          chatAutoRead();
+        }
+        chatPatchBadges();
+      }
+      // Nachrichten übernehmen (Abgleich, Live, Antwort des Servers). full = der Server schickt den ganzen Verlauf (ersetzt den bisherigen);
+      // notify = neue Nachrichten der Gegenseite melden (Kurzmeldung, Ton). Rückgabe: die neuen Nachrichten
+      function chatApply(rows, { full = false, notify = false } = {}) {
+        const cut = Date.now() - CHAT_KEEP_MS,
+          added = [];
+        if (full) chatMsgs = new Map();
+        for (const r of rows || []) {
+          if (!r || !r.id || !(r.at >= cut) || chatMsgs.has(r.id)) continue;
+          chatMsgs.set(r.id, r);
+          added.push(r);
+        }
+        for (const [id, m] of chatMsgs) if (m.at < cut) chatMsgs.delete(id);
+        if (added.length || full) chatVer++;
+        // erstes Mal auf diesem Gerät: alles bisher Geschriebene gilt als gelesen (sonst stünde „Chat (87)“ an einem neuen Handy)
+        if (full && !chatReadAll[chatRoleKey()]) {
+          for (const m of chatMsgs.values()) chatSetRead(m.team, m.id);
+          chatReadAll[chatRoleKey()] = chatReadAll[chatRoleKey()] || {};
+        }
+        if (notify && added.length) chatNotify(added);
+        return added;
+      }
+      // Kurzmeldung + Ton für neue Nachrichten, die gerade niemand sieht
+      function chatNotify(rows) {
+        if (!(session.role === 'dispo' ? dispoUnlocked : !!userToken)) return;
+        const open = team => chatShown() && chatTeamNow() === team && !document.hidden && chatPinned,
+          unseen = rows.filter(m => !chatIsMine(m) && Date.now() - m.at < 5 * 60e3 && !open(m.team));
+        if (!unseen.length || Date.now() - chatToastAt < 1500) return;
+        chatToastAt = Date.now();
+        const m = unseen[unseen.length - 1];
+        chatToastTeam = unseen.every(x => x.team === m.team) ? m.team : '';
+        const who = session.role === 'dispo' ? `${m.team} · ${m.name || 'Monteur'}` : m.side === 'd' ? 'Disponent' : m.name || 'Kollege',
+          text = unseen.length > 1 ? `💬 ${unseen.length} neue Chat-Nachrichten` : `💬 ${who}: ${m.text.replace(/\s+/g, ' ').trim().slice(0, 90)}`;
+        toast(text, () => chatGo(m.team));
+        playChatSound();
+      }
+      // zum Chat (eines Teams) wechseln – Tipp auf die Kurzmeldung oder die Benachrichtigung
+      function chatGo(team) {
+        if (openOrder) return; // (ein offener Auftrag wird nicht mitten in der Arbeit verlassen)
+        if (session.role === 'dispo' && dispoUnlocked) {
+          dispoTab = 'ch';
+          chatTeam = team;
+          uploadToken = '';
+          chatPinned = true;
+          render();
+          chatToBottom();
+        } else if (session.role === 'monteur' && userToken && session.team) {
+          if (viewKind !== 'chat') openKind('chat');
+          chatToBottom();
+        }
+      }
+      // sanfter Doppelton (steigend) bei neuer Nachricht; nur wenn der Browser Ton schon erlaubt hat (siehe unlockAudio)
+      function playChatSound() {
+        if (!audioCtx || audioCtx.state !== 'running') return;
+        try {
+          const t0 = audioCtx.currentTime + 0.02,
+            master = audioCtx.createGain();
+          master.gain.value = 0.12;
+          master.connect(audioCtx.destination);
+          for (const [freq, start] of [[659, 0], [880, 0.12]]) {
+            const osc = audioCtx.createOscillator(),
+              env = audioCtx.createGain(),
+              at = t0 + start;
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            env.gain.setValueAtTime(0.0001, at);
+            env.gain.exponentialRampToValueAtTime(1, at + 0.02);
+            env.gain.exponentialRampToValueAtTime(0.0001, at + 0.25);
+            osc.connect(env);
+            env.connect(master);
+            osc.start(at);
+            osc.stop(at + 0.27);
+          }
+        } catch (e) {}
+      }
+      // ---- Senden ----
+      function chatSend(team) {
+        const text = (chatDraft[team] || '').replace(/\r\n?/g, '\n').trim();
+        if (!text || text.length > CHAT_MAX) return;
+        chatQueue.push({ cid: crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '').slice(0, 20) : Math.random().toString(36).slice(2, 12) + Date.now().toString(36), team, side: chatSide(), text, at: Date.now() });
+        chatSaveQueue();
+        chatDraft[team] = '';
+        const ta = app.querySelector('.cin');
+        if (ta) {
+          ta.value = '';
+          const send = app.querySelector('.csend');
+          if (send) send.disabled = true;
+        }
+        chatVer++;
+        chatPatchAll();
+        chatFlush();
+      }
+      // Warteschlange abarbeiten (der Reihe nach). Kein Netz / Serverfehler / Anmeldung abgelaufen: bleibt liegen und wird später erneut versucht;
+      // eine abgelehnte Nachricht (4xx) bekommt den Fehler und wartet auf „Erneut senden“ oder „Verwerfen“
+      async function chatFlush() {
+        if (chatBusy) {
+          chatAgain = true;
+          return;
+        }
+        chatBusy = true;
+        let retryIn = 0;
+        try {
+          for (;;) {
+            const q = chatQueue.find(x => !x.err && chatCanSend(x));
+            if (!q) break;
+            try {
+              const r = await api('POST', '/api/chat', { team: q.team, text: q.text, cid: q.cid, side: q.side }, 15000);
+              chatQueue = chatQueue.filter(x => x !== q);
+              chatSaveQueue();
+              chatApply([r.msg]);
+              serverReachable = true;
+            } catch (e) {
+              if (e.status === 429) retryIn = 8000;
+              else if (e.status && e.status >= 400 && e.status < 500 && e.status !== 401 && e.status !== 408) {
+                q.err = errorMessageOf(e);
+                chatSaveQueue();
+                chatVer++;
+              } else retryIn = 6000; // kein Netz, Serverfehler, nicht angemeldet
+              if (!q.err) break;
+            }
+            chatPatchAll();
+          }
+        } finally {
+          chatBusy = false;
+        }
+        chatPatchAll();
+        clearTimeout(chatRetryTimer);
+        chatRetryTimer = null;
+        if (retryIn) chatRetryTimer = setTimeout(chatFlush, retryIn);
+        else if (chatAgain) {
+          chatAgain = false;
+          chatFlush();
+        }
+      }
+      function chatRetry(cid) {
+        const q = chatQueue.find(x => x.cid === cid);
+        if (!q) return;
+        delete q.err;
+        chatSaveQueue();
+        chatVer++;
+        chatPatchAll();
+        chatFlush();
+      }
+      function chatDiscard(cid) {
+        chatQueue = chatQueue.filter(x => x.cid !== cid);
+        chatSaveQueue();
+        chatVer++;
+        chatPatchAll();
+      }
+      // ---- Zeichnen ----
+      function chatComposer(team) {
+        const send = () => chatSend(team),
+          ta = el('textarea', {
+            class: 'cin',
+            'data-keep': 'chat',
+            rows: '1',
+            maxlength: String(CHAT_MAX),
+            enterkeyhint: 'send',
+            autocomplete: 'off',
+            'aria-label': 'Nachricht schreiben',
+            placeholder: session.role === 'dispo' ? `Nachricht an ${team} …` : 'Nachricht schreiben …',
+            value: chatDraft[team] || '',
+            oninput: e => {
+              chatDraft[team] = e.target.value;
+              const btn = app.querySelector('.csend');
+              if (btn) btn.disabled = !e.target.value.trim();
+              // wächst das Feld, wandert der Verlauf mit nach oben (er steht sonst hinter der Eingabe)
+              if (chatPinned) requestAnimationFrame(() => chatToBottom());
+            },
+            onkeydown: e => {
+              // Enter sendet am Rechner (Umschalt+Enter: neue Zeile), am Handy macht Enter eine neue Zeile; Strg/Cmd+Enter sendet überall
+              if (e.key !== 'Enter' || e.isComposing) return;
+              if (e.ctrlKey || e.metaKey || (!e.shiftKey && matchMedia('(pointer: fine)').matches)) {
+                e.preventDefault();
+                send();
+              }
+            }
+          });
+        return el(
+          'div',
+          { class: 'ccomp' },
+          el('button', { class: 'cpill' + (chatPill ? ' on' : ''), onclick: () => chatToBottom(true) }, '↓ Neue Nachrichten'),
+          ta,
+          el('button', { class: 'pri csend', disabled: (chatDraft[team] || '').trim() ? null : '', onclick: send }, 'Senden')
+        );
+      }
+      // Verlauf mit Eingabe: head = Kopf (Teamname bzw. Titel)
+      function chatPane(team, head, extra = '') {
+        return el(
+          'div',
+          { class: 'cpane' + extra },
+          head,
+          el('div', { class: 'cthr', 'data-team': team, role: 'log', 'aria-label': 'Chat', onscroll: chatOnScroll }, chatItems(team).map(chatNode)),
+          chatComposer(team)
+        );
+      }
+      // Monteur: Verlauf des eigenen Teams mit dem Disponenten
+      function drawChatView() {
+        chatAutoRead();
+        document.body.dataset.chat = '1';
+        app.append(
+          chatPane(
+            session.team,
+            el('div', { class: 'chead' }, el('b', {}, '💬 Chat'), el('span', { class: 'mu' }, `Disponent und Team ${session.team}`)),
+            ' chat1'
+          )
+        );
+      }
+      // Disponent: Tab „Chat“ – links die Teams (mit Zähler und letzter Nachricht), rechts der Verlauf des gewählten Teams
+      function drawChatTab() {
+        chatAutoRead();
+        document.body.dataset.chat = '1';
+        const teams = chatTeams(),
+          team = chatTeam && teams.includes(chatTeam) ? chatTeam : '';
+        if (team !== chatTeam) chatTeam = team;
+        const rows = teams.map(t =>
+          el(
+            'button',
+            { class: 'crow' + (t === team ? ' on' : '') + (chatInfo().unread.get(t) ? ' un' : ''), 'data-k': 'cl-' + t, 'data-team': t, 'data-sig': chatRowSig(t), onclick: () => chatOpenTeam(t) },
+            ...chatRowContent(t)
+          )
+        );
+        app.append(
+          el(
+            'div',
+            { class: 'cwrap' + (team ? ' t' : '') },
+            el('div', { class: 'clist' }, rows.length ? rows : el('p', { class: 'mu' }, dataReady ? 'Noch keine Teams.' : 'Teams werden geladen …')),
+            team
+              ? chatPane(
+                  team,
+                  el(
+                    'div',
+                    { class: 'chead' },
+                    el('button', { class: 'cback', onclick: chatCloseTeam }, '← Teams'),
+                    el('b', {}, team),
+                    el('span', { class: 'mu' }, 'Alle Monteure des Teams sehen die Unterhaltung')
+                  )
+                )
+              : el('div', { class: 'cpane' }, el('div', { class: 'chead' }, el('span', { class: 'mu' }, 'Team links wählen, um zu schreiben.')), el('div', { class: 'cthr' }))
+          )
+        );
+      }
+      function chatOpenTeam(team) {
+        chatTeam = team;
+        chatPinned = true;
+        chatPill = false;
+        render();
+        chatToBottom();
+      }
+      function chatCloseTeam() {
+        chatTeam = '';
+        render();
+      }
+      // Monteur: Kachel auf der Startseite
+      const chatTilePreview = () => {
+        const m = chatInfo().last.get(session.team);
+        return m ? chatPreviewOf(m) : 'Noch keine Nachrichten';
+      };
+      function chatTile() {
+        const n = chatTotalUnread();
+        return el(
+          'button',
+          { class: 'big kind chat', 'data-k': 'kd-chat', onclick: () => openKind('chat') },
+          el('span', { class: 'ki' }, '💬'),
+          el(
+            'span',
+            { class: 'kb' },
+            el('span', { class: 'kn' }, 'Chat mit dem Disponenten'),
+            el('span', { class: 'mu cprev' }, chatTilePreview()),
+            el('span', { class: 'mu sm' }, 'Fragen, Hinweise, Rückmeldungen')
+          ),
+          el('span', { class: 'cbadge' + (n ? ' on' : '') }, n ? chatCount(n) : '0')
+        );
+      }
+      // Disponent: Kopfzeile + Tabs (Übersicht, Disposition, Fortschritt | Chat, Upload, Vergleich | Geräte, Benutzer) und je nach Tab die passende Ansicht.
+      // Die Tabs füllen die ganze Breite: am Handy drei Zeilen (3 + 3 + 2), breit eine (siehe CSS .tabs) – nichts wird abgeschnitten oder gewischt
       function drawDispo(back) {
+        chatAutoRead(); // (vor den Tabs: die Zahl am Tab „Chat“ zählt den gerade geöffneten Verlauf nicht mit)
         // tab(Schlüssel, Beschriftung, Zustand setzen, nach dem Neuzeichnen)
         const tab = (key, label, setState, afterDraw) =>
           el(
             'button',
             {
               class: dispoTab === key ? 'on' : null,
+              'data-tab': key,
               onclick: () => {
                 setState();
                 render();
@@ -13382,6 +14343,19 @@
             dispoTab = 'st';
             uploadToken = '';
           }),
+          tab(
+            'ch',
+            chatTabLabel(),
+            () => {
+              if (dispoTab !== 'ch') {
+                chatPinned = true;
+                chatPill = false;
+              }
+              dispoTab = 'ch';
+              uploadToken = '';
+            },
+            () => chatToBottom()
+          ),
           tab(
             'up',
             'Upload',
@@ -13433,8 +14407,18 @@
         ];
         app.append(
           el('div', { class: 'bar' }, el('h1', {}, 'Disponent'), back),
-          el('div', { class: 'tabs' }, el('div', { class: 'trow' }, ...tabs.slice(0, 3)), el('div', { class: 'trow' }, ...tabs.slice(3)))
+          el(
+            'div',
+            { class: 'tabs' },
+            el('div', { class: 'trow' }, ...tabs.slice(0, 3)),
+            el('div', { class: 'trow' }, ...tabs.slice(3, 6)),
+            el('div', { class: 'trow' }, ...tabs.slice(6))
+          )
         );
+        if (dispoTab === 'ch') {
+          drawChatTab();
+          return;
+        }
         if (dispoTab === 'us') {
           drawUsers();
           return;
@@ -13472,6 +14456,8 @@
         hideTooltip();
         document.body.dataset.w =
           !openOrder && (!session.role || (session.role === 'dispo' && !dispoUnlocked)) ? 'n' : '';
+        // Chat: die Seite rollt nicht, der Verlauf rollt in sich (siehe CSS body[data-chat]; setzen drawChatView und drawChatTab)
+        delete document.body.dataset.chat;
         app.replaceChildren();
         drawStatusBanners();
         if (openOrder) {
@@ -13520,6 +14506,7 @@
       addEventListener('online', () => {
         serverReachable = true;
         if (outbox.size) sendAllPending();
+        if (chatQueue.length) chatFlush();
         poll();
       });
       addEventListener('offline', () => {
@@ -13529,6 +14516,8 @@
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
           if (outbox.size) sendAllPending();
+          if (chatQueue.length) chatFlush();
+          if (chatShown() && chatAutoRead()) chatPatchBadges(); // (was im Hintergrund ankam, wird jetzt gesehen)
           // nach dem Hintergrund ist die Verbindung oft stumm tot: neu aufbauen, wenn lange nichts kam
           if (live.ctrl && Date.now() - live.last > 45000) live.ctrl.abort();
           syncLive();
@@ -13560,20 +14549,34 @@
               new Promise(resolve => setTimeout(resolve, 700))
             ])
           : Promise.resolve();
+      // Tipp auf eine Chat-Benachrichtigung bei geschlossener App öffnet die Seite mit ?chat=1: nach dem ersten Abgleich zum Chat
+      let wantChat = /[?&]chat=1\b/.test(location.search);
+      if (wantChat)
+        try {
+          history.replaceState(history.state, '', location.pathname);
+        } catch (e) {}
       fontsLoaded.then(() => {
         render();
         poll().then(() => {
           sendAllPending();
           prefetchChecklists();
           pushSync(false);
+          if (wantChat && session.role === 'monteur') chatGo(session.team);
+          wantChat = false;
         });
         syncLive();
+        if (chatQueue.length) chatFlush();
       });
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').catch(() => {});
         // Push angekommen / bestätigt -> sofort abgleichen
         navigator.serviceWorker.addEventListener('message', e => {
           if (e.data && e.data.t === 'msg') poll();
+          // Tipp auf eine Chat-Benachrichtigung: zum Chat
+          if (e.data && e.data.t === 'chat') {
+            poll();
+            if (session.role === 'monteur') chatGo(session.team);
+          }
         });
       }
     </script>

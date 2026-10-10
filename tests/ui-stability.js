@@ -19,7 +19,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=dispomeldung (nur Upload und die Meldung „Auftrag disponiert“ an die Monteure), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=sicherheit (nur die Sicherheitsprüfungen des Servers: kaputte Anfragen, Header, Sperren, Zugriffsrechte), TEST_ONLY=name (nur der Name der App), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=dispomeldung (nur Upload und die Meldung „Auftrag disponiert“ an die Monteure), TEST_ONLY=chat (nur der Chat zwischen Team und Disponent), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=sicherheit (nur die Sicherheitsprüfungen des Servers: kaputte Anfragen, Header, Sperren, Zugriffsrechte), TEST_ONLY=name (nur der Name der App), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -3159,6 +3159,413 @@ async function dispoNoteChecks(browser, mainServer, geocoder, errors) {
 }
 
 /**
+ * Chat zwischen einem Team und dem Disponenten: API (Rechte, Doppel, Abgleich, Drosselung), Push an die Kollegen, und die Bedienung am Handy
+ * (Monteur) und am Rechner/Handy (Disponent): Verlauf unten, Eingabe bleibt stehen, neue Nachrichten kommen live OHNE Neuzeichnen (Entwurf, Fokus und
+ * Scroll-Stelle bleiben), Zähler und Kurzmeldung, „Neue Nachrichten“ beim Hochscrollen, Warteschlange ohne Netz, abgelehnte Nachricht, Teamliste.
+ * Eigener Server mit Kopie der Daten und ein Mini-Push-Dienst (der Chat füllt die Datenbank: er soll die übrigen Messungen nicht stören).
+ */
+async function chatChecks(browser, mainServer, geocoder, errors) {
+  console.log('\n=== Chat Team <-> Disponent ===');
+  const crypto = require('crypto'),
+    http = require('http'),
+    pushes = [],
+    deviceKey = crypto.createECDH('prime256v1'),
+    deviceAuth = crypto.randomBytes(16);
+  deviceKey.generateKeys();
+  const hmac = (k, d) => crypto.createHmac('sha256', k).update(d).digest();
+  const decrypt = buf => {
+    const salt = buf.subarray(0, 16),
+      idLen = buf[20],
+      serverKey = buf.subarray(21, 21 + idLen),
+      data = buf.subarray(21 + idLen),
+      ikm = hmac(hmac(deviceAuth, deviceKey.computeSecret(serverKey)), Buffer.concat([Buffer.from('WebPush: info\0'), deviceKey.getPublicKey(), serverKey, Buffer.from([1])])),
+      prk = hmac(salt, ikm),
+      d = crypto.createDecipheriv('aes-128-gcm', hmac(prk, Buffer.from('Content-Encoding: aes128gcm\0\x01')).subarray(0, 16), hmac(prk, Buffer.from('Content-Encoding: nonce\0\x01')).subarray(0, 12));
+    d.setAuthTag(data.subarray(data.length - 16));
+    const plain = Buffer.concat([d.update(data.subarray(0, data.length - 16)), d.final()]);
+    return JSON.parse(plain.subarray(0, plain.length - 1).toString());
+  };
+  const pushService = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      try {
+        pushes.push({ url: req.url, topic: req.headers.topic, payload: decrypt(Buffer.concat(chunks)) });
+      } catch (e) {
+        pushes.push({ url: req.url, error: e.message });
+      }
+      res.writeHead(201).end();
+    });
+  });
+  await new Promise(resolve => pushService.listen(0, '127.0.0.1', resolve));
+  const pushPort = pushService.address().port,
+    copyFrom = dir => {
+      for (const f of ['data.db', 'data.db-wal']) if (fs.existsSync(path.join(mainServer.dir, f))) fs.copyFileSync(path.join(mainServer.dir, f), path.join(dir, f));
+      fs.rmSync(path.join(dir, 'data.db-shm'), { force: true });
+    },
+    server = await startServer(geocoder.url, copyFrom, { DISPO_NOTE_S: '1000000', PUSH_HOSTS: `^http://127\\.0\\.0\\.1:${pushPort}/` }),
+    base = 'http://127.0.0.1:' + server.port,
+    sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    TEAM = 'FW-IH01',
+    OTHER = 'FW-IH02',
+    cid = () => 't' + crypto.randomBytes(6).toString('hex'),
+    pages = [];
+  try {
+    const H = await dispoHeaders(base),
+      userLogin = (user, did = '') => apiJson(base, 'POST', '/api/user/login', { user, password: MONTEUR.password, ...(did ? { did } : {}) }),
+      didA = crypto.randomBytes(16).toString('hex'),
+      didB = crypto.randomBytes(16).toString('hex'),
+      mA = await userLogin('33NX', didA), // Monteur des Teams (auch in der Oberfläche)
+      mB = await userLogin('34AH', didB), // Kollege im selben Team
+      mC = await userLogin('33SN'), // Monteur eines anderen Teams
+      mD = await userLogin('3SCCKD'), // sein Kollege (für Nachrichten, die der Test im Browser auslöst; mC wird gedrosselt)
+      TA = { 'X-User-Token': mA.token },
+      TB = { 'X-User-Token': mB.token },
+      TC = { 'X-User-Token': mC.token },
+      post = (headers, side, team, text, id = cid()) => apiJson(base, 'POST', '/api/chat', { side, team, text, cid: id }, headers),
+      status = async (headers, body) => (await fetch(base + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) })).status,
+      syncOf = (headers, team, since = 0) => apiJson(base, 'GET', `/api/sync?since=${since}&team=${encodeURIComponent(team)}`, null, headers);
+    // Die Kopie der echten Daten kann offene Nachrichten des Disponenten enthalten (Push) – beenden, sonst zählt der Mini-Push-Dienst sie mit
+    for (const m of (await syncOf(H, '')).msgs || []) if (!m.closed) await apiJson(base, 'POST', '/api/msg/close', { id: m.id }, H);
+    report(mC.user.team !== TEAM && mC.user.team === OTHER, 'Chat: Testbenutzer 33SN gehört zu einem anderen Team', mC.user.team);
+    // Der Disponent ist von Anfang an angemeldet (auf der Übersicht): so kommen alle Nachrichten live an und zählen als ungelesen
+    // (beim ersten Abgleich eines Geräts gilt das bisher Geschriebene als gelesen)
+    const desk = await newPage(browser, base, { width: 1280, height: 800 }, errors);
+    pages.push(desk);
+    await loginDispo(desk);
+
+    // ---------- API: Rechte, Doppel, Abgleich ----------
+    report((await status({}, { side: 'm', team: TEAM, text: 'x', cid: cid() })) === 401, 'Chat API: ohne Anmeldung abgelehnt (401), nichts gespeichert');
+    report((await status(TA, { side: 'd', team: TEAM, text: 'ich bin der Disponent', cid: cid() })) === 401, 'Chat API: ein Monteur kann sich nicht als Disponent ausgeben (401)');
+    report((await status(H, { side: 'd', team: 'FW-GIBT-ES-NICHT', text: 'x', cid: cid() })) === 400, 'Chat API: unbekanntes Team abgelehnt (400)');
+    report((await status(H, { side: 'd', team: TEAM, text: '   \n ', cid: cid() })) === 400, 'Chat API: leere Nachricht abgelehnt (400)');
+    report((await status(H, { side: 'd', team: TEAM, text: 'x'.repeat(1001), cid: cid() })) === 400, 'Chat API: zu lange Nachricht abgelehnt (400)');
+    report((await syncOf(H, '')).chat.length === 0, 'Chat API: abgelehnte Nachrichten wurden nicht gespeichert');
+    const first = await post(H, 'd', TEAM, 'Guten Morgen, Team'),
+      id1 = cid(),
+      dupA = await post(TA, 'm', TEAM, 'Doppelt?', id1),
+      dupB = await post(TA, 'm', TEAM, 'Doppelt?', id1);
+    report(first.ok && first.msg.id > 0 && first.msg.side === 'd' && first.msg.name === 'Disponent', 'Chat API: Nachricht des Disponenten wird gespeichert', JSON.stringify(first));
+    report(dupA.msg.id === dupB.msg.id && dupB.dup === true && dupA.msg.name === 'Alexander Reichhart' && dupA.msg.usr === '33NX', 'Chat API: dieselbe Kennung zweimal gesendet = eine Nachricht (Monteur mit Namen)', JSON.stringify([dupA.msg.id, dupB.msg.id, dupB.dup]));
+    report((await status(TB, { side: 'm', team: TEAM, text: 'x', cid: id1 })) === 409, 'Chat API: fremde Kennung wird nicht übernommen (409)');
+    const sA = await syncOf(TA, TEAM),
+      sC = await syncOf(TC, OTHER),
+      sD = await syncOf(H, '');
+    report(sA.chat.map(m => m.text).join('|') === 'Guten Morgen, Team|Doppelt?' && sA.chatFull === true, 'Chat API: der Monteur bekommt den Verlauf seines Teams (erster Abgleich vollständig)', JSON.stringify(sA.chat.map(m => m.text)));
+    report(sC.chat.length === 0 && sD.chat.length === 2, 'Chat API: ein anderes Team sieht ihn nicht, der Disponent sieht alle', `${sC.chat.length} / ${sD.chat.length}`);
+    await post(H, 'd', OTHER, 'Nur für ein anderes Team');
+    const inc = await syncOf(TA, TEAM, sA.seq);
+    report(inc.chat.length === 0 && !inc.chatFull, 'Chat API: Nachrichten eines anderen Teams kommen nicht in den Abgleich dieses Teams');
+    const sD2 = await syncOf(H, '', sD.seq);
+    report(sD2.chat.length === 1 && sD2.chat[0].team === OTHER && !sD2.chatFull, 'Chat API: teilweiser Abgleich bringt nur Neues (Disponent: aller Teams)');
+
+    // ---------- Push: Kollegen und Team, nicht das eigene Gerät ----------
+    const sub = path => ({ endpoint: `http://127.0.0.1:${pushPort}${path}`, keys: { p256dh: deviceKey.getPublicKey().toString('base64url'), auth: deviceAuth.toString('base64url') } });
+    await apiJson(base, 'POST', '/api/push/sub', { did: didA, role: 'monteur', team: TEAM, sub: sub('/push/a') }, TA);
+    await apiJson(base, 'POST', '/api/push/sub', { did: didB, role: 'monteur', team: TEAM, sub: sub('/push/b') }, TB);
+    const waitPush = async n => {
+      for (let t = 0; t < 6000 && pushes.length < n; t += 100) await sleep(100);
+    };
+    pushes.length = 0;
+    await post(H, 'd', TEAM, 'Bitte meldet euch kurz');
+    await waitPush(2);
+    await sleep(300);
+    const urls = pushes.map(x => x.url).sort().join(',');
+    report(pushes.length === 2 && urls === '/push/a,/push/b' && pushes.every(x => !x.error && x.payload.t === 'chat' && x.topic === 'chat' && x.payload.body === 'Bitte meldet euch kurz' && x.payload.title === 'Chat: Disponent'), 'Chat Push: Nachricht des Disponenten geht als Benachrichtigung an alle Geräte des Teams (Thema „chat“)', JSON.stringify(pushes).slice(0, 240));
+    pushes.length = 0;
+    await post(TA, 'm', TEAM, 'Alles klar, melden uns gleich');
+    await waitPush(1);
+    await sleep(300);
+    report(pushes.length === 1 && pushes[0].url === '/push/b' && pushes[0].payload.title === 'Chat: Alexander Reichhart', 'Chat Push: Nachricht eines Monteurs geht an die Kollegen, nicht an sein eigenes Gerät', JSON.stringify(pushes).slice(0, 240));
+    pushes.length = 0;
+    await post(TC, 'm', OTHER, 'Anderes Team');
+    await sleep(500);
+    report(pushes.length === 0, 'Chat Push: Geräte anderer Teams bekommen nichts', `${pushes.length} Pushs`);
+    // Drosselung: höchstens 20 Nachrichten je Minute und Absender (ein Gerät in einer Schleife weckt sonst alle Kollegen)
+    let throttled = 0;
+    for (let i = 0; i < 24; i++) if ((await status(TC, { side: 'm', team: OTHER, text: 'Flut ' + i, cid: cid() })) === 429) throttled++;
+    report(throttled >= 4, 'Chat API: mehr als 20 Nachrichten in einer Minute werden gedrosselt (429)', `${throttled} abgelehnt`);
+
+    // ---------- Monteur am Handy ----------
+    const phone = await newPage(browser, base, { width: 390, height: 844 }, errors);
+    pages.push(phone);
+    await loginMonteur(phone, null);
+    const ph = () =>
+      phone.evaluate(() => {
+        const thr = document.querySelector('#app .cthr'),
+          comp = document.querySelector('#app .ccomp');
+        return {
+          scrolls: document.documentElement.scrollHeight > innerHeight + 1,
+          sy: scrollY,
+          wide: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          bubbles: [...document.querySelectorAll('#app .cmsg')].map(n => n.textContent.replace(/\s+/g, ' ').trim()),
+          me: document.querySelectorAll('#app .cmsg.me').length,
+          pend: document.querySelectorAll('#app .cmsg.pend').length,
+          fail: document.querySelectorAll('#app .cmsg.fail').length,
+          top: thr ? thr.scrollTop : null,
+          atBottom: thr ? thr.scrollHeight - thr.scrollTop - thr.clientHeight < 40 : null,
+          canScroll: thr ? thr.scrollHeight > thr.clientHeight : null,
+          comp: comp ? Math.round(comp.getBoundingClientRect().bottom) : null,
+          focus: document.activeElement && document.activeElement.className,
+          draft: (document.querySelector('#app .cin') || {}).value,
+          pill: !!document.querySelector('#app .cpill.on'),
+          badge: (document.querySelector('#app .kind.chat .cbadge.on') || {}).textContent || '',
+          tileH: Math.round((document.querySelector('#app .kind.chat') || { getBoundingClientRect: () => ({ height: 0 }) }).getBoundingClientRect().height),
+          prev: (document.querySelector('#app .kind.chat .cprev') || {}).textContent,
+          toast: document.querySelector('.toast.on') ? document.querySelector('.toast').textContent : ''
+        };
+      });
+    let s = await ph();
+    report(s.prev === 'Du: Alles klar, melden uns gleich' || /Alles klar|Bitte meldet/.test(s.prev || ''), 'Chat Monteur: die Kachel auf der Startseite zeigt die letzte Nachricht in einer Zeile', s.prev);
+    report(s.badge === '' || s.badge === '2', 'Chat Monteur: Zähler an der Kachel (bei der Anmeldung bereits Gelesenes zählt nicht)', `Zähler „${s.badge}“`);
+    await probe(phone, 'Chat Monteur: Kachel „Chat“ öffnet den Verlauf (gleitet herein wie eine Liste)', btn('/Chat mit dem Disponenten/'), { reflow: true, ms: 900, anim: true });
+    s = await ph();
+    report(!s.scrolls && !s.wide && s.sy === 0, 'Chat Monteur: die Seite rollt im Chat nicht und wird nicht breiter (der Verlauf rollt in sich)', JSON.stringify({ scrolls: s.scrolls, wide: s.wide }));
+    report(s.bubbles.length === 4 && s.atBottom && s.comp > 800 && s.comp <= 844, 'Chat Monteur: Verlauf steht unten, Eingabe am unteren Bildschirmrand', JSON.stringify({ n: s.bubbles.length, atBottom: s.atBottom, comp: s.comp }));
+    report(/Guten Morgen, Team/.test(s.bubbles[0]) && /Disponent/.test(s.bubbles[0]) && /Doppelt\?/.test(s.bubbles[1]) && s.me >= 1, 'Chat Monteur: Nachrichten mit Absender (Disponent / Kollege) und eigene rechts', s.bubbles.join(' | '));
+    await shot(phone, 'chat-monteur');
+    // senden
+    await phone.fill('.cin', 'Wir sind an der Anlage und kommen nicht hinein.\nWer hat den Schlüssel?');
+    await probe(phone, 'Chat Monteur: Senden – Knopf bleibt stehen, neue Nachricht gleitet an, nichts springt', `() => document.querySelector('#app .csend')`, { ms: 1100, tapTol: 2 });
+    s = await ph();
+    report(s.me >= 2 && /Wer hat den Schlüssel\?/.test(s.bubbles[s.bubbles.length - 1]) && s.draft === '' && s.atBottom && !s.pend, 'Chat Monteur: gesendet – Eingabe leer, Nachricht unten mit Uhrzeit und ✓ (nicht mehr ⏳)', JSON.stringify({ last: s.bubbles[s.bubbles.length - 1], draft: s.draft, pend: s.pend }));
+    const mine = (await syncOf(H, '')).chat.filter(m => /Wer hat den Schlüssel/.test(m.text));
+    report(mine.length === 1 && mine[0].usr === '33NX' && mine[0].text.includes('\n'), 'Chat Monteur: der Server hat sie genau einmal (mit Zeilenumbruch und Absender)', JSON.stringify(mine));
+    // neue Nachricht des Disponenten kommt live, während der Monteur tippt: Entwurf, Fokus und Scroll-Stelle bleiben
+    await phone.click('.cin');
+    await phone.keyboard.type('Entwurf der noch nicht fertig ist');
+    await pause(phone, 200);
+    const liveAct = (hdr, side, text) => `() => fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', ${hdr} }, body: JSON.stringify({ side: '${side}', team: '${TEAM}', text: ${JSON.stringify(text)}, cid: 't' + Math.random().toString(36).slice(2, 12) }) })`,
+      dispoAct = text => liveAct(`Authorization: '${H.Authorization}'`, 'd', text),
+      mateAct = text => liveAct(`'X-User-Token': '${mB.token}'`, 'm', text);
+    await probe(phone, 'Chat Monteur: neue Nachricht kommt live – Eingabefeld rührt sich nicht, Verlauf gleitet', `() => document.querySelector('#app .cin')`, { act: dispoAct('Der Schlüssel liegt beim Hausmeister.'), ms: 1200, tapTol: 2 });
+    s = await ph();
+    report(s.focus === 'cin' && s.draft === 'Entwurf der noch nicht fertig ist', 'Chat Monteur: während des Tippens bleiben Fokus (Tastatur) und Entwurf erhalten', JSON.stringify({ focus: s.focus, draft: s.draft }));
+    report(/Hausmeister/.test(s.bubbles[s.bubbles.length - 1]) && s.atBottom && !s.pill && !s.scrolls, 'Chat Monteur: die neue Nachricht steht unten, der Verlauf ist mitgerollt, die Seite nicht', JSON.stringify({ last: s.bubbles[s.bubbles.length - 1], atBottom: s.atBottom }));
+    await phone.fill('.cin', '');
+    // viele Nachrichten eines Kollegen: Verlauf läuft über; hochgescrollt bleibt er stehen, „Neue Nachrichten“ erscheint
+    for (let i = 0; i < 12; i++) await post(TB, 'm', TEAM, `Verlauf ${i}: eine längere Nachricht, damit der Verlauf nach oben rollen muss und mehrere Zeilen hat.`);
+    await pause(phone, 600);
+    s = await ph();
+    report(s.canScroll && s.atBottom, 'Chat Monteur: viele Nachrichten – der Verlauf rollt in sich und folgt, solange er unten steht', JSON.stringify({ canScroll: s.canScroll, atBottom: s.atBottom }));
+    await phone.evaluate(() => (document.querySelector('#app .cthr').scrollTop = 0));
+    await pause(phone, 400);
+    const before = await ph();
+    await post(TB, 'm', TEAM, 'Neu, während du oben liest');
+    await pause(phone, 600);
+    s = await ph();
+    report(Math.abs(s.top - before.top) <= 1 && s.pill && !s.atBottom, 'Chat Monteur: wer weiter oben liest, wird nicht weggescrollt – „↓ Neue Nachrichten“ erscheint', JSON.stringify({ top: [before.top, s.top], pill: s.pill }));
+    await probe(phone, 'Chat Monteur: „↓ Neue Nachrichten“ rollt weich nach unten', btn('/Neue Nachrichten/'), { ms: 900, tapTol: 400 });
+    s = await ph();
+    report(s.atBottom && !s.pill, 'Chat Monteur: danach steht der Verlauf unten, der Hinweis ist weg', JSON.stringify({ atBottom: s.atBottom, pill: s.pill }));
+    // zurück zur Startseite; dort neue Nachricht -> Zähler, Vorschau und Kurzmeldung, die Kachel bleibt gleich hoch
+    await probe(phone, 'Chat Monteur: ← Zurück zur Startseite (gleitet zurück)', btn('/Zurück/'), { reflow: true, ms: 900, anim: true });
+    const home = await ph();
+    report(home.badge === '' && home.tileH > 60, 'Chat Monteur: gelesen – kein Zähler an der Kachel', JSON.stringify({ badge: home.badge, h: home.tileH }));
+    await probe(phone, 'Chat Monteur: neue Nachricht auf der Startseite – Kachel bleibt stehen (Zähler und Vorschau ohne Sprung)', `() => document.querySelector('#app .kind.chat')`, { act: dispoAct('Bitte kurz zurückrufen'), ms: 1200, tapTol: 2 });
+    s = await ph();
+    report(s.badge === '1' && /Bitte kurz zurückrufen/.test(s.prev) && /^Disponent: /.test(s.prev) && s.tileH === home.tileH, 'Chat Monteur: Zähler „1“ und Vorschau an der Kachel, Höhe unverändert', JSON.stringify({ badge: s.badge, prev: s.prev, h: [home.tileH, s.tileH] }));
+    report(/💬 Disponent: Bitte kurz zurückrufen/.test(s.toast), 'Chat Monteur: Kurzmeldung unten nennt den Absender und den Text', s.toast);
+    await phone.click('.toast.on');
+    await pause(phone, 800);
+    s = await ph();
+    report(s.bubbles.length > 3 && s.atBottom && /Bitte kurz zurückrufen/.test(s.bubbles[s.bubbles.length - 1]), 'Chat Monteur: Tipp auf die Kurzmeldung öffnet den Chat unten');
+    await phone.click('button:has-text("Zurück")');
+    await pause(phone, 700);
+    s = await ph();
+    report(s.badge === '', 'Chat Monteur: nach dem Lesen kein Zähler mehr');
+
+    // ohne Netz: Nachricht bleibt mit ⏳ im Verlauf (und im Gerät gesichert), geht später hinaus – genau einmal
+    await phone.click('.kind.chat');
+    await pause(phone, 700);
+    const count0 = (await syncOf(H, '')).chat.length;
+    await phone.context().setOffline(true);
+    await phone.fill('.cin', 'Im Keller ohne Netz geschrieben');
+    await phone.click('.csend');
+    await pause(phone, 800);
+    s = await ph();
+    const queued = await phone.evaluate(() => JSON.parse(localStorage.getItem('chatq') || '[]').length);
+    report(s.pend === 1 && /Im Keller/.test(s.bubbles[s.bubbles.length - 1]) && s.draft === '' && queued === 1, 'Chat Monteur: ohne Netz bleibt die Nachricht mit ⏳ im Verlauf und im Gerät gesichert', JSON.stringify({ pend: s.pend, queued }));
+    await phone.context().setOffline(false);
+    await phone.evaluate(() => dispatchEvent(new Event('online')));
+    await pause(phone, 2500);
+    s = await ph();
+    const after = (await syncOf(H, '')).chat;
+    report(s.pend === 0 && after.length === count0 + 1 && after.filter(m => /Im Keller ohne Netz/.test(m.text)).length === 1, 'Chat Monteur: mit Netz geht sie hinaus – genau einmal, ⏳ wird ✓', JSON.stringify({ pend: s.pend, n: after.length - count0 }));
+    // abgelehnt (Fehler 4xx): bleibt mit Grund stehen, „Verwerfen“ entfernt sie
+    await phone.route('**/api/chat', route => route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'Unbekanntes Team' }) }));
+    await phone.fill('.cin', 'Diese wird abgelehnt');
+    await phone.click('.csend');
+    await pause(phone, 900);
+    s = await ph();
+    report(s.fail === 1 && (await phone.evaluate(() => document.querySelector('#app .cfail').textContent)).includes('Unbekanntes Team'), 'Chat Monteur: eine abgelehnte Nachricht zeigt den Grund mit „Erneut senden“ und „Verwerfen“');
+    await phone.unroute('**/api/chat');
+    await phone.click('.cfail button:has-text("Erneut senden")');
+    await pause(phone, 1200);
+    s = await ph();
+    report(s.fail === 0 && s.pend === 0 && /Diese wird abgelehnt/.test(s.bubbles[s.bubbles.length - 1]), 'Chat Monteur: „Erneut senden“ schickt sie (jetzt angenommen)');
+    // schmaler Bildschirm: nichts ragt über den Rand
+    const narrow = await newPage(browser, base, { width: 320, height: 640 }, errors);
+    pages.push(narrow);
+    await loginMonteur(narrow, null);
+    await narrow.click('.kind.chat');
+    await pause(narrow, 700);
+    const nw = await narrow.evaluate(() => ({ wide: document.documentElement.scrollWidth > document.documentElement.clientWidth, scrolls: document.documentElement.scrollHeight > innerHeight + 1, over: [...document.querySelectorAll('#app *')].filter(n => n.getBoundingClientRect().right > innerWidth + 1 && getComputedStyle(n).position !== 'fixed').length }));
+    report(!nw.wide && !nw.scrolls && !nw.over, 'Chat Monteur: bei 320 px nichts über dem Rand, Seite rollt nicht', JSON.stringify(nw));
+    await narrow.context().close();
+    pages.pop();
+
+    // ---------- Disponent am Rechner ----------
+    const dk = () =>
+      desk.evaluate(() => {
+        const tab = document.querySelector('#app .tabs button[data-tab="ch"]'),
+          thr = document.querySelector('#app .cthr[data-team]'),
+          rows = [...document.querySelectorAll('#app .crow')];
+        return {
+          tab: tab && tab.textContent,
+          rows: rows.length,
+          row: Object.fromEntries(rows.map(r => [r.dataset.team, { badge: (r.querySelector('.cbadge.on') || {}).textContent || '', prev: r.querySelector('.crp').textContent, top: Math.round(r.getBoundingClientRect().top), h: Math.round(r.getBoundingClientRect().height), on: r.classList.contains('on') }])),
+          team: thr && thr.dataset.team,
+          bubbles: thr ? [...thr.querySelectorAll('.cmsg')].map(n => n.textContent.replace(/\s+/g, ' ').trim()) : [],
+          me: thr ? thr.querySelectorAll('.cmsg.me').length : 0,
+          atBottom: thr ? thr.scrollHeight - thr.scrollTop - thr.clientHeight < 40 : null,
+          scrolls: document.documentElement.scrollHeight > innerHeight + 1,
+          wide: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          focus: document.activeElement && document.activeElement.className,
+          draft: (document.querySelector('#app .cin') || {}).value,
+          toast: document.querySelector('.toast.on') ? document.querySelector('.toast').textContent : '',
+          title: document.title
+        };
+      });
+    let d = await dk();
+    report(/^Chat \(\d+\)$/.test(d.tab) && /^\(\d+\) /.test(d.title), 'Chat Disponent: der Tab nennt die ungelesenen Nachrichten, der Fenstertitel ebenso', `${d.tab} / ${d.title}`);
+    await probe(desk, 'Chat Disponent: Tab „Chat“ – Leiste bleibt stehen, Inhalt blendet ein', btn('/^Chat/', '#app .tabs'), { reflow: true, ms: 800, anim: true });
+    d = await dk();
+    report(d.rows >= 8 && d.row[TEAM] && d.row[TEAM].badge !== '' && /^[^:]+: /.test(d.row[TEAM].prev) && !d.team, 'Chat Disponent: Teamliste mit Zähler und letzter Nachricht je Team, noch kein Verlauf offen', JSON.stringify(d.row[TEAM]));
+    report(!d.scrolls && !d.wide, 'Chat Disponent: die Seite rollt im Chat nicht');
+    const unreadTeam = +d.row[TEAM].badge,
+      tabN = +/\d+/.exec(d.tab)[0];
+    report(tabN >= unreadTeam, 'Chat Disponent: die Zahl am Tab zählt alle Teams', `${d.tab} / Team ${unreadTeam}`);
+    await probe(desk, 'Chat Disponent: Team öffnen – Teamliste bleibt stehen, Verlauf blendet ein', `() => [...document.querySelectorAll('#app .crow')].find(r => r.dataset.team === '${TEAM}')`, { ms: 900, anim: true, tapTol: 2 });
+    d = await dk();
+    report(d.team === TEAM && d.atBottom && d.bubbles.length >= 10 && d.row[TEAM].badge === '' && d.row[TEAM].on, 'Chat Disponent: Verlauf des Teams steht unten, Zähler des Teams ist weg, Zeile hervorgehoben', JSON.stringify({ n: d.bubbles.length, atBottom: d.atBottom, badge: d.row[TEAM].badge }));
+    report(d.tab === 'Chat' || +/\d+/.exec(d.tab)[0] < tabN, 'Chat Disponent: die Zahl am Tab sinkt um die gelesenen Nachrichten', `${tabN} -> ${d.tab}`);
+    await shot(desk, 'chat-dispo');
+    // das andere Team lesen (dort liegen die Nachrichten der Drosselungsprobe): danach ist nichts mehr ungelesen
+    await desk.click(`.crow[data-team="${OTHER}"]`);
+    await pause(desk, 700);
+    d = await dk();
+    report(d.team === OTHER && d.row[OTHER].badge === '' && d.tab === 'Chat' && !/^\(\d+\)/.test(d.title), 'Chat Disponent: alle Teams gelesen – „Chat“ ohne Zahl, Fenstertitel ohne Zahl', `${d.tab} / ${d.title}`);
+    await desk.click(`.crow[data-team="${TEAM}"]`);
+    await pause(desk, 700);
+    // schreiben: Umschalt+Enter = neue Zeile, Enter sendet
+    await desk.click('.cin');
+    await desk.keyboard.type('Erste Zeile');
+    await desk.keyboard.press('Shift+Enter');
+    await desk.keyboard.type('Zweite Zeile');
+    d = await dk();
+    report(d.draft === 'Erste Zeile\nZweite Zeile' && d.bubbles.every(b => !/Zweite Zeile/.test(b)), 'Chat Disponent: Umschalt+Enter macht eine neue Zeile und sendet nicht', JSON.stringify(d.draft));
+    await probe(desk, 'Chat Disponent: Enter sendet – Eingabe bleibt stehen, Nachricht gleitet an', `() => document.querySelector('#app .cin')`, { act: `el => { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); }`, ms: 1100, tapTol: 2 });
+    d = await dk();
+    report(/Erste Zeile Zweite Zeile/.test(d.bubbles[d.bubbles.length - 1]) && d.draft === '' && d.focus === 'cin' && d.atBottom, 'Chat Disponent: die Nachricht steht unten, die Eingabe ist leer und behält den Fokus', JSON.stringify({ last: d.bubbles[d.bubbles.length - 1], focus: d.focus }));
+    const sent = (await syncOf(H, '')).chat.filter(m => /Erste Zeile/.test(m.text));
+    report(sent.length === 1 && sent[0].text === 'Erste Zeile\nZweite Zeile' && sent[0].side === 'd', 'Chat Disponent: der Server hat sie einmal, mit Zeilenumbruch');
+    // der Monteur sieht sie live (Handy-Seite im Chat)
+    await pause(phone, 400);
+    s = await ph();
+    report(/Erste Zeile Zweite Zeile/.test(s.bubbles[s.bubbles.length - 1]) && s.atBottom, 'Chat Monteur: die Antwort des Disponenten erscheint live im offenen Chat');
+    // Nachricht eines Monteurs im offenen, unten stehenden Verlauf: gelesen, nichts springt
+    await desk.click('.cin');
+    await desk.keyboard.type('Antwort wird noch getippt');
+    await probe(desk, 'Chat Disponent: Nachricht des Teams kommt live – Eingabe rührt sich nicht, Verlauf gleitet', `() => document.querySelector('#app .cin')`, { act: mateAct('Hans meldet sich: wir sind fertig'), ms: 1200, tapTol: 2 });
+    d = await dk();
+    report(/wir sind fertig/.test(d.bubbles[d.bubbles.length - 1]) && d.atBottom && d.draft === 'Antwort wird noch getippt' && d.focus === 'cin', 'Chat Disponent: neue Nachricht unten, Entwurf und Fokus bleiben', JSON.stringify({ last: d.bubbles[d.bubbles.length - 1], draft: d.draft }));
+    report(d.row[TEAM].badge === '' && !/\d/.test(d.tab || ''), 'Chat Disponent: im offenen Verlauf gilt sie sofort als gelesen (kein Zähler)', `${d.tab} / „${d.row[TEAM].badge}“`);
+    await desk.fill('.cin', '');
+    // Nachricht eines anderen Teams: Zähler und Vorschau in der Liste, Kurzmeldung, Zeilen bleiben stehen
+    const rowsBefore = (await dk()).row;
+    await probe(desk, 'Chat Disponent: Nachricht eines anderen Teams – Teamliste bleibt stehen (Zähler ohne Sprung)', `() => document.querySelector('#app .cin')`, { act: `() => fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Token': '${mD.token}' }, body: JSON.stringify({ side: 'm', team: '${OTHER}', text: 'Hier Team 2: Zugang fehlt', cid: 't' + Math.random().toString(36).slice(2, 12) }) })`, ms: 1200, tapTol: 2 });
+    d = await dk();
+    const unchanged = Object.keys(rowsBefore).every(t => rowsBefore[t].top === d.row[t].top && rowsBefore[t].h === d.row[t].h);
+    report(d.row[OTHER].badge === '1' && /Zugang fehlt/.test(d.row[OTHER].prev) && d.tab === 'Chat (1)' && unchanged, 'Chat Disponent: Zähler „1“ und Vorschau beim anderen Team, Tab „Chat (1)“, alle Zeilen an derselben Stelle', JSON.stringify({ badge: d.row[OTHER].badge, tab: d.tab, unchanged }));
+    report(/💬 FW-IH02 · .+: Hier Team 2/.test(d.toast) && d.team === TEAM, 'Chat Disponent: Kurzmeldung nennt Team und Absender, der geöffnete Verlauf bleibt', d.toast);
+    await desk.click('.toast.on');
+    await pause(desk, 800);
+    d = await dk();
+    report(d.team === OTHER && /Zugang fehlt/.test(d.bubbles[d.bubbles.length - 1]) && d.row[OTHER].badge === '' && d.tab === 'Chat', 'Chat Disponent: Tipp auf die Kurzmeldung öffnet dieses Team, Zähler ist weg');
+    // Teamwechsel hält den Entwurf je Team
+    await desk.fill('.cin', 'Entwurf für Team 2');
+    await desk.click(`.crow[data-team="${TEAM}"]`);
+    await pause(desk, 600);
+    d = await dk();
+    report(d.team === TEAM && d.draft === '', 'Chat Disponent: anderes Team, eigener Entwurf (leer)');
+    await desk.click(`.crow[data-team="${OTHER}"]`);
+    await pause(desk, 600);
+    d = await dk();
+    report(d.draft === 'Entwurf für Team 2', 'Chat Disponent: der Entwurf eines Teams bleibt erhalten, wenn man zwischendurch ein anderes öffnet');
+    await desk.fill('.cin', '');
+    // ohne Netz schreiben: ⏳ im Verlauf, später hinaus
+    const n0 = (await syncOf(H, '')).chat.length;
+    await desk.context().setOffline(true);
+    await desk.fill('.cin', 'Disponent ohne Netz');
+    await desk.press('.cin', 'Enter');
+    await pause(desk, 700);
+    const pend = await desk.evaluate(() => document.querySelectorAll('#app .cmsg.pend').length);
+    await desk.context().setOffline(false);
+    await desk.evaluate(() => dispatchEvent(new Event('online')));
+    await pause(desk, 2500);
+    const pend2 = await desk.evaluate(() => document.querySelectorAll('#app .cmsg.pend').length);
+    report(pend === 1 && pend2 === 0 && (await syncOf(H, '')).chat.length === n0 + 1, 'Chat Disponent: ohne Netz bleibt die Nachricht mit ⏳ stehen und geht danach genau einmal hinaus', JSON.stringify({ pend, pend2 }));
+
+    // ---------- Disponent am Handy: erst die Liste, dann der Verlauf ----------
+    const dphone = await newPage(browser, base, { width: 390, height: 844 }, errors);
+    pages.push(dphone);
+    await loginDispo(dphone);
+    await probe(dphone, 'Chat Disponent (Handy): Tab „Chat“ zeigt zuerst die Teamliste', btn('/^Chat/', '#app .tabs'), { reflow: true, ms: 800, anim: true });
+    const layout = () => dphone.evaluate(() => ({ list: getComputedStyle(document.querySelector('#app .clist')).display !== 'none', pane: !!document.querySelector('#app .cpane') && getComputedStyle(document.querySelector('#app .cpane')).display !== 'none', back: !!document.querySelector('#app .cback') && getComputedStyle(document.querySelector('#app .cback')).display !== 'none', wide: document.documentElement.scrollWidth > document.documentElement.clientWidth, scrolls: document.documentElement.scrollHeight > innerHeight + 1, comp: document.querySelector('#app .ccomp') ? Math.round(document.querySelector('#app .ccomp').getBoundingClientRect().bottom) : 0 }));
+    let l = await layout();
+    report(l.list && !l.pane && !l.wide && !l.scrolls, 'Chat Disponent (Handy): nur die Teamliste, Seite rollt nicht und ist nicht zu breit', JSON.stringify(l));
+    await probe(dphone, 'Chat Disponent (Handy): Team öffnen – Verlauf gleitet herein', `() => [...document.querySelectorAll('#app .crow')].find(r => r.dataset.team === '${TEAM}')`, { reflow: true, ms: 900, anim: true });
+    l = await layout();
+    report(!l.list && l.pane && l.back && !l.wide && !l.scrolls && l.comp > 800 && l.comp <= 844, 'Chat Disponent (Handy): nur der Verlauf mit „← Teams“, Eingabe am unteren Rand', JSON.stringify(l));
+    await dphone.fill('.cin', 'Hallo vom Handy');
+    await probe(dphone, 'Chat Disponent (Handy): Senden – Knopf bleibt stehen', `() => document.querySelector('#app .csend')`, { ms: 1000, tapTol: 2 });
+    await probe(dphone, 'Chat Disponent (Handy): ← Teams zurück zur Liste', btn('/Teams/'), { reflow: true, ms: 900, anim: true });
+    l = await layout();
+    report(l.list && !l.pane, 'Chat Disponent (Handy): wieder die Teamliste');
+    await shot(dphone, 'chat-dispo-handy');
+    // Dunkelmodus: Sprechblasen bleiben lesbar (Farben kommen aus den Variablen)
+    await dphone.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await dphone.click(`.crow[data-team="${TEAM}"]`);
+    await pause(dphone, 800);
+    const dark = await dphone.evaluate(() => {
+      const me = document.querySelector('#app .cmsg.me .cbub'),
+        other = document.querySelector('#app .cmsg:not(.me) .cbub');
+      const lum = c => { const m = c.match(/\d+(\.\d+)?/g).map(Number).slice(0, 3).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]; };
+      const ratio = n => { const cs = getComputedStyle(n), a = lum(cs.color), b = lum(cs.backgroundColor); return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05); };
+      return { me: me && +ratio(me).toFixed(1), other: other && +ratio(other).toFixed(1) };
+    });
+    report(dark.me >= 4.5 && dark.other >= 4.5, 'Chat: im Dunkelmodus genug Kontrast (eigene und fremde Nachrichten)', JSON.stringify(dark));
+    // Neuladen am Handy des Monteurs: derselbe Verlauf (Zwischenspeicher + Abgleich), nichts ungelesen
+    const nPhone = (await ph()).bubbles.length;
+    await phone.reload();
+    await pause(phone, 1500);
+    s = await ph();
+    report(s.badge === '' && s.tileH > 60, 'Chat Monteur: nach dem Neuladen kein Zähler an der Kachel', JSON.stringify({ badge: s.badge }));
+    await phone.click('.kind.chat');
+    await pause(phone, 800);
+    s = await ph();
+    report(s.bubbles.length === nPhone && s.atBottom && !s.scrolls, 'Chat Monteur: nach dem Neuladen derselbe Verlauf, unten', `${nPhone} → ${s.bubbles.length}`);
+  } catch (e) {
+    report(false, 'Chat: Test-Fehler', e.stack.split('\n').slice(0, 4).join(' | '));
+  } finally {
+    for (const pg of pages) await pg.context().close().catch(() => {});
+    server.stop();
+    pushService.close();
+  }
+}
+
+/**
  * Push-Anmeldung der Geräte: Der Server sagt bei jedem Abgleich, wie er das Gerät kennt (`dev`: 0 unbekannt, 1 ohne Abo, 2 mit Abo), die App meldet
  * sich bei Bedarf von selbst neu an (Datenbank gewechselt, Abo gelöscht), zeigt bei fehlendem Abo den Ersatz-Hinweis statt gar nichts, und der
  * Disponent erfährt, bei wie vielen Geräten eine Nachricht per Push angekommen ist und warum ein Gerät keinen Push hat.
@@ -3631,7 +4038,7 @@ async function kindChecks(browser, base, viewport, errors) {
     page = await newPage(browser, base, viewport, errors);
   console.log(`\n=== Auftragsarten: Monteur (${label}) ===`);
   await loginMonteur(page, null);
-  const tiles = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#app button.kind')].map(b => [b.querySelector('.kn').textContent, b.textContent.replace(b.querySelector('.kn').textContent, '').replace(/\s+/g, ' ').trim()])));
+  const tiles = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#app button.kind:not(.chat)')].map(b => [b.querySelector('.kn').textContent, b.textContent.replace(b.querySelector('.kn').textContent, '').replace(/\s+/g, ' ').trim()])));
   const t0 = await tiles();
   report(Object.keys(t0).join() === 'Wartungen,Reparaturen,Entstörungen,Daueraufträge,Meldungen', `${label} Startseite: Auswahl der Auftragsart`, Object.keys(t0).join(', '));
   // „offen/gesamt“ (Status) gibt es nur bei Wartungen, die übrigen Auftragsarten zählen nur die Aufträge
@@ -3905,7 +4312,7 @@ async function kindChecks(browser, base, viewport, errors) {
   await page.goBack();
   await pause(page, 700);
   const back = await page.evaluate(() => document.querySelectorAll('#app button.kind').length);
-  report(back === 5, `${label} Zurück-Taste des Geräts: von der Liste zur Startseite`, String(back));
+  report(back === 6, `${label} Zurück-Taste des Geräts: von der Liste zur Startseite (fünf Auftragsarten und die Kachel „Chat“)`, String(back));
   await page.context().close();
 }
 
@@ -3927,9 +4334,9 @@ async function kindChecksWide(browser, base, viewport, errors) {
   await page.context().close();
 }
 
-// Tab-Leiste des Disponenten (Übersicht, Disposition, Fortschritt, Upload, Vergleich, Geräte, Benutzer): füllt die ganze Breite, nichts ist
-// abgeschnitten oder wischbar (früher: eine Zeile zum Seitwärtswischen, am PC nur 36 rem breit), am Handy zwei Zeilen (3 + 4), ab 720 px eine.
-// Ein Tabwechsel (aktiver Tab wird fett) und eine andere Zahl am Tab „Disposition“ verschieben die Nachbarn nicht merklich.
+// Tab-Leiste des Disponenten (Übersicht, Disposition, Fortschritt, Chat, Upload, Vergleich, Geräte, Benutzer): füllt die ganze Breite, nichts ist
+// abgeschnitten oder wischbar (früher: eine Zeile zum Seitwärtswischen, am PC nur 36 rem breit), am Handy drei Zeilen (3 + 3 + 2), ab 52 em (832 px) eine.
+// Ein Tabwechsel (aktiver Tab wird fett) und eine andere Zahl an den Tabs „Disposition“ und „Chat“ verschieben die Nachbarn nicht merklich.
 async function dispoTabBarChecks(browser, base, errors) {
   console.log('\n=== Disponent: Tab-Leiste füllt die Breite, nichts abgeschnitten ===');
   const measure = page =>
@@ -3956,25 +4363,25 @@ async function dispoTabBarChecks(browser, base, errors) {
         boxes: rects.map(r => [r.left, r.width])
       };
     });
-  for (const { width, rows } of [{ width: 320, rows: [3, 4] }, { width: 390, rows: [3, 4] }, { width: 700, rows: [3, 4] }, { width: 720, rows: [7] }, { width: 1024, rows: [7] }, { width: 1280, rows: [7] }]) {
+  for (const { width, rows } of [{ width: 320, rows: [3, 3, 2] }, { width: 390, rows: [3, 3, 2] }, { width: 700, rows: [3, 3, 2] }, { width: 831, rows: [3, 3, 2] }, { width: 832, rows: [8] }, { width: 1024, rows: [8] }, { width: 1280, rows: [8] }]) {
     const label = `${width}px`,
       page = await newPage(browser, base, { width, height: 700 }, errors);
     await loginDispo(page);
     const m = await measure(page);
-    report(m.n === 7 && m.rows.join() === rows.join(), `${label} Tab-Leiste: ${rows.length === 1 ? 'eine Zeile mit 7 Tabs' : 'zwei Zeilen mit 3 und 4 Tabs'}`, m.rows.join('+'));
+    report(m.n === 8 && m.rows.join() === rows.join(), `${label} Tab-Leiste: ${rows.length === 1 ? 'eine Zeile mit 8 Tabs' : 'drei Zeilen mit 3, 3 und 2 Tabs'}`, m.rows.join('+'));
     report(m.filled && m.barLeft === 16 && m.barRight === 16, `${label} Tab-Leiste: nutzt die ganze Breite (Rand 16 px links und rechts)`, `links ${m.barLeft}, rechts ${m.barRight}, gefüllt: ${m.filled}`);
     report(!m.clipped.length && !m.outside.length && !m.scrolls && m.pageW, `${label} Tab-Leiste: nichts abgeschnitten, nichts wischbar, Seite nicht breiter als der Bildschirm`, [...m.clipped, ...m.outside].join(', '));
     report(m.heights.length === 1, `${label} Tab-Leiste: alle Tabs gleich hoch`, m.heights.join(', '));
-    // längster Text: dreistellige Zahl am Tab „Disposition“ (Text von Hand gesetzt) – passt ebenfalls, nichts abgeschnitten
-    await page.evaluate(() => { document.querySelectorAll('#app .tabs button')[1].textContent = 'Disposition (123)'; });
+    // längste Texte: dreistellige Zahl am Tab „Disposition“ und „Chat (99+)“ (Texte von Hand gesetzt) – passen ebenfalls, nichts abgeschnitten
+    await page.evaluate(() => { document.querySelectorAll('#app .tabs button')[1].textContent = 'Disposition (123)'; document.querySelector('#app .tabs button[data-tab="ch"]').textContent = 'Chat (99+)'; });
     const long = await measure(page);
-    report(!long.clipped.length && !long.outside.length && long.rows.join() === rows.join() && long.barH === m.barH, `${label} Tab-Leiste: auch „Disposition (123)“ passt in seine Zeile`, [...long.clipped, ...long.outside, long.rows.join('+')].join(', '));
+    report(!long.clipped.length && !long.outside.length && long.rows.join() === rows.join() && long.barH === m.barH, `${label} Tab-Leiste: auch „Disposition (123)“ und „Chat (99+)“ passen in ihre Zeile`, [...long.clipped, ...long.outside, long.rows.join('+')].join(', '));
     await page.evaluate(() => render()); // zeichnet die echte Beschriftung neu
     await pause(page, 200);
     // Tabwechsel: Leiste bleibt Pixel für Pixel stehen (der aktive Tab wird fett, mehr ändert sich nicht)
     const before = await measure(page);
-    for (const n of ['Fortschritt', 'Geräte', 'Übersicht']) {
-      await page.evaluate(n => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim() === n).click(), n);
+    for (const n of ['Fortschritt', 'Chat', 'Geräte', 'Übersicht']) {
+      await page.evaluate(n => [...document.querySelectorAll('#app .tabs button')].find(b => b.textContent.trim().replace(/ \(\d+\+?\)$/, '') === n).click(), n);
       await pause(page, 700);
       const after = await measure(page);
       const shift = Math.max(...after.boxes.map((b, i) => Math.max(Math.abs(b[0] - before.boxes[i][0]), Math.abs(b[1] - before.boxes[i][1]))));
@@ -4126,6 +4533,12 @@ function summary(t0) {
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
+    if (process.env.TEST_ONLY === 'chat') {
+      // schnell: nur der Chat zwischen Team und Disponent (eigener Server, braucht keinen Upload)
+      await chatChecks(browser, server, geocoder, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
     if (process.env.TEST_ONLY === 'dispomeldung') {
       // schnell: Upload, dann nur die Meldung „Auftrag disponiert“ an die Monteure
       await kindUploadChecks(browser, base, errors);
@@ -4198,6 +4611,7 @@ function summary(t0) {
     await workStateChecks(browser, base, errors);
     await dispoNoteChecks(browser, server, geocoder, errors);
     await pushChecks(browser, server, geocoder, errors);
+    await chatChecks(browser, server, geocoder, errors);
     await kindChecks(browser, base, { width: 390, height: 844 }, errors);
     await monteurChecks(browser, base, { width: 390, height: 844 }, errors);
     await noLocationChecks(browser, base, errors);

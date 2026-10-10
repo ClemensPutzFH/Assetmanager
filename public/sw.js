@@ -5,6 +5,7 @@
  *   2) Push: Nachrichten des Disponenten erscheinen als Benachrichtigung, die stehen bleibt und nach dem
  *      Wegwischen wiederkommt, bis „Bestätigen“ getippt wird.
  *   3) Push „Auftrag disponiert / geändert“: gewöhnliche Benachrichtigung (nichts gesperrt, keine Bestätigung); Tipp öffnet die App.
+ *   4) Push „Chat“ (Nachricht vom Disponenten oder von einem Kollegen des Teams): gewöhnliche Benachrichtigung; Tipp öffnet die App im Chat.
  * ================================================================================================= */
 // Name des Caches; ändert sich die Dateiliste, hochzählen – alte Caches werden beim Aktivieren gelöscht
 const CACHE_NAME = 'auftraege-v4';
@@ -94,6 +95,20 @@ const showDispo = d =>
     timestamp: d.at || Date.now(),
     data: { t: 'dispo' }
   });
+// Chat-Nachricht (Push-Daten { t: 'chat', title, body, at, team }): gewöhnliche Benachrichtigung ohne Bestätigung. Tag „chat“: eine neuere ersetzt die
+// ältere, meldet sich aber wieder mit Ton/Vibration. (Auch bei geöffneter App wird sie gezeigt: iPhones verlangen zu jedem Push eine Benachrichtigung.)
+const showChat = d =>
+  self.registration.showNotification(d.title || 'Chat', {
+    body: d.body || '',
+    tag: 'chat',
+    renotify: true,
+    silent: false,
+    vibrate: [200, 100, 200],
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    timestamp: d.at || Date.now(),
+    data: { t: 'chat' }
+  });
 // sagt allen offenen App-Fenstern, dass es Neues gibt (die App gleicht dann sofort ab)
 const notifyApp = () =>
   self.clients
@@ -108,7 +123,7 @@ self.addEventListener('push', e => {
   } catch {
     d = { body: e.data ? e.data.text() : '' };
   }
-  e.waitUntil(Promise.all([d.t === 'dispo' ? showDispo(d) : showMessage(d), notifyApp()]));
+  e.waitUntil(Promise.all([d.t === 'chat' ? showChat(d) : d.t === 'dispo' ? showDispo(d) : showMessage(d), notifyApp()]));
 });
 
 // Bestätigung direkt aus der Benachrichtigung an den Server melden (POST /api/msg/ack); true bei Erfolg
@@ -136,14 +151,15 @@ self.addEventListener('notificationclick', e => {
     );
     return;
   }
-  // Tipp auf die Nachricht: App öffnen, dort wird bestätigt
+  // Tipp auf die Nachricht: App öffnen, dort wird bestätigt (Chat: die App öffnet den Chat, bei geschlossener App über ?chat=1)
+  const chat = d.t === 'chat';
   e.waitUntil(
     self.clients
       .matchAll({ type: 'window', includeUncontrolled: true })
       .then(ws =>
         ws.length
-          ? ws[0].focus().then(w => (w || ws[0]).postMessage({ t: 'msg' }))
-          : self.clients.openWindow('/')
+          ? ws[0].focus().then(w => (w || ws[0]).postMessage({ t: chat ? 'chat' : 'msg' }))
+          : self.clients.openWindow(chat ? '/?chat=1' : '/')
       )
   );
 });

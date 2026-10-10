@@ -31,6 +31,9 @@
  *             sagt Monteur-Geräten in `dev`, ob der Server sie samt Abo kennt – fehlt es, melden sie sich neu an (Datenbank-Wechsel, 404/410)
  *             msg / mack  Nachrichten des Disponenten / Bestätigungen je Gerät
  *   dnote     vorgemerkte Änderungen der Disposition je Team und Auftrag (Stand davor, letzte Änderung) – daraus wird nach DISPO_NOTE_S Ruhe eine Meldung
+ *   chat      Chat zwischen einem Team und dem Disponenten (POST /api/chat): EIN Verlauf je Team, side = 'd' Disponent | 'm' Monteur des Teams
+ *             (usr/name = Absender), cid = Kennung, die das Gerät vergibt (gleiche Nachricht zweimal gesendet = einmal gespeichert). Wird nach
+ *             CHAT_DAYS Tagen gelöscht. Die Nachrichten laufen wie alles andere über die Änderungsnummer (seq) und die Live-Verbindung
  *   gas       tägliche Bestätigung des Gaswarngeräts je Team (Tag, Team, Uhrzeit, Gerät, Benutzer) – wird nur angefügt, nie geändert
  *   usr       Benutzer der Monteure (SAP-User, Name, Team, Passwort als scrypt-Hash); beim ersten Start aus users.json befüllt
  *   act       Protokoll: wer (Benutzer, Gerät) hat wann was getan (Anmeldung, Ergebnis, Gaswarngerät, Bestätigung, Benutzerverwaltung)
@@ -97,6 +100,13 @@ const MESSAGE_HOURS = Math.max(1, +process.env.MSG_HOURS || 12); // spätestens 
 // er bearbeitet den Auftrag vielleicht noch); die Push-Nachricht bleibt höchstens DISPO_NOTE_HOURS Stunden beim Push-Dienst liegen
 const DISPO_NOTE_MS = (process.env.DISPO_NOTE_S !== undefined && +process.env.DISPO_NOTE_S >= 0 ? +process.env.DISPO_NOTE_S : 120) * 1000;
 const DISPO_NOTE_HOURS = 6;
+// Chat Team <-> Disponent: so lange bleiben Nachrichten erhalten, so lang darf eine Nachricht sein, so viele darf ein Absender je Minute senden,
+// so viele Nachrichten je Team bekommt ein Gerät beim vollständigen Abgleich, so lange hält der Push-Dienst eine Benachrichtigung bereit
+const CHAT_DAYS = 30,
+  CHAT_TEXT_MAX = 1000,
+  CHAT_PER_MINUTE = 20,
+  CHAT_FULL_PER_TEAM = 300,
+  CHAT_PUSH_HOURS = 12;
 const PUSH_CONTACT = process.env.PUSH_CONTACT || 'mailto:admin@example.com'; // Kontakt für die Push-Dienste (VAPID "sub")
 // IP des Clients (für die Begrenzung von PIN-Fehlversuchen); hinter einem Proxy (TRUST_PROXY=1) aus X-Forwarded-For
 const clientIp = req =>
@@ -155,6 +165,12 @@ CREATE TABLE IF NOT EXISTS mack(id INTEGER NOT NULL, did TEXT NOT NULL, at INTEG
 -- gemeldeten Änderungen des Disponenten kannte (was = 1: der Auftrag war beim Team, von/bis = damalige Zeiten), at = letzte Änderung.
 -- Ist die letzte Änderung des Teams DISPO_NOTE_S Sekunden her, wird mit dem heutigen Stand verglichen und gemeldet; die Zeilen sind dann erledigt.
 CREATE TABLE IF NOT EXISTS dnote(team TEXT NOT NULL, auftrag TEXT NOT NULL, was INTEGER NOT NULL, von TEXT, bis TEXT, at INTEGER NOT NULL, PRIMARY KEY(team, auftrag));
+-- Chat zwischen einem Team und dem Disponenten: ein Verlauf je Team. side = 'd' Disponent | 'm' Monteur, usr = SAP-User des Monteurs (leer beim
+-- Disponenten), name = Anzeigename zur Zeit des Sendens, cid = Kennung vom Gerät (verhindert Doppel, wenn eine Nachricht erneut gesendet wird)
+CREATE TABLE IF NOT EXISTS chat(id INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL, side TEXT NOT NULL, usr TEXT, name TEXT, text TEXT NOT NULL, at INTEGER NOT NULL, cid TEXT, seq INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS chat_team ON chat(team, id);
+CREATE INDEX IF NOT EXISTS chat_seq ON chat(seq);
+CREATE UNIQUE INDEX IF NOT EXISTS chat_cid ON chat(cid) WHERE cid IS NOT NULL;
 -- Gaswarngerät: ein Team bestätigt es vor der Arbeit jeden Tag. at = Zeitpunkt der Bestätigung am Gerät, rec = Eingang beim Server
 -- (weicht ab, wenn ohne Netz bestätigt wurde), did = bestätigendes Gerät. Je Tag und Team zählt die erste Bestätigung.
 CREATE TABLE IF NOT EXISTS gas(day TEXT NOT NULL, team TEXT NOT NULL, at INTEGER NOT NULL, rec INTEGER NOT NULL, did TEXT, seq INTEGER NOT NULL, PRIMARY KEY(day, team));
@@ -315,7 +331,7 @@ const sql = {
   ordersOfIds: db.prepare('SELECT auftrag, mteam team FROM orders WHERE auftrag IN (SELECT value FROM json_each(?))'),
   pruefOne: db.prepare('SELECT items FROM pruef WHERE auftrag=?'),
   maxSeq: db.prepare(
-    'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM meldung UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas)'
+    'SELECT MAX(m) AS m FROM (SELECT MAX(seq) m FROM orders UNION ALL SELECT MAX(seq) FROM meldung UNION ALL SELECT MAX(seq) FROM pruef UNION ALL SELECT MAX(seq) FROM ergebnis UNION ALL SELECT MAX(seq) FROM dmark UNION ALL SELECT MAX(seq) FROM msg UNION ALL SELECT MAX(seq) FROM gas UNION ALL SELECT MAX(seq) FROM chat)'
   ),
   upMark: db.prepare(
     'INSERT INTO dmark(auftrag,v,at,seq) VALUES(?,?,?,?) ON CONFLICT(auftrag) DO UPDATE SET v=excluded.v, at=excluded.at, seq=excluded.seq'
@@ -422,6 +438,19 @@ const sql = {
   gasAll: db.prepare(
     "SELECT g.day, g.team, g.at, g.rec, v.name, substr(g.did, -4) did, g.usr, trim(w.first || ' ' || w.last) uname FROM gas g LEFT JOIN dev v ON v.did=g.did LEFT JOIN usr w ON w.sap=g.usr ORDER BY g.day DESC, g.team"
   ),
+  // Chat: Nachricht speichern, doppelte erkennen (cid), beim Abgleich holen. Vollständig = die letzten Nachrichten je Team (Disponent: aller
+  // Teams) der letzten CHAT_DAYS Tage; teilweise = alles mit größerer Änderungsnummer (mehr als 2000 -> lieber vollständig, siehe /api/sync)
+  addChat: db.prepare('INSERT INTO chat(team,side,usr,name,text,at,cid,seq) VALUES(?,?,?,?,?,?,?,?)'),
+  chatByCid: db.prepare('SELECT * FROM chat WHERE cid=?'),
+  chatFullAll: db.prepare(
+    'SELECT id,team,side,usr,name,text,at,cid FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY team ORDER BY id DESC) rn FROM chat WHERE at>?1) WHERE rn<=?2 ORDER BY id'
+  ),
+  chatFullTeam: db.prepare(
+    'SELECT id,team,side,usr,name,text,at,cid FROM (SELECT * FROM chat WHERE team=?1 AND at>?2 ORDER BY id DESC LIMIT ?3) ORDER BY id'
+  ),
+  chatSinceAll: db.prepare('SELECT id,team,side,usr,name,text,at,cid FROM chat WHERE seq>? ORDER BY id LIMIT 2001'),
+  chatSinceTeam: db.prepare('SELECT id,team,side,usr,name,text,at,cid FROM chat WHERE seq>? AND team=? ORDER BY id LIMIT 2001'),
+  delOldChat: db.prepare('DELETE FROM chat WHERE at<?'),
   // Benutzer und Protokoll
   getUsr: db.prepare('SELECT * FROM usr WHERE sap=?'),
   listUsr: db.prepare(
@@ -1172,6 +1201,55 @@ async function flushDispoNotes() {
 }
 setInterval(flushDispoNotes, Math.min(10e3, Math.max(250, DISPO_NOTE_MS / 4))).unref();
 
+// ---- Chat zwischen einem Team und dem Disponenten ----
+// Ein Verlauf je Team: der Disponent schreibt mit dem ganzen Team, die Monteure des Teams sehen alles (auch, was Kollegen schreiben). Eine
+// Nachricht ist nur ein Eintrag in `chat` mit eigener Änderungsnummer – Abgleich und Live-Verbindung bringen sie wie alles andere zu den
+// Geräten (announce mit { k: 'c', row }). Dazu gibt es für die Monteure eine gewöhnliche Push-Benachrichtigung (der Disponent sitzt in der
+// geöffneten App und sieht Zähler und Kurzmeldung dort; er hat kein Push-Abo).
+const chatRow = r => ({ id: r.id, team: r.team, side: r.side, usr: r.usr || '', name: r.name || '', text: r.text, at: r.at, cid: r.cid || '' });
+// Alte Nachrichten entfernen (beim Start und stündlich); Geräte verwerfen sie selbst nach derselben Zeit
+const deleteOldChat = () => sql.delOldChat.run(Date.now() - CHAT_DAYS * 864e5);
+deleteOldChat();
+setInterval(deleteOldChat, 3600e3).unref();
+// Wie viele Nachrichten hat ein Absender in der letzten Minute gesendet? (Schutz vor einem Gerät, das in einer Schleife sendet: jede Nachricht
+// weckt alle Geräte des Teams)
+const chatSent = new Map();
+function chatThrottled(key, now = Date.now()) {
+  const recent = (chatSent.get(key) || []).filter(t => now - t < 60e3);
+  if (recent.length >= CHAT_PER_MINUTE) {
+    chatSent.set(key, recent);
+    return true;
+  }
+  recent.push(now);
+  chatSent.set(key, recent);
+  return false;
+}
+setInterval(() => {
+  const limit = Date.now() - 60e3;
+  for (const [key, list] of chatSent) if (!list.some(t => t > limit)) chatSent.delete(key);
+}, 600e3).unref();
+// Push für eine neue Nachricht: Nachricht des Disponenten -> alle Monteur-Geräte des Teams; Nachricht eines Monteurs -> die Geräte seiner
+// Kollegen (nicht das eigene). Gewöhnliche Benachrichtigung (nichts gesperrt, nichts zu bestätigen). Eigenes Thema „chat“: sie ersetzt keine
+// Nachricht des Disponenten oder Meldung zur Disposition beim Push-Dienst.
+async function pushChat(row, fromDid) {
+  try {
+    const text = clipString(row.text.replace(/\s+/g, ' ').trim(), 180),
+      payload =
+        row.side === 'd'
+          ? { t: 'chat', title: 'Chat: Disponent', body: text, at: row.at, team: row.team }
+          : { t: 'chat', title: `Chat: ${row.name || 'Kollege'}`, body: text, at: row.at, team: row.team };
+    await pushToDevices(
+      sql.teamPushDevs.all(row.team).filter(d => d.did !== fromDid),
+      payload,
+      { topic: 'chat', hours: CHAT_PUSH_HOURS },
+      row.side === 'd' ? `Chat-Nachricht an Team ${row.team}` : '',
+      row.team
+    );
+  } catch (e) {
+    console.error('Chat-Benachrichtigung fehlgeschlagen:', e.message);
+  }
+}
+
 // Ergebnis-Dokument prüfen und bereinigen (Whitelist)
 function cleanResultDoc(orderNo, doc) {
   if (!doc || typeof doc !== 'object') throw { code: 400, msg: 'Ungültiges Ergebnis' };
@@ -1821,6 +1899,17 @@ async function handleApi(req, res, url) {
         ? (full ? sql.marksSinceLiveTeam : sql.marksSinceTeam).all(from, team)
         : (full ? sql.marksSinceLive : sql.marksSince).all(from)
       ).map(r => ({ a: r.auftrag, v: r.v, at: r.at, sq: r.seq }));
+      // Chat: ein Monteur bekommt den Verlauf seines Teams, der Disponent den aller Teams. Vollständig (erster Abgleich) = die letzten Nachrichten
+      // der letzten CHAT_DAYS Tage; sonst alles mit größerer Änderungsnummer. Wären das über 2000, wird lieber vollständig geschickt (chatFull:
+      // das Gerät ersetzt dann seinen Verlauf, sonst fehlte ihm der Anfang der Lücke).
+      let chatRows = full ? [] : team ? sql.chatSinceTeam.all(from, team) : sql.chatSinceAll.all(from);
+      const chatFull = full || chatRows.length > 2000;
+      if (chatFull)
+        chatRows = team
+          ? sql.chatFullTeam.all(team, Date.now() - CHAT_DAYS * 864e5, CHAT_FULL_PER_TEAM)
+          : sql.chatFullAll.all(Date.now() - CHAT_DAYS * 864e5, CHAT_FULL_PER_TEAM);
+      out.chat = chatRows.map(chatRow);
+      if (chatFull) out.chatFull = true;
     }
     return sendJson(req, res, 200, out);
   }
@@ -2139,6 +2228,49 @@ async function handleApi(req, res, url) {
       dup: !added,
       row: { d: row.day, t: row.team, at: row.at, rec: row.rec, sq: row.seq }
     });
+  }
+  // Chat: eine Nachricht an den Verlauf eines Teams. Body: { team, text, cid, side }. side = 'd' (Disponent, braucht das PIN-Token) oder 'm'
+  // (Monteur, braucht die Anmeldung; er darf nur in den Verlauf eines Teams schreiben, das er sehen darf). Das Gerät vergibt die Kennung `cid`
+  // selbst: sendet es dieselbe Nachricht noch einmal (Antwort kam nicht an, Netz weg), wird sie nicht doppelt gespeichert. Antwort: die
+  // gespeicherte Nachricht (`msg`).
+  if (pathname === '/api/chat' && method === 'POST') {
+    const body = await readBody(req, 10e3),
+      side = body.side === 'd' ? 'd' : 'm',
+      team = clipString(body.team, 100).trim(),
+      text = clipString(body.text, CHAT_TEXT_MAX + 1)
+        .replace(/\r\n?/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    let sender;
+    if (side === 'd') {
+      if (!isDispo(req)) return sendJson(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
+      sender = { usr: '', name: 'Disponent', did: '', key: 'd:' + ip };
+    } else {
+      const user = userFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Bitte anmelden', login: 1 });
+      if (!teamAllowed(user, team)) return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt.' });
+      sender = { usr: user.sap, name: user.name, did: user.did, key: 'u:' + user.sap };
+    }
+    if (!team || !dispoTeamList().includes(team)) return sendJson(req, res, 400, { error: 'Unbekanntes Team' });
+    if (!text) return sendJson(req, res, 400, { error: 'Bitte einen Text eingeben' });
+    if (text.length > CHAT_TEXT_MAX) return sendJson(req, res, 400, { error: `Die Nachricht ist zu lang (höchstens ${CHAT_TEXT_MAX} Zeichen).` });
+    const cid = /^[A-Za-z0-9]{8,32}$/.test(String(body.cid ?? '')) ? String(body.cid) : crypto.randomBytes(8).toString('hex');
+    const dup = sql.chatByCid.get(cid);
+    if (dup) {
+      // dieselbe Nachricht noch einmal: nichts speichern und nichts melden – nur dem Absender bestätigen (einem anderen nicht verraten)
+      if (dup.team !== team || dup.side !== side || (dup.usr || '') !== sender.usr) return sendJson(req, res, 409, { error: 'Kennung schon vergeben' });
+      return sendJson(req, res, 200, { ok: true, dup: true, msg: chatRow(dup), sq: changeSeq });
+    }
+    if (chatThrottled(sender.key)) return sendJson(req, res, 429, { error: 'Zu viele Nachrichten in kurzer Zeit – bitte einen Moment warten.' });
+    let row;
+    transaction(() => {
+      changeSeq++;
+      const at = Date.now();
+      row = chatRow({ id: Number(sql.addChat.run(team, side, sender.usr || null, sender.name, text, at, cid, changeSeq).lastInsertRowid), team, side, usr: sender.usr, name: sender.name, text, at, cid });
+    });
+    announce(changeSeq, { team }, { k: 'c', row });
+    pushChat(row, sender.did); // (nicht abwarten: die Antwort soll nicht auf den Push-Dienst warten)
+    return sendJson(req, res, 200, { ok: true, msg: row, sq: changeSeq });
   }
   // ab hier nur Disponent
   if (!isDispo(req)) return sendJson(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
