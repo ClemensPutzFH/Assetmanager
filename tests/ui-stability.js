@@ -19,7 +19,7 @@
  * Ortung durch den Disponenten und Ausloggen von Geräten).
  *
  * NEUE BEDIENUNG? Eine Prüfung dafür unten ergänzen (siehe Abschnitt „Prüfungen“) und den Test ausführen.
- * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=dispomeldung (nur Upload und die Meldung „Auftrag disponiert“ an die Monteure), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=name (nur der Name der App), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
+ * Zum Eingrenzen eines sporadischen Fehlers: TEST_ONLY=auftragsarten (nur Upload, Disposition und Ansichten der Auftragsarten), TEST_ONLY=disposition (nur Upload und das Gantt-Diagramm), TEST_ONLY=poolliste (nur Upload und die Offen-Liste der Disposition), TEST_ONLY=detailfenster (nur Upload und das Details-Fenster zu einem Auftrag), TEST_ONLY=dispomeldung (nur Upload und die Meldung „Auftrag disponiert“ an die Monteure), TEST_ONLY=zoom (nur Upload und Zoom-Balken/Vollbild des Gantt-Diagramms; TEST_SHOTS=ordner speichert dazu Bildschirmfotos), TEST_ONLY=sicherheit (nur die Sicherheitsprüfungen des Servers: kaputte Anfragen, Header, Sperren, Zugriffsrechte), TEST_ONLY=name (nur der Name der App), TEST_ONLY=tabs (nur die Tab-Leiste des Disponenten), TEST_ONLY=geraete (nur die Prüfung „Ortung/Ausloggen“) und TEST_DEBUG=1 (schreibt dort die
  * Abgleich- und Anmelde-Anfragen mit Zeit mit, wenn die erneute Anmeldung fehlschlägt).
  * ================================================================================================= */
 const { spawn, execSync } = require('child_process'),
@@ -388,6 +388,11 @@ async function newPage(browser, base, viewport, errorsOut, { geolocation = true,
     }),
     page = await ctx.newPage();
   page.on('pageerror', e => errorsOut.push(e.message));
+  // Content-Security-Policy (siehe contentSecurityPolicy in server.js): blockiert sie etwas, was die App braucht, ist das ein Fehler
+  await page.exposeFunction('__cspViolation', text => errorsOut.push('CSP: ' + text));
+  await page.addInitScript(() =>
+    document.addEventListener('securitypolicyviolation', e => window.__cspViolation(`${e.violatedDirective} blockiert ${String(e.blockedURI).slice(0, 80)}`))
+  );
   // Ablehnung nachstellen: das Test-Chromium fragt nie, es würde endlos warten
   if (denyLocation) await page.addInitScript(() => { navigator.geolocation.getCurrentPosition = (ok, fail) => setTimeout(() => fail({ code: 1 }), 80); });
   await page.goto(base);
@@ -3423,6 +3428,144 @@ async function appNameChecks(browser, base, errors) {
   }
 }
 
+// ---------- Sicherheit (Server) ----------
+// Eigener Server (Kopie der Test-Datenbank): die Prüfungen legen Benutzer an, melden Fantasie-Geräte und lösen Sperren aus.
+async function securityChecks(browser, geocoder, errors) {
+  console.log('\n=== Sicherheit: kaputte Anfragen, Schutz-Header, Anmeldung, Zugriffsrechte ===');
+  const server = await startServer(geocoder.url, null, { DISPO_NOTE_S: '1000000' }),
+    base = 'http://127.0.0.1:' + server.port,
+    http = require('http'),
+    json = (method, url, body, headers = {}) => fetch(base + url, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined }),
+    // rohe Anfrage (so, wie sie Node nicht mehr „glättet“): Statuszeile der Antwort
+    raw = text =>
+      new Promise(resolve => {
+        const net = require('net'),
+          socket = net.connect(server.port, '127.0.0.1', () => socket.write(text));
+        let data = '';
+        socket.on('data', c => (data += c));
+        socket.on('close', () => resolve(data.split('\r\n')[0]));
+        socket.on('error', e => resolve('Fehler ' + e.code));
+        setTimeout(() => (socket.destroy(), resolve(data.split('\r\n')[0] || '(keine Antwort)')), 2000);
+      });
+  try {
+    // Kaputte Anfragen dürfen den Server nicht beenden (früher: „GET //[“ warf außerhalb von try und beendete den Prozess)
+    const badUrl = await raw('GET //[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'),
+      badPercent = await raw('GET /%E0%A4%A HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'),
+      badApi = await raw('GET /api/%E0%A4%A HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'),
+      alive = await json('GET', '/api/push/key');
+    report(/ 400 /.test(badUrl), 'Sicherheit: Adresse „//[“ wird mit 400 beantwortet', badUrl);
+    report(/ 400 /.test(badPercent), 'Sicherheit: ungültige %-Kodierung im Pfad wird mit 400 beantwortet', badPercent);
+    report(!/ 5\d\d /.test(badApi), 'Sicherheit: ungültige %-Kodierung unter /api/ führt nicht zu einem Serverfehler', badApi);
+    report(alive.ok, 'Sicherheit: der Server läuft nach kaputten Anfragen weiter', 'HTTP ' + alive.status);
+    report((await raw('GET /../server.js HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')).includes(' 404 '), 'Sicherheit: Dateien außerhalb von public/ werden nicht ausgeliefert');
+
+    // Schutz-Header an Seite und API; die Seite lädt unter der Policy ohne Verstöße (newPage meldet sie als Fehler) und baut sich auf
+    const page = await json('GET', '/'),
+      api = await json('GET', '/api/push/key'),
+      csp = page.headers.get('content-security-policy') || '',
+      scripts = (await page.text()).match(/<script\b(?![^>]*\bsrc=)[^>]*>/gi) || [],
+      hashes = csp.match(/'sha256-[A-Za-z0-9+/=]+'/g) || [];
+    report(page.headers.get('x-content-type-options') === 'nosniff' && api.headers.get('x-content-type-options') === 'nosniff', 'Sicherheit: X-Content-Type-Options: nosniff auf Seite und API');
+    report(page.headers.get('x-frame-options') === 'DENY' && /frame-ancestors 'none'/.test(csp), 'Sicherheit: die Seite lässt sich nicht in fremde Seiten einbetten', csp.slice(0, 60));
+    report(/default-src 'self'/.test(csp) && /object-src 'none'/.test(csp) && !/script-src[^;]*'unsafe-inline'/.test(csp), 'Sicherheit: CSP erlaubt keine fremden Quellen und keine beliebigen Inline-Skripte', csp.slice(0, 120));
+    report(scripts.length > 0 && hashes.length === scripts.length, 'Sicherheit: jedes Inline-Skript der Seite hat seinen Hash in der CSP', `${scripts.length} Skripte, ${hashes.length} Hashes`);
+    const view = await newPage(browser, base, { width: 390, height: 800 }, errors, { geolocation: false }),
+      shown = await view.evaluate(() => !!document.querySelector('#app h1'));
+    report(shown, 'Sicherheit: die Oberfläche baut sich unter der CSP auf (keine blockierten Skripte, Schriften, Bilder)');
+    await view.context().close();
+    // Eingeschleustes Skript (Inline) wird blockiert: der Browser meldet den Verstoß
+    const injected = await (async () => {
+      const ctx = await browser.newContext(),
+        p = await ctx.newPage();
+      await p.goto(base);
+      const r = await p.evaluate(
+        () =>
+          new Promise(resolve => {
+            document.addEventListener('securitypolicyviolation', () => resolve('blockiert'), { once: true });
+            window.__ran = false;
+            const sc = document.createElement('script');
+            sc.textContent = 'window.__ran = true';
+            document.head.append(sc);
+            setTimeout(() => resolve(window.__ran ? 'ausgeführt' : 'still'), 500);
+          })
+      );
+      await ctx.close();
+      return r;
+    })();
+    report(injected === 'blockiert', 'Sicherheit: ein eingeschleustes Inline-Skript wird vom Browser blockiert', injected);
+
+    // Anmeldung: Fehlversuche zählen sofort – auch bei vielen gleichzeitigen Versuchen (scrypt läuft im Hintergrund)
+    const tries = await Promise.all(Array.from({ length: 30 }, () => json('POST', '/api/user/login', { user: 'ZZ99ZZ', password: 'falsch' }).then(r => r.status))),
+      wrong = tries.filter(c => c === 403).length,
+      locked = tries.filter(c => c === 429).length;
+    report(wrong === 5 && locked === 25, 'Sicherheit: von 30 gleichzeitigen Fehlversuchen werden nur 5 geprüft, der Rest ist gesperrt (429)', `403: ${wrong}, 429: ${locked}`);
+    // (derselbe Benutzer aus derselben IP ist gesperrt – auch mit richtigem Passwort; ein anderer Benutzer nicht)
+    const other = await json('POST', '/api/user/login', { user: MONTEUR.user, password: MONTEUR.password });
+    report(other.status === 200 && !!(await other.json()).token, 'Sicherheit: die richtige Anmeldung eines anderen Benutzers geht weiter', 'HTTP ' + other.status);
+    const wrongPin = await Promise.all(Array.from({ length: 8 }, () => json('POST', '/api/login', { pin: '0000' }).then(r => r.status)));
+    report(wrongPin.filter(c => c === 403).length === 8 && wrongPin.length === 8 && (await json('POST', '/api/login', { pin: DISPO_PIN })).status === 403, 'Sicherheit: nach Fehlversuchen ist auch die richtige Disponenten-PIN gesperrt');
+
+    // ab hier ein zweiter Server: die PIN-Sperre oben gilt für diese IP
+    const second = await startServer(geocoder.url, null, { DISPO_NOTE_S: '1000000' }),
+      b2 = 'http://127.0.0.1:' + second.port,
+      j2 = (method, url, body, headers = {}) => fetch(b2 + url, { method, headers: { 'Content-Type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined });
+    try {
+      const H = await dispoHeaders(b2),
+        seqOf = async () => (await apiJson(b2, 'GET', '/api/sync?since=0&team=', null, H)).seq,
+        did = 'ab'.repeat(16);
+      // Geräte als Disponent melden: nur mit Token (sonst könnte jeder Geräte samt Push-Abo und Team anlegen)
+      const noAuth = await j2('POST', '/api/push/sub', { did, role: 'dispo', team: 'FW-IH01' }),
+        withAuth = await j2('POST', '/api/push/sub', { did, role: 'dispo' }, H);
+      report(noAuth.status === 401 && withAuth.status === 200, 'Sicherheit: ein Gerät als Disponent melden geht nur mit Token', `ohne ${noAuth.status}, mit ${withAuth.status}`);
+      const devices = (await apiJson(b2, 'GET', '/api/devices', null, H)).devices;
+      report(devices.some(d => d.did === did) && !devices.some(d => d.did === 'cd'.repeat(16)), 'Sicherheit: ohne Token entsteht kein Gerät');
+      // Bestätigungen ohne bekanntes Gerät/Nachricht ändern nichts (keine neue Änderungsnummer, kein Rundruf an alle)
+      const before = await seqOf();
+      for (const body of [{ id: 424242, did: 'cd'.repeat(16) }, { id: 1, did: 'cd'.repeat(16) }, { id: 424242, did }]) await j2('POST', '/api/msg/ack', body);
+      report((await seqOf()) === before, 'Sicherheit: eine Bestätigung für unbekanntes Gerät oder unbekannte Nachricht ändert nichts', `${before} → ${await seqOf()}`);
+
+      // Monteur mit festem Team: darf nur Ergebnisse für Aufträge SEINES Teams speichern (das „team“ im Body kommt vom Gerät)
+      const orders = (await apiJson(b2, 'GET', '/api/sync?since=0&team=', null, H)).orders.filter(o => o.kind === 'war'),
+        mine = orders[0],
+        foreign = orders.find(o => o.team !== mine.team);
+      await apiJson(b2, 'POST', '/api/users', { sap: 'SECLOCK', last: 'Sicherheit', first: 'Test', team: mine.team, lock: true }, H);
+      const login = await apiJson(b2, 'POST', '/api/user/login', { user: 'SECLOCK', password: MONTEUR.password }),
+        U = { 'X-User-Token': login.token },
+        put = (order, team) => j2('PUT', '/api/ergebnis/' + order.auftrag, { n: 0, s: '', team, nok: [] }, U);
+      const alien = await put(foreign, mine.team),
+        own = await put(mine, mine.team),
+        wrongTeam = await put(mine, foreign.team);
+      report(alien.status === 403, 'Sicherheit: fester Team-Benutzer kann kein Ergebnis für einen Auftrag eines anderen Teams speichern (auch nicht mit eigenem Team im Body)', `HTTP ${alien.status}`);
+      report(own.status === 200, 'Sicherheit: fester Team-Benutzer kann Ergebnisse für Aufträge seines Teams weiter speichern', `HTTP ${own.status}`);
+      report(wrongTeam.status === 403, 'Sicherheit: fester Team-Benutzer kann nicht im Namen eines anderen Teams speichern', `HTTP ${wrongTeam.status}`);
+
+      // Live-Verbindungen ohne Anmeldung sind begrenzt (jede belegt Speicher und einen Dateizugriff)
+      const open = [];
+      let refused = 0;
+      await new Promise(resolve => {
+        let pending = 205;
+        for (let i = 0; i < 205; i++) {
+          const req = http.get(b2 + '/api/events', res => {
+            if (res.statusCode === 503) refused++;
+            else open.push(res);
+            if (--pending === 0) resolve();
+          });
+          req.on('error', () => --pending === 0 && resolve());
+        }
+      });
+      report(open.length === 200 && refused === 5, 'Sicherheit: höchstens 200 Live-Verbindungen ohne Anmeldung (die übrigen bekommen 503)', `offen ${open.length}, abgelehnt ${refused}`);
+      for (const res of open) res.destroy();
+      const signed = await fetch(b2 + '/api/events', { headers: H });
+      report(signed.status === 200, 'Sicherheit: angemeldete Geräte bekommen ihre Live-Verbindung trotz der Grenze für anonyme', 'HTTP ' + signed.status);
+      await signed.body.cancel();
+    } finally {
+      second.stop();
+    }
+  } finally {
+    server.stop();
+  }
+}
+
 async function kindChecks(browser, base, viewport, errors) {
   const label = `${viewport.width}px`,
     page = await newPage(browser, base, viewport, errors);
@@ -3893,6 +4036,11 @@ function summary(t0) {
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
       return summary(t0);
     }
+    if (process.env.TEST_ONLY === 'sicherheit') {
+      await securityChecks(browser, geocoder, errors);
+      report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
+      return summary(t0);
+    }
     if (process.env.TEST_ONLY === 'tabs') {
       await dispoTabBarChecks(browser, base, errors);
       report(!errors.length, 'Keine JavaScript-Fehler auf den Seiten', errors.slice(0, 3).join(' / '));
@@ -4001,6 +4149,7 @@ function summary(t0) {
     await dispoTabBarChecks(browser, base, errors);
     await overflowChecks(browser, base, errors);
     await appNameChecks(browser, base, errors);
+    await securityChecks(browser, geocoder, errors);
     // Desktop (breit): dieselben Grundabläufe
     await monteurChecks(browser, base, { width: 1280, height: 800 }, errors);
     await kindChecksWide(browser, base, { width: 1280, height: 800 }, errors);

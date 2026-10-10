@@ -76,6 +76,10 @@ const UPLOAD_PIN = String(process.env.UPLOAD_PIN || '1025'); // zusätzlicher PI
 // Startpasswort aller Monteur-Benutzer (beim Anlegen und beim „Passwort zurücksetzen“) – per Umgebungsvariable ändern!
 const MONTEUR_PASSWORD = String(process.env.MONTEUR_PASSWORD || 'Fernwärme1');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+// Die Standardwerte stehen öffentlich im Quelltext: wer sie nicht ändert, hat praktisch keinen Schutz
+for (const [name, standard] of [['DISPO_PIN', '2510'], ['UPLOAD_PIN', '1025'], ['MONTEUR_PASSWORD', 'Fernwärme1']])
+  if (String(process.env[name] || standard) === standard)
+    console.warn(`Warnung: ${name} hat noch den Standardwert – bitte per Umgebungsvariable ändern (siehe README, Abschnitt Sicherheit).`);
 // Zeitzone, nach der „heute“ für die Gaswarngerät-Bestätigung gilt (um Mitternacht beginnt ein neuer Tag)
 const TIMEZONE = process.env.TIMEZONE || 'Europe/Vienna';
 const dayFormat = new Intl.DateTimeFormat('sv-SE', {
@@ -194,6 +198,8 @@ for (const [column, expr] of [
   if (!db.prepare('PRAGMA table_xinfo(orders)').all().some(c => c.name === column))
     db.exec(`ALTER TABLE orders ADD COLUMN ${column} TEXT GENERATED ALWAYS AS (${expr}) VIRTUAL`);
 db.exec('CREATE INDEX IF NOT EXISTS orders_mteam ON orders(mteam, del); CREATE INDEX IF NOT EXISTS orders_eteam ON orders(eteam, del)');
+// Meldungen werden nach Auftrag gesucht (touchMeldungOfOrders, meldungFullTeam), Geräte nach Benutzer (Benutzerliste, Kollegen)
+db.exec('CREATE INDEX IF NOT EXISTS meldung_auftrag ON meldung(auftrag)');
 // Ältere Datenbank (Aufträge aus der Zeit vor den getrennten Uploads): die vorhandenen Aufträge sind die Rohdaten der Aufträge-Excel,
 // sonst würde der erste Upload einer anderen Datei sie als „nicht mehr vorhanden“ löschen. (Reparatur-Vorgänge gehen nicht: neu hochladen.)
 if (!db.prepare('SELECT 1 FROM src_auftrag LIMIT 1').get())
@@ -201,6 +207,7 @@ if (!db.prepare('SELECT 1 FROM src_auftrag LIMIT 1').get())
     SELECT nr, team, COALESCE(tp,''), COALESCE(art,''), COALESCE(lart,''), COALESCE(plz,''), COALESCE(str,''), COALESCE(kurz,''), COALESCE(start,''), COALESCE(ende,''), COALESCE(mel,''), kind
     FROM orders WHERE del=0 AND COALESCE(vg,'')='' AND nr<>''`);
 addColumn('dev', 'usr', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS dev_usr ON dev(usr)');
 addColumn('gas', 'usr', 'TEXT');
 addColumn('mack', 'usr', 'TEXT');
 addColumn('ergebnis', 'usr', 'TEXT');
@@ -300,7 +307,10 @@ const sql = {
   dispoTeams: db.prepare(
     "SELECT eteam t FROM orders WHERE del=0 AND eteam IS NOT NULL UNION SELECT team FROM usr WHERE active=1 AND COALESCE(team,'')<>''"
   ),
-  countEntries: db.prepare('SELECT COUNT(*) n FROM ergebnis WHERE auftrag LIKE ?'),
+  // Einträge „Auftrag#…“: Bereich von „Auftrag#“ bis „Auftrag$“ ('$' folgt in der Zeichentabelle direkt auf '#'), nutzt den Primärschlüssel
+  countEntries: db.prepare('SELECT COUNT(*) n FROM ergebnis WHERE auftrag >= ?1 AND auftrag < ?2'),
+  // Team, dessen Monteure den Auftrag sehen (für die Prüfung beim Speichern eines Ergebnisses)
+  getOrderTeam: db.prepare('SELECT mteam FROM orders WHERE auftrag=?'),
   ordersOfIds: db.prepare('SELECT auftrag, mteam team FROM orders WHERE auftrag IN (SELECT value FROM json_each(?))'),
   pruefOne: db.prepare('SELECT items FROM pruef WHERE auftrag=?'),
   maxSeq: db.prepare(
@@ -578,15 +588,22 @@ function backup() {
     console.error('Sicherung fehlgeschlagen:', e.message);
     return;
   }
-  const existing = fs
-    .readdirSync(path.join(DATA_DIR, 'backups'))
-    .filter(x => x.endsWith('.db'))
-    .sort();
-  for (const x of existing.slice(0, Math.max(0, existing.length - 30)))
-    fs.unlinkSync(path.join(DATA_DIR, 'backups', x));
+  try {
+    const existing = fs
+      .readdirSync(path.join(DATA_DIR, 'backups'))
+      .filter(x => x.endsWith('.db'))
+      .sort();
+    for (const x of existing.slice(0, Math.max(0, existing.length - 30)))
+      fs.unlinkSync(path.join(DATA_DIR, 'backups', x));
+  } catch (e) {
+    console.error('Alte Sicherungen konnten nicht entfernt werden:', e.message); // darf den Server (Timer) nicht beenden
+  }
 }
 backup();
 setInterval(backup, 3600e3).unref();
+// Eine übersehene Ausnahme in einer async-Funktion (Node 22 beendet dann den Prozess) soll nicht alle Geräte vom Server trennen:
+// protokollieren und weiterlaufen. (Die Datenbank bleibt heil: jede Änderung läuft in einer Transaktion.)
+process.on('unhandledRejection', e => console.error('Unbehandelter Fehler:', e));
 for (const sig of ['SIGINT', 'SIGTERM'])
   process.on(sig, () => {
     try {
@@ -605,6 +622,8 @@ for (const sig of ['SIGINT', 'SIGTERM'])
 // Clients: { res, kind: 'dispo' (Disponent mit Token, sieht alles) | 'team' (Monteur mit Token, nur sein Team) | 'anon' (ohne Anmeldung
 // bzw. ältere App: bekommt bei jeder Änderung { s, n: 1 }), team }
 const sseClients = new Set();
+const MAX_LIVE_CLIENTS = 5000, // Live-Verbindungen insgesamt
+  MAX_LIVE_ANON = 200; // davon ohne Anmeldung (die aktuelle App verbindet sich nur angemeldet)
 /**
  * scope: 'all' (alle Geräte betroffen) | 'dispo' (nur Disponenten) | { team } (dieses Team und Disponenten) |
  *        { teams: Set } (mehrere Teams und Disponenten)
@@ -781,11 +800,17 @@ const validSap = v => /^[A-Z0-9]{2,20}$/.test(v);
 // Passwort-Hash „Salt:Hash“ (scrypt); Unicode wird normalisiert, damit „ä“ auf jedem Gerät gleich ankommt
 const hashPassword = (password, salt = crypto.randomBytes(16)) =>
   salt.toString('hex') + ':' + crypto.scryptSync(String(password).normalize('NFC'), salt, 32).toString('hex');
-const passwordMatches = (password, stored) => {
+// Prüfung im Hintergrund-Thread (crypto.scrypt): der Server bleibt währenddessen für alle anderen Geräte ansprechbar
+const passwordMatches = async (password, stored) => {
   const [salt, hash] = String(stored || '').split(':');
   if (!salt || !hash) return false;
-  return safeEqual(hashPassword(password, Buffer.from(salt, 'hex')), stored);
+  const key = await new Promise((ok, no) =>
+    crypto.scrypt(String(password).normalize('NFC'), Buffer.from(salt, 'hex'), 32, (e, k) => (e ? no(e) : ok(k)))
+  );
+  return safeEqual(key.toString('hex'), hash);
 };
+// Hash eines Passworts, das niemand hat: gleiche Rechenzeit, auch wenn der Benutzer gar nicht existiert
+const UNKNOWN_USER_HASH = hashPassword('x');
 // Anzeigename: „Vorname Nachname“
 const fullName = u => (String(u.first || '') + ' ' + String(u.last || '')).trim();
 // Protokolleintrag (wer, auf welchem Gerät, wann, was); Disponent-Aktionen ohne Benutzer
@@ -822,8 +847,8 @@ function userFromRequest(req) {
 const teamAllowed = (user, team) => !user.lock || team === user.team;
 const meOf = user => ({ sap: user.sap, name: user.name, team: user.team, lock: user.lock });
 // Anmeldung eines Monteurs: nach 5 Fehlversuchen je Benutzer und IP sowie 40 je IP (gemeinsames WLAN) 10 Minuten gesperrt
-function userLogin(ip, sapInput, password) {
-  const keys = ['ul:' + sapInput + ':' + ip, 'ui:' + ip],
+async function userLogin(ip, sapInput, password) {
+  const keys = ['ul:' + sapInput.slice(0, 20) + ':' + ip, 'ui:' + ip],
     limits = [5, 40],
     now = Date.now();
   const failures = keys.map(k => {
@@ -836,16 +861,19 @@ function userLogin(ip, sapInput, password) {
   });
   if (failures.some((f, i) => f.n >= limits[i])) return { locked: true };
   const row = validSap(sapInput) ? sql.getUsr.get(sapInput) : null;
-  // gleiche Rechenzeit, ob der Benutzer existiert oder nicht (kein Hinweis, welche Namen es gibt)
-  const ok = passwordMatches(password, row ? row.pw : hashPassword('x')) && !!row && !!row.active;
-  if (ok) {
-    loginFailures.delete(keys[0]);
-    return { row };
-  }
+  // Der Versuch zählt SOFORT (vor dem Warten auf scrypt): sonst kämen beliebig viele gleichzeitige Versuche an der Sperre vorbei.
+  // Bei Erfolg wird er zurückgenommen.
   failures.forEach((f, i) => {
     f.n++;
     loginFailures.set(keys[i], f);
   });
+  // gleiche Rechenzeit, ob der Benutzer existiert oder nicht (kein Hinweis, welche Namen es gibt)
+  const ok = (await passwordMatches(password, row ? row.pw : UNKNOWN_USER_HASH)) && !!row && !!row.active;
+  if (ok) {
+    loginFailures.delete(keys[0]);
+    failures[1].n = Math.max(0, failures[1].n - 1);
+    return { row };
+  }
   return { bad: true };
 }
 
@@ -963,6 +991,7 @@ async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESS
       method: 'POST',
       body: pushEncrypt(sub.keys, JSON.stringify(payload)),
       signal: AbortSignal.timeout(15000),
+      redirect: 'manual', // ein Push-Dienst antwortet direkt; eine Weiterleitung würde die Prüfung der Adresse (PUSH_HOSTS) umgehen
       headers: {
         'Content-Encoding': 'aes128gcm',
         'Content-Type': 'application/octet-stream',
@@ -1622,12 +1651,6 @@ async function handleApi(req, res, url) {
     params = url.searchParams;
   // Live-Verbindung (Server-Sent Events): der Server meldet jede neue Änderungsnummer
   if (pathname === '/api/events') {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-store',
-      'X-Accel-Buffering': 'no'
-    });
-    res.write('retry: 3000\n\n');
     // Wer ist das? Disponent (PIN-Token) sieht alle Ankündigungen mit Daten, ein angemeldeter Monteur nur die seines Teams
     // (bei festem Team immer des eigenen); ohne Anmeldung (ältere App) gibt es nur den Hinweis „bitte abgleichen“
     const client = { res, kind: 'anon', team: '' };
@@ -1640,6 +1663,17 @@ async function handleApi(req, res, url) {
         if (!teamAllowed(user, client.team)) client.team = user.team || '';
       }
     }
+    // Obergrenzen: jede Verbindung belegt Speicher und einen Dateizugriff, ohne Anmeldung kann sie jeder aufbauen (Überlastung)
+    let anonymous = 0;
+    if (client.kind === 'anon') for (const c of sseClients) if (c.kind === 'anon') anonymous++;
+    if (sseClients.size >= MAX_LIVE_CLIENTS || (client.kind === 'anon' && anonymous >= MAX_LIVE_ANON))
+      return sendJson(req, res, 503, { error: 'Zu viele Live-Verbindungen' });
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-store',
+      'X-Accel-Buffering': 'no'
+    });
+    res.write('retry: 3000\n\n');
     sseClients.add(client);
     req.on('close', () => sseClients.delete(client));
     return;
@@ -1649,7 +1683,7 @@ async function handleApi(req, res, url) {
     const body = await readBody(req, 1e4),
       sap = normalizeSap(body.user),
       did = validDeviceId(body.did),
-      result = userLogin(ip, sap, String(body.password ?? '').slice(0, 200));
+      result = await userLogin(ip, sap, String(body.password ?? '').slice(0, 200));
     if (result.locked)
       return sendJson(req, res, 429, { error: 'Zu viele Fehlversuche – bitte 10 Minuten warten.' });
     if (!result.row) {
@@ -1836,11 +1870,9 @@ async function handleApi(req, res, url) {
     if (team) {
       const from = since > changeSeq ? 0 : since,
         map = {};
-      for (const r of db
-        .prepare(
-          'SELECT p.auftrag,p.items FROM pruef p JOIN orders o ON o.auftrag=p.auftrag WHERE o.mteam=? AND o.del=0 AND p.seq>?'
-        )
-        .all(team, from))
+      for (const r of prep(
+        'SELECT p.auftrag,p.items FROM pruef p JOIN orders o ON o.auftrag=p.auftrag WHERE o.mteam=? AND o.del=0 AND p.seq>?'
+      ).all(team, from))
         map[r.auftrag] = JSON.parse(r.items);
       return sendJson(req, res, 200, { map, seq: changeSeq });
     }
@@ -1869,11 +1901,16 @@ async function handleApi(req, res, url) {
         const o = sql.getOrderKind.get(orderKey);
         if (!o || !['dau', 'rep', 'ent'].includes(o.kind)) return { bad: 'Zeiteinträge gibt es nur bei Daueraufträgen, Reparaturen und Entstörungen.' };
       }
+      // Festes Team: das `team` im Body stammt vom Gerät – maßgeblich ist das Team, dessen Monteure den Auftrag wirklich sehen
+      if (user.lock) {
+        const o = sql.getOrderTeam.get(orderKey);
+        if (!o || o.mteam !== user.team) return { forbidden: true };
+      }
       const cur = sql.getErg.get(match[1]);
       // Vom Disponenten abgehakt: der Monteur kann nichts mehr ändern (erst wieder, wenn der Haken zurückgenommen wird)
       const mark = sql.getMark.get(orderKey);
       if (mark && mark.v) return { locked: mark, cur: cur || null };
-      if (isEntry && !cur && sql.countEntries.get(orderKey + '#%').n >= MAX_ENTRIES)
+      if (isEntry && !cur && sql.countEntries.get(orderKey + '#', orderKey + '$').n >= MAX_ENTRIES)
         return { bad: `Zu diesem Auftrag gibt es schon ${MAX_ENTRIES} Einträge.` };
       if (base !== null && (cur ? cur.seq : 0) !== base) return { cur: cur || null };
       // Zeitrückmeldung (tu = SAP-User, der sie gemacht hat): bleibt die Zeit unverändert, bleibt auch der bisherige Benutzer
@@ -1916,6 +1953,8 @@ async function handleApi(req, res, url) {
       return { sq: changeSeq };
     });
     if (r.bad) return sendJson(req, res, 400, { error: r.bad });
+    if (r.forbidden)
+      return sendJson(req, res, 403, { error: 'Dein Team ist festgelegt – dieser Auftrag gehört zu einem anderen Team.' });
     if (r.locked)
       return sendJson(req, res, 423, {
         error: 'Der Disponent hat diesen Auftrag abgehakt – er kann nicht mehr bearbeitet werden.',
@@ -1942,6 +1981,9 @@ async function handleApi(req, res, url) {
     // Rolle des Geräts: 'monteur' | 'dispo' | null (abgemeldet); ältere Apps melden nur das Team -> Monteur
     const role = body.role === 'dispo' || body.role === 'monteur' ? body.role : team ? 'monteur' : null;
     if (!did) return sendJson(req, res, 400, { error: 'Ungültige Geräte-ID' });
+    // Ein Gerät als Disponent zu melden, geht nur mit gültigem Token: sonst könnte jeder beliebige Geräte (samt Push-Abo und Team) anlegen –
+    // und bekäme damit die Nachrichten des Disponenten an dieses Team
+    if (role === 'dispo' && !isDispo(req)) return sendJson(req, res, 401, { error: 'Nicht angemeldet (PIN)' });
     // Monteur-Geräte gehören zu einem angemeldeten Benutzer (dev.usr); abgemeldete und Disponenten-Geräte zu keinem
     let userSap = null;
     if (role === 'monteur') {
@@ -2040,12 +2082,15 @@ async function handleApi(req, res, url) {
       did = clipString(body.did, 64);
     if (!id || !/^[a-f0-9]{32}$/.test(did)) return sendJson(req, res, 400, { error: 'Ungültig' });
     const owner = sql.getDev.get(did);
-    if (sql.ack.run(id, did, Date.now(), (owner && owner.usr) || null).changes) {
+    // ohne Anmeldung aufrufbar (Service Worker): nur für ein bekanntes Gerät und eine vorhandene Nachricht, sonst könnte jeder die
+    // Datenbank mit Fantasie-Bestätigungen füllen und alle Geräte zum Abgleichen bringen
+    if (!owner || !sql.msgState.get(did, id)) return sendJson(req, res, 200, { ok: true });
+    if (sql.ack.run(id, did, Date.now(), owner.usr || null).changes) {
       transaction(() => {
         changeSeq++;
       });
-      logAct('ack', owner && owner.usr, did, owner && owner.team, id);
-      announce(changeSeq, { team: owner && owner.team });
+      logAct('ack', owner.usr, did, owner.team, id);
+      announce(changeSeq, { team: owner.team });
     }
     return sendJson(req, res, 200, { ok: true });
   }
@@ -2292,9 +2337,9 @@ async function handleApi(req, res, url) {
     const ids = (await readBody(req)).ids,
       map = {};
     if (Array.isArray(ids))
-      for (const r of db
-        .prepare('SELECT auftrag,items FROM pruef WHERE auftrag IN (SELECT value FROM json_each(?))')
-        .all(JSON.stringify(ids.map(String))))
+      for (const r of prep('SELECT auftrag,items FROM pruef WHERE auftrag IN (SELECT value FROM json_each(?))').all(
+        JSON.stringify(ids.map(String))
+      ))
         map[r.auftrag] = JSON.parse(r.items);
     return sendJson(req, res, 200, { map });
   }
@@ -2633,16 +2678,53 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8',
   '.svg': 'image/svg+xml'
 };
-// Dateien im Speicher: { Zeitstempel, Inhalt, gzip, ETag }
+// Dateien im Speicher: { Zeitstempel, Inhalt, gzip, ETag, csp }
 const staticCache = new Map();
+/**
+ * Content-Security-Policy der Oberfläche: nur eigene Dateien, Skripte nur mit Hash (die zwei Skripte in index.html werden hier aus dem
+ * ausgelieferten Text berechnet – ein eingeschleuster Text könnte also nichts ausführen), keine Einbettung in fremde Seiten, keine Plugins.
+ * Stile dürfen inline stehen (die Oberfläche setzt sie an Elementen).
+ */
+function contentSecurityPolicy(html) {
+  const hashes = [];
+  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi))
+    if (!/\bsrc\s*=/i.test(m[1])) hashes.push(`'sha256-${crypto.createHash('sha256').update(m[2], 'utf8').digest('base64')}'`);
+  return [
+    "default-src 'self'",
+    `script-src 'self' ${hashes.join(' ')}`.trim(),
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; ');
+}
+// Schutz-Header für jede Antwort (Seite, Dateien, API)
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Cross-Origin-Resource-Policy': 'same-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), payment=(), usb=(), geolocation=(self)' // Standort braucht die Entfernungs-Sortierung
+};
 /**
  * Liefert eine Datei aus public/ (nur dort – kein Ausbrechen per „..“). Inhalte liegen im Speicher, mit gzip und ETag
  * (304 bei unverändert). In index.html wird __APPVER__ durch die aktuelle Version ersetzt.
  */
 function serveStatic(req, res, url) {
-  const file = path.normalize(
-    path.join(PUBLIC_DIR, decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname))
-  );
+  let relative;
+  try {
+    relative = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
+  } catch {
+    res.writeHead(400); // z. B. „%E0%A4%A“: kein gültiger Pfad
+    return res.end('Ungültige Adresse');
+  }
+  const file = path.normalize(path.join(PUBLIC_DIR, relative));
   let fileStat;
   try {
     fileStat = fs.statSync(file);
@@ -2667,10 +2749,12 @@ function serveStatic(req, res, url) {
       buf,
       type: MIME[ext] || 'application/octet-stream',
       etag: '"' + crypto.createHash('sha1').update(buf).digest('hex').slice(0, 16) + '"',
-      gz: ext === '.png' || ext === '.woff2' ? null : zlib.gzipSync(buf) // schon komprimiert
+      gz: ext === '.png' || ext === '.woff2' ? null : zlib.gzipSync(buf), // schon komprimiert
+      csp: isHtml ? contentSecurityPolicy(buf.toString('utf8')) : null
     };
     staticCache.set(file, entry);
   }
+  if (entry.csp) res.setHeader('Content-Security-Policy', entry.csp);
   if (req.headers['if-none-match'] === entry.etag) {
     res.writeHead(304, { ETag: entry.etag });
     return res.end();
@@ -2679,7 +2763,8 @@ function serveStatic(req, res, url) {
   res.writeHead(200, {
     'Content-Type': entry.type,
     ETag: entry.etag,
-    'Cache-Control': 'no-cache',
+    // Schriften und die Excel-Bibliothek ändern sich praktisch nie: einen Tag ohne Nachfrage; alles andere bei jedem Aufruf prüfen (ETag)
+    'Cache-Control': /^\/(fonts|vendor)\//.test(url.pathname) ? 'public, max-age=86400' : 'no-cache',
     Vary: 'Accept-Encoding',
     ...(useGzip ? { 'Content-Encoding': 'gzip' } : {})
   });
@@ -2688,7 +2773,17 @@ function serveStatic(req, res, url) {
 
 // Einstieg jeder Anfrage: /api/… -> handleApi, sonst Datei; Fehler { code, msg } werden zu JSON-Antworten
 const requestHandler = async (req, res) => {
-  const url = new URL(req.url, 'http://x');
+  // Eine kaputte Adresse (z. B. „//[“) darf nie den Server beenden: new URL wirft, und eine Ausnahme außerhalb von try
+  // wäre in dieser async-Funktion eine unbehandelte Ablehnung (Node beendet dann den Prozess)
+  let url;
+  try {
+    url = new URL(req.url, 'http://x');
+  } catch {
+    res.writeHead(400, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8', Connection: 'close' });
+    return res.end('Ungültige Anfrage');
+  }
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
+  if (TLS) res.setHeader('Strict-Transport-Security', 'max-age=15552000'); // 180 Tage: Browser nutzen dann nur noch https://
   try {
     url.pathname.startsWith('/api/') ? await handleApi(req, res, url) : serveStatic(req, res, url);
   } catch (e) {
