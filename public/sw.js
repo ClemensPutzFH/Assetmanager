@@ -95,7 +95,8 @@ const showDispo = d =>
     timestamp: d.at || Date.now(),
     data: { t: 'dispo' }
   });
-// Chat-Nachricht (Push-Daten { t: 'chat', title, body, at, team }): gewöhnliche Benachrichtigung ohne Bestätigung. Tag „chat“: eine neuere ersetzt die
+// Chat-Nachricht (Push-Daten { t: 'chat', title, body, at, team } – team = Raum: Teamname oder * für den Gruppenchat): gewöhnliche Benachrichtigung
+// ohne Bestätigung (auch Disponenten bekommen sie). Tag „chat“: eine neuere ersetzt die
 // ältere, meldet sich aber wieder mit Ton/Vibration. (Auch bei geöffneter App wird sie gezeigt: iPhones verlangen zu jedem Push eine Benachrichtigung.)
 const showChat = d =>
   self.registration.showNotification(d.title || 'Chat', {
@@ -107,7 +108,7 @@ const showChat = d =>
     icon: '/icon-192.png',
     badge: '/icon-192.png',
     timestamp: d.at || Date.now(),
-    data: { t: 'chat' }
+    data: { t: 'chat', team: d.team || '' }
   });
 // sagt allen offenen App-Fenstern, dass es Neues gibt (die App gleicht dann sofort ab)
 const notifyApp = () =>
@@ -158,8 +159,8 @@ self.addEventListener('notificationclick', e => {
       .matchAll({ type: 'window', includeUncontrolled: true })
       .then(ws =>
         ws.length
-          ? ws[0].focus().then(w => (w || ws[0]).postMessage({ t: chat ? 'chat' : 'msg' }))
-          : self.clients.openWindow(chat ? '/?chat=1' : '/')
+          ? ws[0].focus().then(w => (w || ws[0]).postMessage({ t: chat ? 'chat' : 'msg', team: d.team || '' }))
+          : self.clients.openWindow(chat ? '/?chat=1&team=' + encodeURIComponent(d.team || '') : '/')
       )
   );
 });

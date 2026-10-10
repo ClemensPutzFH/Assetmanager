@@ -585,14 +585,65 @@
         gap: 12px;
         min-height: 0;
       }
-      .clist {
+      .cside {
         flex: 0 0 18rem;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
+      }
+      .clist {
+        flex: 1 1 0;
         overflow-y: auto;
         display: flex;
         flex-direction: column;
         gap: 6px;
         min-height: 0;
         padding: 1px;
+      }
+      /* Einstellungen über der Teamliste (Disponent): Name im Chat, Benachrichtigungen – feste Höhe, ändert sich nur, wenn man selbst etwas einstellt */
+      .cset {
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 12px;
+        background: var(--card);
+        border: 1px solid var(--bd);
+        border-radius: var(--rc);
+        box-shadow: var(--sh1);
+      }
+      .cname {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .cname input {
+        font: inherit;
+        color: var(--tx);
+        background: var(--bg);
+        border: 1px solid var(--bd);
+        border-radius: var(--r);
+        padding: 7px 12px;
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+      .cpush {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 2.5rem;
+      }
+      .cpush .mu {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 0.8125rem;
+      }
+      .cpush button {
+        flex: 0 0 auto;
+        padding: 6px 12px;
+        font-size: 0.8125rem;
       }
       .crow {
         display: grid;
@@ -852,10 +903,10 @@
       }
       /* Handy und schmale Fenster: entweder die Teamliste oder der Verlauf des gewählten Teams */
       @media (max-width: 51.99em) {
-        .cwrap .clist {
+        .cwrap .cside {
           flex: 1 1 auto;
         }
-        .cwrap.t .clist,
+        .cwrap.t .cside,
         .cwrap:not(.t) .cpane {
           display: none;
         }
@@ -8341,6 +8392,9 @@
               : session.role === 'dispo' && dispoUnlocked
                 ? 'dispo'
                 : null;
+        // PIN-Abfrage des Disponenten (nach dem Neuladen oder Öffnen aus einer Benachrichtigung): die Anmeldung des Geräts bleibt, wie sie ist – sonst
+        // wäre sein Push-Abo gelöscht, und es kämen keine Benachrichtigungen mehr an, bis er die PIN eingegeben hat. Erst „← Start“ meldet ihn ab.
+        if (session.role === 'dispo' && !dispoUnlocked) return;
         if (!team && !role && !registeredTeam && !registeredRole) return;
         let sub = null,
           // Das Abo ließ sich gerade nicht prüfen (Fehler, Netz weg, Server startet neu): dem Server NICHT „kein Abo“ melden – er würde ein
@@ -8350,7 +8404,7 @@
           oldDropped = false,
           // Fehler dieser Runde; ersetzt erst am Ende pushError (ein Hinweis, der schon steht, verschwindet nicht für die Dauer des nächsten Versuchs)
           error = '';
-        if (team && pushSupported()) {
+        if ((team || role === 'dispo') && pushSupported()) {
           try {
             if (Notification.permission === 'granted') {
               const reg = await withTimeout(navigator.serviceWorker.ready, 10000, 'Service Worker nicht bereit');
@@ -8397,12 +8451,12 @@
             team,
             sub: sub ? sub.toJSON() : null,
             keep: keepSub && !sub,
-            ...(team ? { pstat: (supported ? Notification.permission : 'unsupported') + (detail ? '|' + detail : '') } : {})
+            ...(team || role === 'dispo' ? { pstat: (supported ? Notification.permission : 'unsupported') + (detail ? '|' + detail : '') } : {})
           });
           registeredTeam = team;
           registeredRole = role;
           // jetzt weiß das Gerät selbst, wie der Server es kennt (die nächste Abgleich-Antwort bestätigt es)
-          serverDevState = role === 'monteur' && team ? (sub ? 2 : 1) : null;
+          serverDevState = (role === 'monteur' && team) || role === 'dispo' ? (sub ? 2 : 1) : null;
           pushRegAt = Date.now();
           try {
             team ? localStorage.setItem('regteam', team) : localStorage.removeItem('regteam');
@@ -8423,7 +8477,8 @@
        */
       function onDeviceState(state) {
         serverDevState = state;
-        if (state === 2 || session.role !== 'monteur' || !session.team || pushRunning) return;
+        const mine = session.role === 'monteur' ? !!session.team : session.role === 'dispo' && dispoUnlocked;
+        if (state === 2 || !mine || pushRunning) return;
         const canSubscribe = pushSupported() && Notification.permission === 'granted';
         if ((state === 0 || canSubscribe) && Date.now() - pushRepairAt > 120000) {
           pushRepairAt = Date.now();
@@ -11891,6 +11946,13 @@
             authAt = Date.now();
             dispoUnlocked = true;
             pinError = false;
+            if (wantChatTeam !== null) {
+              // geöffnet über eine Chat-Benachrichtigung: nach der PIN gleich in den Chat
+              dispoTab = 'ch';
+              chatTeam = wantChatTeam;
+              chatPinned = true;
+              wantChatTeam = null;
+            }
             pushSync(false);
             poll(); // der Gesamtstand ist erst nach der PIN-Eingabe abrufbar
           } catch (e) {
@@ -12031,7 +12093,8 @@
                   )
               );
             }),
-            chatTile()
+            chatTile('team'),
+            chatTile('all')
           )
         );
       }
@@ -12082,7 +12145,7 @@
               'div',
               { class: 'row' },
               !(userInfo && userInfo.lock) && el('button', { onclick: () => switchRole('monteur') }, 'Team wechseln'),
-              viewKind ? el('button', { onclick: closeKind }, viewKind === 'chat' ? '← Zurück' : '← Auftragsarten') : back
+              viewKind ? el('button', { onclick: closeKind }, isChatKind(viewKind) ? '← Zurück' : '← Auftragsarten') : back
             )
           ),
           ...(userInfo
@@ -12121,7 +12184,7 @@
             app.append(el('p', { class: 'mu' }, 'Stand: ' + new Date(uploadMeta.at).toLocaleString('de-AT')));
           return;
         }
-        if (viewKind === 'chat') {
+        if (isChatKind(viewKind)) {
           drawChatView();
           return;
         }
@@ -13706,10 +13769,11 @@
           )
         );
       }
-      // ---- Chat zwischen einem Team und dem Disponenten ----
-      // EIN Verlauf je Team: der Disponent schreibt mit dem ganzen Team, die Monteure eines Teams sehen auch, was Kollegen schreiben. Monteur:
-      // Kachel „Chat“ auf der Startseite (viewKind 'chat' – eine Ebene wie die Liste einer Auftragsart). Disponent: Tab „Chat“ (links die Teams,
-      // rechts der Verlauf; am Handy erst die Liste, dann der Verlauf).
+      // ---- Chat zwischen einem Team und dem Disponenten, Gruppenchat ----
+      // Räume: EIN Verlauf je Team (der Disponent schreibt mit dem ganzen Team, die Monteure eines Teams sehen auch, was Kollegen schreiben) und der
+      // Gruppenchat (CHAT_ALL: alle Teams und alle Disponenten). Monteur: Kacheln „Chat“ und „Gruppenchat“ auf der Startseite (viewKind 'chat' /
+      // 'chatall' – eine Ebene wie die Liste einer Auftragsart). Disponent: Tab „Chat“ (links Name, Benachrichtigungen und die Räume, rechts der
+      // Verlauf; am Handy erst die Liste, dann der Verlauf).
       //   · Nachrichten kommen mit dem Abgleich (response.chat) und live ({ k: 'c', row }); sie werden NICHT mit render() gezeichnet, sondern an den
       //     Verlauf angehängt (chatPatchAll) – ein Neuzeichnen der Seite würde das Eingabefeld (Tastatur!) und die Scroll-Stelle stören.
       //   · Die Seite rollt im Chat nicht (body[data-chat]): der Verlauf (.cthr) rollt in sich. Ist er unten (chatPinned), folgt er neuen Nachrichten;
@@ -13718,12 +13782,15 @@
       //     annimmt. Ohne Netz bleibt sie mit ⏳ im Verlauf und geht später hinaus; abgelehnte (Fehler 4xx) zeigen „Erneut senden / Verwerfen“.
       //   · Ungelesen: je Gerät und Rolle die Nummer der letzten gelesenen Nachricht je Team (chatReadAll, localStorage).
       const CHAT_MAX = 1000,
-        CHAT_KEEP_MS = 30 * 864e5;
+        CHAT_KEEP_MS = 30 * 864e5,
+        CHAT_ALL = '*'; // Raum „Gruppenchat“ (alle Teams und alle Disponenten) statt eines Teamnamens
       let chatMsgs = new Map(), // Nachrichten-Nr. -> { id, team, side ('d' Disponent | 'm' Monteur), usr, name, text, at, cid }
         chatQueue = [], // noch nicht bestätigte Nachrichten dieses Geräts: { cid, team, side, text, at, err? }
         chatReadAll = {}, // Rolle -> { Team -> Nr. der letzten gelesenen Nachricht }
         chatDraft = {}, // Team -> getippter, noch nicht gesendeter Text
-        chatTeam = '', // Disponent: geöffnetes Team ('' = Teamliste)
+        chatTeam = '', // Disponent: geöffneter Raum – Teamname, CHAT_ALL (Gruppenchat) oder '' (Teamliste)
+        chatName = '', // Disponent: Name im Chat (leer = „Disponent“); mehrere Disponenten teilen sich den PIN, der Name zeigt, wer schreibt
+        wantChatTeam = null, // Disponent: nach der PIN-Eingabe diesen Raum öffnen (Tipp auf eine Benachrichtigung bei geschlossener App); '' = nur den Tab
         chatPinned = true, // der Verlauf steht unten (folgt neuen Nachrichten)
         chatPill = false, // „↓ Neue Nachrichten“ zeigen
         chatVer = 0, // zählt jede Änderung (Zwischenspeicher der Zähler)
@@ -13741,6 +13808,7 @@
         if (Array.isArray(q)) chatQueue = q.filter(x => x && x.cid && x.team && x.text);
         const r = JSON.parse(localStorage.getItem('chatread') || '{}');
         if (r && typeof r === 'object') chatReadAll = r;
+        chatName = String(localStorage.getItem('chatname') || '').slice(0, 40);
       } catch (e) {}
       const chatSaveQueue = () => {
         try {
@@ -13749,15 +13817,20 @@
       };
       const chatSide = () => (session.role === 'dispo' ? 'd' : 'm');
       const chatMe = () => (userInfo && userInfo.sap) || '';
-      const chatIsMine = m => (session.role === 'dispo' ? m.side === 'd' : m.side === 'm' && m.usr === chatMe());
+      // Kennung dieses Geräts als Disponent: der Server setzt sie aus dem PIN-Token an jede Nachricht („D:“ + Anfang der Geräte-Kennung). Nachrichten ohne
+      // Kennung (ältere) gelten als eigene.
+      const chatDispoKey = () => 'D:' + String(deviceId).slice(0, 12);
+      const chatIsMine = m => (session.role === 'dispo' ? m.side === 'd' && (!m.usr || m.usr === chatDispoKey()) : m.side === 'm' && m.usr === chatMe());
+      const isChatKind = k => k === 'chat' || k === 'chatall'; // Monteur: Chat mit dem Disponenten bzw. Gruppenchat
+      const chatLabel = team => (team === CHAT_ALL ? '👥 Gruppenchat' : team);
       const chatRoleKey = () => (session.role === 'dispo' ? 'd' : 'm:' + chatMe());
       const chatCanSend = x => (x.side === 'd' ? !!dispoToken : !!userToken);
       // Ist der Chat gerade auf dem Bildschirm? (Monteur: Kachel geöffnet, Disponent: Tab „Chat“)
       const chatShown = () =>
         !openOrder &&
-        ((session.role === 'monteur' && viewKind === 'chat' && !!userToken && !!session.team) ||
+        ((session.role === 'monteur' && isChatKind(viewKind) && !!userToken && !!session.team) ||
           (session.role === 'dispo' && dispoUnlocked && dispoTab === 'ch'));
-      const chatTeamNow = () => (session.role === 'dispo' ? chatTeam : session.team || '');
+      const chatTeamNow = () => (session.role === 'dispo' ? chatTeam : viewKind === 'chatall' ? CHAT_ALL : session.team || '');
       const chatReadOf = team => (chatReadAll[chatRoleKey()] || {})[team] | 0;
       function chatSetRead(team, id) {
         const key = chatRoleKey(),
@@ -13786,20 +13859,22 @@
         }
         return (chatStats = { key, unread, last });
       }
-      // Monteur: nur das eigene Team zählt; Disponent: alle Teams
+      // Monteur: das eigene Team und der Gruppenchat zählen; Disponent: alle Räume
       const chatTotalUnread = () => {
         const { unread } = chatInfo();
-        return session.role === 'dispo' ? [...unread.values()].reduce((a, b) => a + b, 0) : unread.get(session.team) || 0;
+        return session.role === 'dispo' ? [...unread.values()].reduce((a, b) => a + b, 0) : (unread.get(session.team) || 0) + (unread.get(CHAT_ALL) || 0);
       };
       const chatCount = n => (n > 99 ? '99+' : String(n));
       const chatTabLabel = () => 'Chat' + (chatTotalUnread() ? ` (${chatCount(chatTotalUnread())})` : '');
-      // Teams in der Liste des Disponenten: alle Teams, auf die disponiert werden kann, dazu jedes mit Chatverlauf
-      const chatTeams = () =>
-        [...new Set([...dispoTeamNames, ...teamList.map(t => t[0]), ...[...chatMsgs.values()].map(m => m.team)])]
-          .filter(Boolean)
-          .sort(naturalCompare);
+      // Räume in der Liste des Disponenten: zuerst der Gruppenchat, dann alle Teams, auf die disponiert werden kann, dazu jedes mit Chatverlauf
+      const chatTeams = () => [
+        CHAT_ALL,
+        ...[...new Set([...dispoTeamNames, ...teamList.map(t => t[0]), ...[...chatMsgs.values()].map(m => m.team)])]
+          .filter(t => t && t !== CHAT_ALL)
+          .sort(naturalCompare)
+      ];
       const chatPreviewOf = m => {
-        const who = chatIsMine(m) ? 'Du' : m.side === 'd' ? 'Disponent' : (m.name || m.usr || '').split(' ')[0];
+        const who = chatIsMine(m) ? 'Du' : (m.side === 'd' ? m.name || 'Disponent' : m.name || m.usr || '').split(' ')[0];
         return who + ': ' + m.text.replace(/\s+/g, ' ').trim();
       };
       const chatDayKey = t => new Date(t).toLocaleDateString('sv-SE');
@@ -13820,8 +13895,9 @@
             ...msgs.map(m => ({ key: m.cid ? 'cm-' + m.cid : 'cm-#' + m.id, m, pending: false, err: '' })),
             ...chatQueue
               .filter(q => q.team === team && q.side === mine && !known.has(q.cid))
-              .map(q => ({ key: 'cm-' + q.cid, m: { ...q, id: 0, usr: chatMe(), name: '' }, pending: true, err: q.err || '' }))
+              .map(q => ({ key: 'cm-' + q.cid, m: { ...q, id: 0, usr: q.side === 'd' ? chatDispoKey() : chatMe(), name: q.name || '', steam: '' }, pending: true, err: q.err || '' }))
           ],
+          group = team === CHAT_ALL,
           out = [];
         let prev = null,
           prevDay = '';
@@ -13834,7 +13910,7 @@
           }
           const isMine = chatIsMine(row.m),
             showName = !isMine && (!prev || prev.side !== row.m.side || prev.usr !== row.m.usr || row.m.at - prev.at > 5 * 60e3);
-          out.push({ ...row, type: 'msg', mine: isMine, showName, sig: [row.pending, row.err, showName, row.m.name, row.m.text, row.m.at].join('|') });
+          out.push({ ...row, type: 'msg', mine: isMine, showName, group, sig: [row.pending, row.err, showName, group, row.m.name, row.m.steam, row.m.text, row.m.at].join('|') });
           prev = row.m;
         }
         if (!out.length) out.push({ type: 'empty', key: 'ce', sig: session.role });
@@ -13846,14 +13922,15 @@
           return el(
             'p',
             { class: 'mu cempty', 'data-k': it.key, 'data-sig': it.sig },
-            session.role === 'dispo' ? 'Noch keine Nachrichten. Schreib dem Team etwas.' : 'Noch keine Nachrichten. Schreib dem Disponenten, wenn du Fragen hast.'
+            it.group ? 'Noch keine Nachrichten. Hier schreiben alle Teams und alle Disponenten.' : session.role === 'dispo' ? 'Noch keine Nachrichten. Schreib dem Team etwas.' : 'Noch keine Nachrichten. Schreib dem Disponenten, wenn du Fragen hast.'
           );
         const m = it.m,
           status = it.mine ? (it.err ? '⚠' : it.pending ? '⏳' : '✓') : '';
         return el(
           'div',
           { class: 'cmsg' + (it.mine ? ' me' : '') + (it.pending ? ' pend' : '') + (it.err ? ' fail' : ''), 'data-k': it.key, 'data-sig': it.sig },
-          it.showName && el('div', { class: 'cby' }, m.side === 'd' ? 'Disponent' : m.name || m.usr || 'Monteur'),
+          // Absender: Disponent (mit Namen, wenn er einen gesetzt hat), Monteur (im Gruppenchat mit seinem Team)
+          it.showName && el('div', { class: 'cby' }, m.side === 'd' ? (m.name && m.name !== 'Disponent' ? m.name + ' · Disponent' : 'Disponent') : (m.name || m.usr || 'Monteur') + (it.group && m.steam ? ' · ' + m.steam : '')),
           el(
             'div',
             { class: 'cbub' },
@@ -13983,7 +14060,7 @@
           m = last.get(team),
           n = unread.get(team) || 0;
         return [
-          el('span', { class: 'crn' }, team),
+          el('span', { class: 'crn' }, chatLabel(team)),
           el('span', { class: 'crt' }, m ? (chatDayKey(m.at) === today() ? timeText(m.at) : chatDayLabel(m.at)) : ''),
           el('span', { class: 'crp' }, m ? chatPreviewOf(m) : 'Noch keine Nachrichten'),
           el('span', { class: 'cbadge' + (n ? ' on' : '') }, n ? chatCount(n) : '0')
@@ -14004,15 +14081,16 @@
         const total = chatTotalUnread();
         const tab = app.querySelector('.tabs button[data-tab="ch"]');
         if (tab && tab.textContent !== chatTabLabel()) tab.textContent = chatTabLabel();
-        const tile = app.querySelector('.kind.chat');
-        if (tile) {
-          const prev = tile.querySelector('.cprev'),
-            text = chatTilePreview(),
-            badge = tile.querySelector('.cbadge');
+        for (const tile of app.querySelectorAll('.kind.chat')) {
+          const room = tile.dataset.room,
+            prev = tile.querySelector('.cprev'),
+            text = chatTilePreview(room),
+            badge = tile.querySelector('.cbadge'),
+            n = chatRoomUnread(room);
           if (prev && prev.textContent !== text) prev.textContent = text;
           if (badge) {
-            badge.classList.toggle('on', total > 0);
-            badge.textContent = total ? chatCount(total) : '0';
+            badge.classList.toggle('on', n > 0);
+            badge.textContent = n ? chatCount(n) : '0';
           }
         }
         chatListPatch();
@@ -14063,12 +14141,14 @@
         chatToastAt = Date.now();
         const m = unseen[unseen.length - 1];
         chatToastTeam = unseen.every(x => x.team === m.team) ? m.team : '';
-        const who = session.role === 'dispo' ? `${m.team} · ${m.name || 'Monteur'}` : m.side === 'd' ? 'Disponent' : m.name || 'Kollege',
+        const name = m.side === 'd' ? m.name || 'Disponent' : m.name || (session.role === 'dispo' ? 'Monteur' : 'Kollege'),
+          // (Gruppenchat: „Gruppenchat · Name (Team)“, Chat eines Teams: für den Disponenten „Team · Name“, für den Monteur nur der Name)
+          who = m.team === CHAT_ALL ? `Gruppenchat · ${name}${m.side === 'm' && m.steam ? ` (${m.steam})` : ''}` : session.role === 'dispo' ? `${m.team} · ${name}` : name,
           text = unseen.length > 1 ? `💬 ${unseen.length} neue Chat-Nachrichten` : `💬 ${who}: ${m.text.replace(/\s+/g, ' ').trim().slice(0, 90)}`;
         toast(text, () => chatGo(m.team));
         playChatSound();
       }
-      // zum Chat (eines Teams) wechseln – Tipp auf die Kurzmeldung oder die Benachrichtigung
+      // zum Chat (eines Teams bzw. dem Gruppenchat) wechseln – Tipp auf die Kurzmeldung oder die Benachrichtigung
       function chatGo(team) {
         if (openOrder) return; // (ein offener Auftrag wird nicht mitten in der Arbeit verlassen)
         if (session.role === 'dispo' && dispoUnlocked) {
@@ -14079,9 +14159,10 @@
           render();
           chatToBottom();
         } else if (session.role === 'monteur' && userToken && session.team) {
-          if (viewKind !== 'chat') openKind('chat');
+          const kind = team === CHAT_ALL ? 'chatall' : 'chat';
+          if (viewKind !== kind) openKind(kind);
           chatToBottom();
-        }
+        } else if (session.role === 'dispo' && !dispoUnlocked) wantChatTeam = team; // (nach der PIN-Eingabe)
       }
       // sanfter Doppelton (steigend) bei neuer Nachricht; nur wenn der Browser Ton schon erlaubt hat (siehe unlockAudio)
       function playChatSound() {
@@ -14111,7 +14192,7 @@
       function chatSend(team) {
         const text = (chatDraft[team] || '').replace(/\r\n?/g, '\n').trim();
         if (!text || text.length > CHAT_MAX) return;
-        chatQueue.push({ cid: crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '').slice(0, 20) : Math.random().toString(36).slice(2, 12) + Date.now().toString(36), team, side: chatSide(), text, at: Date.now() });
+        chatQueue.push({ cid: crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '').slice(0, 20) : Math.random().toString(36).slice(2, 12) + Date.now().toString(36), team, side: chatSide(), text, at: Date.now(), ...(chatSide() === 'd' ? { name: chatName.trim().slice(0, 40) } : {}) });
         chatSaveQueue();
         chatDraft[team] = '';
         const ta = app.querySelector('.cin');
@@ -14138,7 +14219,7 @@
             const q = chatQueue.find(x => !x.err && chatCanSend(x));
             if (!q) break;
             try {
-              const r = await api('POST', '/api/chat', { team: q.team, text: q.text, cid: q.cid, side: q.side }, 15000);
+              const r = await api('POST', '/api/chat', { team: q.team, text: q.text, cid: q.cid, side: q.side, ...(q.side === 'd' ? { name: q.name || '' } : {}) }, 15000);
               chatQueue = chatQueue.filter(x => x !== q);
               chatSaveQueue();
               chatApply([r.msg]);
@@ -14192,7 +14273,7 @@
             enterkeyhint: 'send',
             autocomplete: 'off',
             'aria-label': 'Nachricht schreiben',
-            placeholder: session.role === 'dispo' ? `Nachricht an ${team} …` : 'Nachricht schreiben …',
+            placeholder: team === CHAT_ALL ? 'Nachricht an alle …' : session.role === 'dispo' ? `Nachricht an ${team} …` : 'Nachricht schreiben …',
             value: chatDraft[team] || '',
             oninput: e => {
               chatDraft[team] = e.target.value;
@@ -14228,16 +14309,70 @@
           chatComposer(team)
         );
       }
-      // Monteur: Verlauf des eigenen Teams mit dem Disponenten
+      // Monteur: Verlauf des eigenen Teams mit den Disponenten bzw. der Gruppenchat mit allen Teams und Disponenten
       function drawChatView() {
         chatAutoRead();
         document.body.dataset.chat = '1';
+        const room = chatTeamNow();
         app.append(
           chatPane(
-            session.team,
-            el('div', { class: 'chead' }, el('b', {}, '💬 Chat'), el('span', { class: 'mu' }, `Disponent und Team ${session.team}`)),
+            room,
+            room === CHAT_ALL
+              ? el('div', { class: 'chead' }, el('b', {}, '👥 Gruppenchat'), el('span', { class: 'mu' }, 'Teams und Disponenten'))
+              : el('div', { class: 'chead' }, el('b', {}, '💬 Chat'), el('span', { class: 'mu' }, `Disponent und Team ${session.team}`)),
             ' chat1'
           )
+        );
+      }
+      // Benachrichtigungen des Disponenten (Zeile im Chat-Tab): Zustand und – wenn nötig – Knopf „Aktivieren“. Nur Browser-Benachrichtigungen,
+      // die auch bei geschlossener App ankommen; ohne sie sieht er neue Nachrichten nur bei geöffneter App (Zähler, Kurzmeldung, Titel).
+      function chatPushRow() {
+        let text,
+          button = null;
+        if (!pushSupported())
+          text =
+            window.isSecureContext === false
+              ? '🔕 Benachrichtigungen gehen nur mit HTTPS'
+              : /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone
+                ? '🔕 iPhone: erst „Zum Home-Bildschirm“'
+                : '🔕 Auf diesem Gerät nicht möglich';
+        else if (Notification.permission === 'denied') text = '🔕 Im Browser blockiert – dort freigeben';
+        else if (Notification.permission === 'granted') {
+          if (pushError) {
+            text = '⚠ ' + pushError.slice(0, 70);
+            button = ['Erneut', () => pushSync(true)];
+          } else text = serverDevState === 2 ? '🔔 Benachrichtigungen sind an' : '🔔 Wird eingerichtet …';
+        } else {
+          text = '🔔 Bei neuen Nachrichten benachrichtigen';
+          button = ['Aktivieren', () => pushSync(true)];
+        }
+        return el('div', { class: 'cpush' }, el('span', { class: 'mu' }, text), button && el('button', { class: 'pri', onclick: button[1] }, button[0]));
+      }
+      // Einstellungen über der Teamliste: Name im Chat (die Disponenten teilen sich einen PIN) und Benachrichtigungen
+      function chatSettings() {
+        return el(
+          'div',
+          { class: 'cset' },
+          el(
+            'label',
+            { class: 'cname' },
+            el('span', { class: 'mu' }, 'Dein Name im Chat'),
+            el('input', {
+              type: 'text',
+              'data-keep': 'cname',
+              maxlength: '40',
+              placeholder: 'Disponent',
+              autocomplete: 'off',
+              value: chatName,
+              oninput: e => {
+                chatName = e.target.value;
+                try {
+                  localStorage.setItem('chatname', chatName);
+                } catch (err) {}
+              }
+            })
+          ),
+          chatPushRow()
         );
       }
       // Disponent: Tab „Chat“ – links die Teams (mit Zähler und letzter Nachricht), rechts der Verlauf des gewählten Teams
@@ -14245,7 +14380,8 @@
         chatAutoRead();
         document.body.dataset.chat = '1';
         const teams = chatTeams(),
-          team = chatTeam && teams.includes(chatTeam) ? chatTeam : '';
+          // (solange die Teams noch nicht geladen sind, bleibt der gewünschte Raum stehen – z. B. nach einem Tipp auf eine Benachrichtigung)
+          team = chatTeam && (!dataReady || teams.includes(chatTeam)) ? chatTeam : '';
         if (team !== chatTeam) chatTeam = team;
         const rows = teams.map(t =>
           el(
@@ -14258,7 +14394,7 @@
           el(
             'div',
             { class: 'cwrap' + (team ? ' t' : '') },
-            el('div', { class: 'clist' }, rows.length ? rows : el('p', { class: 'mu' }, dataReady ? 'Noch keine Teams.' : 'Teams werden geladen …')),
+            el('div', { class: 'cside' }, chatSettings(), el('div', { class: 'clist' }, rows)),
             team
               ? chatPane(
                   team,
@@ -14266,8 +14402,8 @@
                     'div',
                     { class: 'chead' },
                     el('button', { class: 'cback', onclick: chatCloseTeam }, '← Teams'),
-                    el('b', {}, team),
-                    el('span', { class: 'mu' }, 'Alle Monteure des Teams sehen die Unterhaltung')
+                    el('b', {}, chatLabel(team)),
+                    el('span', { class: 'mu' }, team === CHAT_ALL ? 'Alle Teams und alle Disponenten' : 'Alle Monteure des Teams sehen die Unterhaltung')
                   )
                 )
               : el('div', { class: 'cpane' }, el('div', { class: 'chead' }, el('span', { class: 'mu' }, 'Team links wählen, um zu schreiben.')), el('div', { class: 'cthr' }))
@@ -14285,23 +14421,25 @@
         chatTeam = '';
         render();
       }
-      // Monteur: Kachel auf der Startseite
-      const chatTilePreview = () => {
-        const m = chatInfo().last.get(session.team);
+      // Monteur: Kacheln auf der Startseite – Chat mit dem Disponenten (room 'team') und Gruppenchat (room 'all')
+      const chatRoomOf = room => (room === 'all' ? CHAT_ALL : session.team);
+      const chatTilePreview = room => {
+        const m = chatInfo().last.get(chatRoomOf(room));
         return m ? chatPreviewOf(m) : 'Noch keine Nachrichten';
       };
-      function chatTile() {
-        const n = chatTotalUnread();
+      const chatRoomUnread = room => chatInfo().unread.get(chatRoomOf(room)) || 0;
+      function chatTile(room) {
+        const n = chatRoomUnread(room);
         return el(
           'button',
-          { class: 'big kind chat', 'data-k': 'kd-chat', onclick: () => openKind('chat') },
-          el('span', { class: 'ki' }, '💬'),
+          { class: 'big kind chat', 'data-k': 'kd-chat' + room, 'data-room': room, onclick: () => openKind(room === 'all' ? 'chatall' : 'chat') },
+          el('span', { class: 'ki' }, room === 'all' ? '👥' : '💬'),
           el(
             'span',
             { class: 'kb' },
-            el('span', { class: 'kn' }, 'Chat mit dem Disponenten'),
-            el('span', { class: 'mu cprev' }, chatTilePreview()),
-            el('span', { class: 'mu sm' }, 'Fragen, Hinweise, Rückmeldungen')
+            el('span', { class: 'kn' }, room === 'all' ? 'Gruppenchat' : 'Chat mit dem Disponenten'),
+            el('span', { class: 'mu cprev' }, chatTilePreview(room)),
+            el('span', { class: 'mu sm' }, room === 'all' ? 'Alle Teams und alle Disponenten' : 'Fragen, Hinweise, Rückmeldungen')
           ),
           el('span', { class: 'cbadge' + (n ? ' on' : '') }, n ? chatCount(n) : '0')
         );
@@ -14551,6 +14689,7 @@
           : Promise.resolve();
       // Tipp auf eine Chat-Benachrichtigung bei geschlossener App öffnet die Seite mit ?chat=1: nach dem ersten Abgleich zum Chat
       let wantChat = /[?&]chat=1\b/.test(location.search);
+      const wantTeam = decodeURIComponent((/[?&]team=([^&]*)/.exec(location.search) || [])[1] || '');
       if (wantChat)
         try {
           history.replaceState(history.state, '', location.pathname);
@@ -14561,7 +14700,7 @@
           sendAllPending();
           prefetchChecklists();
           pushSync(false);
-          if (wantChat && session.role === 'monteur') chatGo(session.team);
+          if (wantChat) chatGo(wantTeam || (session.role === 'monteur' ? session.team : ''));
           wantChat = false;
         });
         syncLive();
@@ -14575,7 +14714,7 @@
           // Tipp auf eine Chat-Benachrichtigung: zum Chat
           if (e.data && e.data.t === 'chat') {
             poll();
-            if (session.role === 'monteur') chatGo(session.team);
+            chatGo(e.data.team || (session.role === 'monteur' ? session.team : ''));
           }
         });
       }

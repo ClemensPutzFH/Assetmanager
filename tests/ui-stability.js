@@ -3281,6 +3281,58 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
     await post(TC, 'm', OTHER, 'Anderes Team');
     await sleep(500);
     report(pushes.length === 0, 'Chat Push: Geräte anderer Teams bekommen nichts', `${pushes.length} Pushs`);
+
+    // ---------- Disponenten-Geräte (Push), Name und Kennung des Disponenten, Gruppenchat ----------
+    const didD1 = crypto.randomBytes(16).toString('hex'),
+      didD2 = crypto.randomBytes(16).toString('hex'),
+      D1 = { Authorization: 'Bearer ' + (await apiJson(base, 'POST', '/api/login', { pin: DISPO_PIN, did: didD1 })).token },
+      D2 = { Authorization: 'Bearer ' + (await apiJson(base, 'POST', '/api/login', { pin: DISPO_PIN, did: didD2 })).token },
+      devState = (headers, did) => apiJson(base, 'GET', `/api/sync?since=0&team=&did=${did}`, null, headers).then(r => r.dev),
+      dispoPost = (headers, team, text, name) => apiJson(base, 'POST', '/api/chat', { side: 'd', team, text, cid: cid(), ...(name ? { name } : {}) }, headers);
+    report((await devState(D1, didD1)) === 0, 'Chat Push (Disponent): ein dem Server unbekanntes Gerät eines Disponenten bekommt dev = 0 – es meldet sich selbst an');
+    const regD = (headers, did, path) => apiJson(base, 'POST', '/api/push/sub', { did, role: 'dispo', sub: sub(path), pstat: 'granted' }, headers);
+    await regD(D1, didD1, '/push/d1');
+    await regD(D2, didD2, '/push/d2');
+    const listed = (await apiJson(base, 'GET', '/api/devices', null, H)).devices.find(d => d.did === didD1) || {};
+    report((await devState(D1, didD1)) === 2 && listed.role === 'dispo' && listed.push === true && listed.pstat === 'granted', 'Chat Push (Disponent): angemeldetes Gerät mit Abo: dev = 2, in der Geräteliste mit Push und Status', JSON.stringify([listed.role, listed.push, listed.pstat]));
+    report((await apiJson(base, 'POST', '/api/push/sub', { did: crypto.randomBytes(16).toString('hex'), role: 'dispo', sub: sub('/push/x') }, {})).error !== undefined, 'Chat Push (Disponent): ein Gerät als Disponent anmelden geht nur mit PIN-Token');
+    // 1) Monteur schreibt im Chat des Teams: Kollegen und alle Geräte von Disponenten
+    pushes.length = 0;
+    await post(TA, 'm', TEAM, 'Frage an die Zentrale');
+    await waitPush(3);
+    await sleep(300);
+    const byUrl = Object.fromEntries(pushes.map(x => [x.url, x.payload || {}]));
+    report(pushes.length === 3 && Object.keys(byUrl).sort().join() === '/push/b,/push/d1,/push/d2' && byUrl['/push/d1'].title === 'Chat FW-IH01: Alexander Reichhart' && byUrl['/push/d1'].team === TEAM && byUrl['/push/b'].title === 'Chat: Alexander Reichhart', 'Chat Push (Disponent): Nachricht eines Monteurs geht an die Kollegen UND an alle Geräte von Disponenten (Titel nennt für sie das Team)', JSON.stringify(byUrl).slice(0, 260));
+    // 2) Disponent mit Namen schreibt im Chat eines Teams: nur das Team (nicht sein Gerät, nicht die anderen Disponenten)
+    pushes.length = 0;
+    const named = await dispoPost(D1, TEAM, 'Maria antwortet', 'Maria');
+    await waitPush(2);
+    await sleep(400);
+    report(named.msg.name === 'Maria' && named.msg.usr === 'D:' + didD1.slice(0, 12) && pushes.map(x => x.url).sort().join() === '/push/a,/push/b' && pushes.every(x => x.payload.title === 'Chat: Maria (Disponent)'), 'Chat Disponent: Name und Gerätekennung stehen an der Nachricht, der Push geht nur an das Team (Titel mit Namen)', JSON.stringify([named.msg.name, named.msg.usr, pushes.map(x => x.url)]));
+    const unnamed = await dispoPost(D2, TEAM, 'Ohne Namen');
+    report(unnamed.msg.name === 'Disponent' && unnamed.msg.usr === 'D:' + didD2.slice(0, 12) && unnamed.msg.usr !== named.msg.usr, 'Chat Disponent: ohne Namen heißt er „Disponent“, jedes Gerät hat seine eigene Kennung', JSON.stringify([unnamed.msg.name, unnamed.msg.usr]));
+    await sleep(800); // (sein Push ist noch unterwegs – nicht in die Zählung des nächsten Schritts mischen)
+    // 3) Gruppenchat: alle Teams und alle Disponenten
+    pushes.length = 0;
+    const g1 = await post(TA, 'm', '*', 'Hallo alle zusammen');
+    await waitPush(3);
+    await sleep(300);
+    report(g1.msg.team === '*' && g1.msg.steam === TEAM && pushes.map(x => x.url).sort().join() === '/push/b,/push/d1,/push/d2' && pushes.every(x => x.payload.title === 'Gruppenchat: Alexander Reichhart · FW-IH01' && x.payload.team === '*'), 'Gruppenchat: Nachricht eines Monteurs geht an alle anderen Geräte – Monteure aller Teams und Disponenten (Titel mit Team)', JSON.stringify(pushes.map(x => [x.url, x.payload && x.payload.title])));
+    pushes.length = 0;
+    const g2 = await dispoPost(D1, '*', 'Bitte alle kurz melden', 'Maria');
+    await waitPush(3);
+    await sleep(300);
+    report(g2.msg.team === '*' && pushes.map(x => x.url).sort().join() === '/push/a,/push/b,/push/d2' && pushes.every(x => x.payload.title === 'Gruppenchat: Maria (Disponent)'), 'Gruppenchat: Nachricht eines Disponenten geht an alle Teams und die anderen Disponenten (nicht an sein Gerät)', JSON.stringify(pushes.map(x => x.url)));
+    const sA2 = await syncOf(TA, TEAM),
+      sC2 = await syncOf(TC, OTHER);
+    report(sA2.chat.some(m => m.team === '*') && sA2.chat.some(m => m.team === TEAM) && sA2.chat.every((m, i, a) => !i || a[i - 1].id < m.id), 'Gruppenchat: der Abgleich eines Monteurs bringt Team-Chat und Gruppenchat, nach Nummer sortiert', sA2.chat.map(m => m.team).join(','));
+    report(sC2.chat.length >= 2 && sC2.chat.every(m => m.team === '*' || m.team === OTHER) && sC2.chat.some(m => /Hallo alle zusammen/.test(m.text)) && !sC2.chat.some(m => m.team === TEAM), 'Gruppenchat: ein Monteur eines anderen Teams sieht den Gruppenchat, aber nicht den Chat fremder Teams', sC2.chat.map(m => m.team).join(','));
+    const sD3 = await syncOf(H, '', sA2.seq - 1);
+    report(sD3.chat.every(m => m.id > 0), 'Gruppenchat: der Disponent bekommt ihn im Abgleich wie alle anderen Räume');
+    // fest zugewiesenes Team: Gruppenchat ja, Chat fremder Teams nein
+    await apiJson(base, 'PUT', '/api/users/3SCCKD', { lock: true }, H);
+    const TD = { 'X-User-Token': mD.token };
+    report((await status(TD, { side: 'm', team: '*', text: 'Gruppe trotz festem Team', cid: cid() })) === 200 && (await status(TD, { side: 'm', team: TEAM, text: 'fremdes Team', cid: cid() })) === 403, 'Gruppenchat: auch ein Monteur mit festem Team darf dort schreiben, in den Chat eines anderen Teams nicht (403)');
     // Drosselung: höchstens 20 Nachrichten je Minute und Absender (ein Gerät in einer Schleife weckt sonst alle Kollegen)
     let throttled = 0;
     for (let i = 0; i < 24; i++) if ((await status(TC, { side: 'm', team: OTHER, text: 'Flut ' + i, cid: cid() })) === 429) throttled++;
@@ -3316,12 +3368,12 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
         };
       });
     let s = await ph();
-    report(s.prev === 'Du: Alles klar, melden uns gleich' || /Alles klar|Bitte meldet/.test(s.prev || ''), 'Chat Monteur: die Kachel auf der Startseite zeigt die letzte Nachricht in einer Zeile', s.prev);
+    report(s.prev === 'Disponent: Ohne Namen', 'Chat Monteur: die Kachel auf der Startseite zeigt die letzte Nachricht in einer Zeile', s.prev);
     report(s.badge === '' || s.badge === '2', 'Chat Monteur: Zähler an der Kachel (bei der Anmeldung bereits Gelesenes zählt nicht)', `Zähler „${s.badge}“`);
     await probe(phone, 'Chat Monteur: Kachel „Chat“ öffnet den Verlauf (gleitet herein wie eine Liste)', btn('/Chat mit dem Disponenten/'), { reflow: true, ms: 900, anim: true });
     s = await ph();
     report(!s.scrolls && !s.wide && s.sy === 0, 'Chat Monteur: die Seite rollt im Chat nicht und wird nicht breiter (der Verlauf rollt in sich)', JSON.stringify({ scrolls: s.scrolls, wide: s.wide }));
-    report(s.bubbles.length === 4 && s.atBottom && s.comp > 800 && s.comp <= 844, 'Chat Monteur: Verlauf steht unten, Eingabe am unteren Bildschirmrand', JSON.stringify({ n: s.bubbles.length, atBottom: s.atBottom, comp: s.comp }));
+    report(s.bubbles.length === 7 && s.atBottom && s.comp > 800 && s.comp <= 844, 'Chat Monteur: Verlauf steht unten, Eingabe am unteren Bildschirmrand', JSON.stringify({ n: s.bubbles.length, atBottom: s.atBottom, comp: s.comp }));
     report(/Guten Morgen, Team/.test(s.bubbles[0]) && /Disponent/.test(s.bubbles[0]) && /Doppelt\?/.test(s.bubbles[1]) && s.me >= 1, 'Chat Monteur: Nachrichten mit Absender (Disponent / Kollege) und eigene rechts', s.bubbles.join(' | '));
     await shot(phone, 'chat-monteur');
     // senden
@@ -3335,7 +3387,7 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
     await phone.click('.cin');
     await phone.keyboard.type('Entwurf der noch nicht fertig ist');
     await pause(phone, 200);
-    const liveAct = (hdr, side, text) => `() => fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', ${hdr} }, body: JSON.stringify({ side: '${side}', team: '${TEAM}', text: ${JSON.stringify(text)}, cid: 't' + Math.random().toString(36).slice(2, 12) }) })`,
+    const liveAct = (hdr, side, text, room = TEAM) => `() => fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', ${hdr} }, body: JSON.stringify({ side: '${side}', team: '${room}', text: ${JSON.stringify(text)}, cid: 't' + Math.random().toString(36).slice(2, 12) }) })`,
       dispoAct = text => liveAct(`Authorization: '${H.Authorization}'`, 'd', text),
       mateAct = text => liveAct(`'X-User-Token': '${mB.token}'`, 'm', text);
     await probe(phone, 'Chat Monteur: neue Nachricht kommt live – Eingabefeld rührt sich nicht, Verlauf gleitet', `() => document.querySelector('#app .cin')`, { act: dispoAct('Der Schlüssel liegt beim Hausmeister.'), ms: 1200, tapTol: 2 });
@@ -3415,6 +3467,46 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
     await narrow.context().close();
     pages.pop();
 
+    // ---------- Gruppenchat am Handy (Monteur) ----------
+    await phone.click('button:has-text("Zurück")');
+    await pause(phone, 800);
+    const readTiles = () =>
+      phone.evaluate(() => [...document.querySelectorAll('#app .kind.chat')].map(t => ({ room: t.dataset.room, name: t.querySelector('.kn').textContent, prev: t.querySelector('.cprev').textContent, badge: (t.querySelector('.cbadge.on') || {}).textContent || '', h: Math.round(t.getBoundingClientRect().height) })));
+    let tiles = await readTiles();
+    report(tiles.length === 2 && tiles[0].room === 'team' && tiles[1].room === 'all' && tiles[1].name === 'Gruppenchat' && /^Christoph: Gruppe trotz festem Team/.test(tiles[1].prev) && tiles.every(t => !t.badge), 'Gruppenchat Monteur: zweite Kachel „Gruppenchat“ mit der letzten Nachricht, nichts ungelesen', JSON.stringify(tiles));
+    await probe(phone, 'Gruppenchat Monteur: Kachel öffnet den Gruppenchat (gleitet herein)', btn('/Gruppenchat/'), { reflow: true, ms: 900, anim: true });
+    s = await ph();
+    const gHead = await phone.evaluate(() => document.querySelector('#app .chead').textContent),
+      gLabels = await phone.evaluate(() => [...document.querySelectorAll('#app .cthr .cby')].map(n => n.textContent));
+    report(/Gruppenchat/.test(gHead) && /Teams und Disponenten/.test(gHead) && s.atBottom && !s.scrolls && s.bubbles.length >= 3, 'Gruppenchat Monteur: Verlauf mit Titel „Gruppenchat“, unten, die Seite rollt nicht', JSON.stringify({ gHead, n: s.bubbles.length }));
+    report(gLabels.includes('Maria · Disponent') && gLabels.some(l => l === 'Christoph Scharf · FW-IH02'), 'Gruppenchat Monteur: Absender mit Namen, Disponenten mit ihrem Namen, Monteure mit ihrem Team', gLabels.join(' | '));
+    await phone.fill('.cin', 'Team 1 meldet sich');
+    await probe(phone, 'Gruppenchat Monteur: Senden – Knopf bleibt stehen', `() => document.querySelector('#app .csend')`, { ms: 1000, tapTol: 2 });
+    const gMine = (await syncOf(H, '')).chat.filter(m => m.text === 'Team 1 meldet sich');
+    report(gMine.length === 1 && gMine[0].team === '*' && gMine[0].steam === TEAM && gMine[0].usr === '33NX', 'Gruppenchat Monteur: die Nachricht liegt im Gruppenchat, mit Absender und Team', JSON.stringify(gMine));
+    await probe(phone, 'Gruppenchat Monteur: Nachricht eines anderen Teams kommt live – Eingabefeld rührt sich nicht', `() => document.querySelector('#app .cin')`, { act: liveAct(`'X-User-Token': '${mD.token}'`, 'm', 'Team 2 hier: Zugang fehlt', '*'), ms: 1200, tapTol: 2 });
+    s = await ph();
+    const gLast = await phone.evaluate(() => { const n = [...document.querySelectorAll('#app .cthr .cmsg')].pop(); return { text: n.textContent, by: (n.querySelector('.cby') || {}).textContent }; });
+    report(/Zugang fehlt/.test(gLast.text) && gLast.by === 'Christoph Scharf · FW-IH02' && s.atBottom, 'Gruppenchat Monteur: die neue Nachricht steht unten mit Namen und Team', JSON.stringify(gLast));
+    await phone.click('button:has-text("Zurück")');
+    await pause(phone, 800);
+    const tilesBefore = await readTiles();
+    await probe(phone, 'Gruppenchat Monteur: neue Nachricht im Gruppenchat auf der Startseite – Kacheln bleiben stehen', `() => document.querySelector('#app .kind.chat[data-room="all"]')`, { act: liveAct(`'X-User-Token': '${mB.token}'`, 'm', 'Hans: Wer hat Zeit?', '*'), ms: 1200, tapTol: 2 });
+    tiles = await readTiles();
+    s = await ph();
+    report(tiles[1].badge === '1' && tiles[0].badge === '' && /^Hans: Hans: Wer hat Zeit/.test(tiles[1].prev) && tiles.every((t, i) => t.h === tilesBefore[i].h), 'Gruppenchat Monteur: Zähler „1“ nur an der Kachel „Gruppenchat“, Vorschau, Höhen unverändert', JSON.stringify(tiles));
+    report(/💬 Gruppenchat · Hans Spät \(FW-IH01\): Hans: Wer hat Zeit\?/.test(s.toast), 'Gruppenchat Monteur: Kurzmeldung nennt Gruppenchat, Absender und Team', s.toast);
+    await phone.click('.toast.on');
+    await pause(phone, 800);
+    const gOpen = await phone.evaluate(() => ({ head: document.querySelector('#app .chead').textContent, last: [...document.querySelectorAll('#app .cthr .cmsg')].pop().textContent }));
+    report(/Gruppenchat/.test(gOpen.head) && /Wer hat Zeit/.test(gOpen.last), 'Gruppenchat Monteur: Tipp auf die Kurzmeldung öffnet den Gruppenchat (nicht den Chat des Teams)', JSON.stringify(gOpen));
+    await phone.click('button:has-text("Zurück")');
+    await pause(phone, 800);
+    tiles = await readTiles();
+    report(tiles.every(t => !t.badge), 'Gruppenchat Monteur: nach dem Lesen kein Zähler mehr', JSON.stringify(tiles.map(t => t.badge)));
+    await phone.click('.kind.chat[data-room="team"]');
+    await pause(phone, 700);
+
     // ---------- Disponent am Rechner ----------
     const dk = () =>
       desk.evaluate(() => {
@@ -3451,7 +3543,15 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
     report(d.team === TEAM && d.atBottom && d.bubbles.length >= 10 && d.row[TEAM].badge === '' && d.row[TEAM].on, 'Chat Disponent: Verlauf des Teams steht unten, Zähler des Teams ist weg, Zeile hervorgehoben', JSON.stringify({ n: d.bubbles.length, atBottom: d.atBottom, badge: d.row[TEAM].badge }));
     report(d.tab === 'Chat' || +/\d+/.exec(d.tab)[0] < tabN, 'Chat Disponent: die Zahl am Tab sinkt um die gelesenen Nachrichten', `${tabN} -> ${d.tab}`);
     await shot(desk, 'chat-dispo');
-    // das andere Team lesen (dort liegen die Nachrichten der Drosselungsprobe): danach ist nichts mehr ungelesen
+    // das andere Team und den Gruppenchat lesen (dort liegen die Nachrichten der Drosselungsprobe bzw. der Monteure): danach ist nichts mehr ungelesen
+    d = await dk();
+    report(d.row['*'] && d.row['*'].badge !== '' && /^[^:]+: /.test(d.row['*'].prev), 'Gruppenchat Disponent: ungelesene Nachrichten im Gruppenchat zählen (Zähler und Vorschau in der Teamliste)', JSON.stringify(d.row['*']));
+    await desk.click('.crow[data-team="*"]');
+    await pause(desk, 700);
+    d = await dk();
+    const dHead = await desk.evaluate(() => document.querySelector('#app .cpane .chead b').textContent),
+      dLabels = await desk.evaluate(() => [...document.querySelectorAll('#app .cthr .cby')].map(n => n.textContent));
+    report(d.team === '*' && dHead === '👥 Gruppenchat' && d.atBottom && d.row['*'].badge === '' && dLabels.includes('Maria · Disponent') && dLabels.includes('Alexander Reichhart · FW-IH01') && dLabels.some(l => l === 'Christoph Scharf · FW-IH02'), 'Gruppenchat Disponent: Verlauf mit Absendern (Disponenten mit Namen, Monteure mit Team), Zähler weg', JSON.stringify({ dHead, dLabels }));
     await desk.click(`.crow[data-team="${OTHER}"]`);
     await pause(desk, 700);
     d = await dk();
@@ -3504,6 +3604,30 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
     d = await dk();
     report(d.draft === 'Entwurf für Team 2', 'Chat Disponent: der Entwurf eines Teams bleibt erhalten, wenn man zwischendurch ein anderes öffnet');
     await desk.fill('.cin', '');
+    // Gruppenchat: erste Zeile der Teamliste
+    const roomRows = await desk.evaluate(() => [...document.querySelectorAll('#app .crow')].map(r => ({ team: r.dataset.team, label: r.querySelector('.crn').textContent })));
+    report(roomRows[0].team === '*' && roomRows[0].label === '👥 Gruppenchat' && roomRows.length >= 9, 'Gruppenchat Disponent: der Gruppenchat steht als erste Zeile der Teamliste', JSON.stringify(roomRows.slice(0, 2)));
+    // Name des Disponenten: wird mitgesendet und gemerkt; die Nachricht eines anderen Disponenten steht links mit seinem Namen
+    await desk.click(`.crow[data-team="${TEAM}"]`);
+    await pause(desk, 600);
+    const setHeight = () => desk.evaluate(() => Math.round(document.querySelector('#app .cset').getBoundingClientRect().height));
+    const hBefore = await setHeight();
+    await desk.fill('.cname input', 'Maria Muster');
+    await desk.fill('.cin', 'Hallo mit Namen');
+    await desk.press('.cin', 'Enter');
+    await pause(desk, 900);
+    const withName = (await syncOf(H, '')).chat.filter(m => m.text === 'Hallo mit Namen');
+    report(withName.length === 1 && withName[0].name === 'Maria Muster' && /^D:[0-9a-f]{12}$/.test(withName[0].usr) && (await desk.evaluate(() => localStorage.getItem('chatname'))) === 'Maria Muster' && (await setHeight()) === hBefore, 'Chat Disponent: der Name im Chat wird mit jeder Nachricht gesendet und im Gerät gemerkt (das Feld ändert nichts am Layout)', JSON.stringify(withName.map(m => [m.name, m.usr])));
+    await dispoPost(D2, TEAM, 'Paul meldet sich', 'Paul');
+    await pause(desk, 900);
+    const paul = await desk.evaluate(() => {
+      const n = [...document.querySelectorAll('#app .cthr .cmsg')].find(x => /Paul meldet sich/.test(x.textContent)),
+        own = [...document.querySelectorAll('#app .cthr .cmsg')].find(x => /Hallo mit Namen/.test(x.textContent));
+      return { me: n && n.classList.contains('me'), by: n && (n.querySelector('.cby') || {}).textContent, ownMe: own && own.classList.contains('me') };
+    });
+    report(paul.ownMe === true && paul.me === false && paul.by === 'Paul · Disponent', 'Chat Disponent: eigene Nachricht rechts, die eines anderen Disponenten links mit seinem Namen („Paul · Disponent“)', JSON.stringify(paul));
+    const pushRow = await desk.evaluate(() => ({ text: document.querySelector('#app .cpush .mu').textContent, button: (document.querySelector('#app .cpush button') || {}).textContent || '' }));
+    report(/Bei neuen Nachrichten benachrichtigen|blockiert/.test(pushRow.text), 'Chat Disponent: die Zeile „Benachrichtigungen“ nennt den Zustand (noch nicht erlaubt bzw. blockiert)', JSON.stringify(pushRow));
     // ohne Netz schreiben: ⏳ im Verlauf, später hinaus
     const n0 = (await syncOf(H, '')).chat.length;
     await desk.context().setOffline(true);
@@ -3522,7 +3646,7 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
     pages.push(dphone);
     await loginDispo(dphone);
     await probe(dphone, 'Chat Disponent (Handy): Tab „Chat“ zeigt zuerst die Teamliste', btn('/^Chat/', '#app .tabs'), { reflow: true, ms: 800, anim: true });
-    const layout = () => dphone.evaluate(() => ({ list: getComputedStyle(document.querySelector('#app .clist')).display !== 'none', pane: !!document.querySelector('#app .cpane') && getComputedStyle(document.querySelector('#app .cpane')).display !== 'none', back: !!document.querySelector('#app .cback') && getComputedStyle(document.querySelector('#app .cback')).display !== 'none', wide: document.documentElement.scrollWidth > document.documentElement.clientWidth, scrolls: document.documentElement.scrollHeight > innerHeight + 1, comp: document.querySelector('#app .ccomp') ? Math.round(document.querySelector('#app .ccomp').getBoundingClientRect().bottom) : 0 }));
+    const layout = () => dphone.evaluate(() => ({ list: !!document.querySelector('#app .clist') && document.querySelector('#app .clist').offsetParent !== null, pane: !!document.querySelector('#app .cpane') && getComputedStyle(document.querySelector('#app .cpane')).display !== 'none', back: !!document.querySelector('#app .cback') && getComputedStyle(document.querySelector('#app .cback')).display !== 'none', wide: document.documentElement.scrollWidth > document.documentElement.clientWidth, scrolls: document.documentElement.scrollHeight > innerHeight + 1, comp: document.querySelector('#app .ccomp') ? Math.round(document.querySelector('#app .ccomp').getBoundingClientRect().bottom) : 0 }));
     let l = await layout();
     report(l.list && !l.pane && !l.wide && !l.scrolls, 'Chat Disponent (Handy): nur die Teamliste, Seite rollt nicht und ist nicht zu breit', JSON.stringify(l));
     await probe(dphone, 'Chat Disponent (Handy): Team öffnen – Verlauf gleitet herein', `() => [...document.querySelectorAll('#app .crow')].find(r => r.dataset.team === '${TEAM}')`, { reflow: true, ms: 900, anim: true });
@@ -3546,6 +3670,56 @@ async function chatChecks(browser, mainServer, geocoder, errors) {
       return { me: me && +ratio(me).toFixed(1), other: other && +ratio(other).toFixed(1) };
     });
     report(dark.me >= 4.5 && dark.other >= 4.5, 'Chat: im Dunkelmodus genug Kontrast (eigene und fremde Nachrichten)', JSON.stringify(dark));
+    // ---------- Disponent: die App meldet das Gerät für Push an und bleibt auch nach dem Neuladen erreichbar ----------
+    const uiSub = sub('/push/ui-dispo'),
+      dctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ['notifications'] }),
+      dpush = await dctx.newPage();
+    pages.push(dpush);
+    dpush.on('pageerror', e => errors.push(e.message));
+    // PushManager nachbilden (das Test-Chromium kann kein echtes Abo): liefert ein Abo beim Mini-Push-Dienst
+    await dpush.addInitScript(({ endpoint, keys }) => {
+      let current = null;
+      PushManager.prototype.getSubscription = async () => current;
+      PushManager.prototype.subscribe = async () => (current = { endpoint, toJSON: () => ({ endpoint, expirationTime: null, keys }), unsubscribe: async () => ((current = null), true) });
+    }, uiSub);
+    await dpush.goto(base);
+    await pause(dpush, 700);
+    await loginDispo(dpush);
+    const dpDid = await dpush.evaluate(() => deviceId),
+      dpDev = async () => (await apiJson(base, 'GET', '/api/devices', null, H)).devices.find(d => d.did === dpDid) || {};
+    await pause(dpush, 1500);
+    let dv = await dpDev();
+    report(dv.role === 'dispo' && dv.push === true && /^granted/.test(dv.pstat || ''), 'Disponent Push: nach der PIN-Eingabe meldet die App das Gerät als Disponent mit Push-Abo an', JSON.stringify([dv.role, dv.push, dv.pstat]));
+    await dpush.click('#app .tabs button[data-tab="ch"]');
+    await pause(dpush, 900);
+    const dpRow = await dpush.evaluate(() => document.querySelector('#app .cpush .mu').textContent);
+    report(/Benachrichtigungen sind an/.test(dpRow), 'Disponent Push: die Zeile im Chat-Tab zeigt „Benachrichtigungen sind an“', dpRow);
+    pushes.length = 0;
+    await post(TB, 'm', TEAM, 'Push an die App des Disponenten');
+    await waitPush(4);
+    await sleep(300);
+    const toUi = pushes.find(x => x.url === '/push/ui-dispo');
+    report(toUi && toUi.payload.t === 'chat' && toUi.payload.title === 'Chat FW-IH01: Hans Spät' && toUi.payload.body === 'Push an die App des Disponenten' && toUi.payload.team === TEAM, 'Disponent Push: eine Nachricht des Teams kommt als Benachrichtigung bei diesem Gerät an', JSON.stringify(pushes.map(x => x.url)));
+    // Neuladen: die PIN wird neu abgefragt, die Anmeldung des Geräts (und sein Abo) bleibt – sonst kämen bis zur PIN keine Benachrichtigungen mehr an
+    await dpush.reload();
+    await pause(dpush, 1800);
+    dv = await dpDev();
+    report(dv.role === 'dispo' && dv.push === true, 'Disponent Push: nach dem Neuladen (PIN-Abfrage) bleibt das Gerät angemeldet, das Abo bleibt', JSON.stringify([dv.role, dv.push]));
+    pushes.length = 0;
+    await post(TB, 'm', TEAM, 'Noch erreichbar nach dem Neuladen');
+    await waitPush(4);
+    await sleep(300);
+    report(pushes.some(x => x.url === '/push/ui-dispo'), 'Disponent Push: auch bei der PIN-Abfrage kommen Benachrichtigungen an', JSON.stringify(pushes.map(x => x.url)));
+    // „← Start“ = abgemeldet: Rolle weg, Abo gelöscht, keine Benachrichtigung mehr
+    await dpush.click('button:has-text("Start")');
+    await pause(dpush, 1500);
+    dv = await dpDev();
+    report(!dv.role && dv.push === false, 'Disponent Push: „← Start“ meldet das Gerät ab (Abo gelöscht)', JSON.stringify([dv.role, dv.push]));
+    pushes.length = 0;
+    await post(TB, 'm', TEAM, 'Nach der Abmeldung');
+    await waitPush(3);
+    await sleep(500);
+    report(!pushes.some(x => x.url === '/push/ui-dispo'), 'Disponent Push: nach der Abmeldung kommt nichts mehr an', JSON.stringify(pushes.map(x => x.url)));
     // Neuladen am Handy des Monteurs: derselbe Verlauf (Zwischenspeicher + Abgleich), nichts ungelesen
     const nPhone = (await ph()).bubbles.length;
     await phone.reload();
@@ -4312,7 +4486,7 @@ async function kindChecks(browser, base, viewport, errors) {
   await page.goBack();
   await pause(page, 700);
   const back = await page.evaluate(() => document.querySelectorAll('#app button.kind').length);
-  report(back === 6, `${label} Zurück-Taste des Geräts: von der Liste zur Startseite (fünf Auftragsarten und die Kachel „Chat“)`, String(back));
+  report(back === 7, `${label} Zurück-Taste des Geräts: von der Liste zur Startseite (fünf Auftragsarten und die Kacheln „Chat“ und „Gruppenchat“)`, String(back));
   await page.context().close();
 }
 
