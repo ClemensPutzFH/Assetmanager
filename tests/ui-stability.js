@@ -4,8 +4,9 @@
  *
  * Starten:  npm run test:ui          (Dauer etwa 2 Minuten, Exit-Code 1 bei Fehlern)
  * Voraussetzung: Playwright mit Chromium (npm i -D playwright && npx playwright install chromium – oder global installiert;
- *   CHROME_PATH=/pfad/zu/chrome nimmt einen vorhandenen Browser). Der Server läuft mit einer KOPIE von data/data.db auf einem
- *   freien Port; die echten Daten bleiben unverändert.
+ *   CHROME_PATH=/pfad/zu/chrome nimmt einen vorhandenen Browser). Der Server läuft mit einer KOPIE der festen Test-Datenbank
+ *   tests/fixtures/data/data.db (nicht der echten data/data.db: deren Inhalt ändert sich mit jedem Upload) auf einem freien Port;
+ *   die echten Daten bleiben unverändert.
  *
  * Jede Prüfung führt eine Bedienung aus (tippen, tippen im Suchfeld …) und misst danach Bild für Bild (requestAnimationFrame):
  *   · Das angetippte Bedienelement (bzw. sein data-k-Bereich) bleibt an derselben Bildschirmstelle (±3 px, kein Ruck > 12 px).
@@ -126,11 +127,17 @@ async function startGeocoder({ delay = 0, coarse = null, nominatimStatus = 200, 
 }
 
 // ---------- Server mit Kopie der Daten ----------
+// Ausgangsdaten: die FESTE Test-Datenbank tests/fixtures/data/data.db (nur Wartungen, sonst nichts – die Prüfungen laden ihre Reparaturen,
+// Entstörungen, Meldungen usw. selbst hoch und zählen nach). NICHT data/data.db: das sind die echten Daten, die der Eigentümer jederzeit
+// ersetzt (neuer Upload, mehr Aufträge) – mit ihnen stimmen die festen Zahlen der Prüfungen nie. TEST_DATA_DIR=<Ordner> nimmt andere Daten
+// (z. B. ein Ordner mit data.db), nur zur Fehlersuche.
+const DATA_SRC = process.env.TEST_DATA_DIR || path.join(__dirname, 'fixtures', 'data');
 async function startServer(geocoderUrl, prepareData = null, extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-test-')),
     port = await freePort();
+  if (!fs.existsSync(path.join(DATA_SRC, 'data.db'))) throw new Error('Test-Datenbank fehlt: ' + path.join(DATA_SRC, 'data.db'));
   for (const f of ['data.db', 'data.db-wal', 'data.db-shm'])
-    if (fs.existsSync(path.join(ROOT, 'data', f))) fs.copyFileSync(path.join(ROOT, 'data', f), path.join(dir, f));
+    if (fs.existsSync(path.join(DATA_SRC, f))) fs.copyFileSync(path.join(DATA_SRC, f), path.join(dir, f));
   if (prepareData) prepareData(dir); // Daten vor dem Start verändern (nur in der Kopie)
   // Die Kopie enthält die Geräte der echten Daten samt ihren ECHTEN Push-Abos (Edge, Chrome, Handy …). Der Test-Server schickte jedem davon bei jeder
   // Nachricht und jeder Meldung „Auftrag disponiert“ eine echte Benachrichtigung („2 neue Aufträge disponiert …“ mitten in die Arbeit der Monteure).
