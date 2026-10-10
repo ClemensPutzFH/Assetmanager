@@ -3396,6 +3396,40 @@ async function pushChecks(browser, mainServer, geocoder, errors) {
     }, did1);
     report(/^🔔 Benachrichtigungen an$/.test(line2 || ''), 'Geräte: ein Gerät mit Push zeigt nur „Benachrichtigungen an“ (ohne Grund)', String(line2));
 
+    // ---- 5) Test-Benachrichtigung an ein Gerät (Geräteübersicht): zeigt, was der Push-Dienst antwortet ----
+    const testBtn = did => `() => { const c = document.querySelector('#app [data-k="d${did}"]'); const b = c && [...c.querySelectorAll('button')].find(b => /Test senden/.test(b.textContent)); if (!b) throw new Error('Knopf „Test senden“ fehlt'); return b; }`,
+      hasTestBtn = did => dispo.evaluate(did => { const c = document.querySelector(`#app [data-k="d${did}"]`); return !!c && [...c.querySelectorAll('button')].some(b => /Test senden/.test(b.textContent)); }, did),
+      btnWidth = did => dispo.evaluate(did => { const c = document.querySelector(`#app [data-k="d${did}"]`), b = c && [...c.querySelectorAll('button')].find(b => /Test senden/.test(b.textContent)); return b ? Math.round(b.getBoundingClientRect().width * 10) / 10 : null; }, did),
+      // Kurzmeldung unten am Bildschirm (toast): Text, solange sie zu sehen ist, sonst ''
+      toastText = () => dispo.evaluate(() => { const t = document.querySelector('.toast.on'); return t ? t.textContent.trim() : ''; }),
+      testStatus = (body, headers = {}) => fetch(base + '/api/devices/test-push', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) }).then(async r => ({ status: r.status, json: await r.json().catch(() => ({})) }));
+    report((await hasTestBtn(did1)) && !(await hasTestBtn(did3)), 'Test-Benachrichtigung: nur Geräte mit Push-Abo haben den Knopf „🔔 Test senden“', `mit Abo: ${await hasTestBtn(did1)}, ohne: ${await hasTestBtn(did3)}`);
+    pushes.length = 0;
+    const w0 = await btnWidth(did1);
+    // (Das Ergebnis erscheint als Kurzmeldung unten am Bildschirm: nichts in der Liste verschiebt sich, die angetippte Karte bleibt stehen.)
+    await probe(dispo, 'Test-Benachrichtigung: „Test senden“ (die Karte bleibt stehen, nichts springt)', testBtn(did1), { scroll: 0, ms: 1600 });
+    report(await waitFor(() => pushes.some(p => p.path === '/push/api' && p.payload && p.payload.t === 'dispo' && p.payload.title === 'Test-Benachrichtigung'), 3000), 'Test-Benachrichtigung: der Push kommt beim Gerät an (gewöhnliche Benachrichtigung „Test-Benachrichtigung“, eigenes Thema)', JSON.stringify(pushes.map(p => [p.path, p.topic, p.payload && p.payload.title])));
+    report(pushes.length === 1 && pushes[0].topic === 'test', 'Test-Benachrichtigung: genau EIN Push, Thema „test“ (ersetzt keine echte Meldung beim Push-Dienst)', JSON.stringify(pushes.map(p => p.topic)));
+    const okMsg = await toastText(),
+      toastBox = await dispo.evaluate(() => { const r = document.querySelector('.toast.on').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; });
+    report(/^✓ Test an „.+“ vom Push-Dienst \(127\.0\.0\.1:\d+\) angenommen\. Erscheint sie am Gerät nicht, blockiert es dort/.test(okMsg) && toastBox, 'Test-Benachrichtigung: die Kurzmeldung unten (ganz im Bild) sagt, dass der Push-Dienst sie angenommen hat – und was zu tun ist, wenn sie am Gerät fehlt', okMsg.slice(0, 200));
+    report((await btnWidth(did1)) === w0, 'Test-Benachrichtigung: der Knopf behält seine Breite (wird nur gesperrt, nicht umbeschriftet)', `${w0} → ${await btnWidth(did1)}`);
+    report(await waitFor(async () => !(await toastText()), 12000), 'Test-Benachrichtigung: die Kurzmeldung verschwindet nach ein paar Sekunden von selbst', await toastText());
+    // Der Push-Dienst meldet „Abo abgelaufen“ (410): klare Fehlermeldung, das Abo ist gelöscht, der Knopf verschwindet mit der Liste neu
+    answer['/push/api'] = 410;
+    await dispo.evaluate(did => [...document.querySelector(`#app [data-k="d${did}"]`).querySelectorAll('button')].find(b => /Test senden/.test(b.textContent)).click(), did1);
+    report(await waitFor(async () => /abgelaufen \(410\) und wurde gelöscht/.test(await toastText()), 5000), 'Test-Benachrichtigung: abgelaufenes Abo (410) -> Meldung „abgelaufen … gelöscht“', (await toastText()) || '(keine)');
+    report(await waitFor(async () => (await deviceOf(did1)).push === false && !(await hasTestBtn(did1)), 5000), 'Test-Benachrichtigung: danach zeigt die Karte „ohne Benachrichtigungen“, der Knopf ist weg');
+    delete answer['/push/api'];
+    // Zugriff: ohne Anmeldung des Disponenten nicht, unbekanntes Gerät und Gerät ohne Abo mit klarer Meldung
+    const noAuth = await testStatus({ did: did1 }),
+      unknown = await testStatus({ did: crypto.randomBytes(16).toString('hex') }, H),
+      noSub = await testStatus({ did: did3 }, H),
+      badId = await testStatus({ did: 'x' }, H);
+    report(noAuth.status === 401, 'Test-Benachrichtigung: ohne Anmeldung des Disponenten abgelehnt (401)', String(noAuth.status));
+    report(unknown.status === 404 && noSub.status === 400 && /kein Push-Abo/.test(noSub.json.error || '') && badId.status === 400, 'Test-Benachrichtigung: unbekanntes Gerät 404, Gerät ohne Abo 400 mit Erklärung, ungültige Kennung 400', JSON.stringify([unknown.status, noSub.status, noSub.json.error, badId.status]));
+    await register(did1, { sub: sub1, pstat: 'granted' });
+
     // Aufräumen
     await undispatchAll(base);
     await sleep(4500);

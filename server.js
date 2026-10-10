@@ -976,7 +976,7 @@ function pushEncrypt(keys, payload, salt = crypto.randomBytes(16), ecdh = null) 
 // Push an ein Gerät senden; false, wenn nicht zugestellt (404/410 = Abo abgelaufen -> Abo am Gerät löschen).
 // topic: gleiches Thema ersetzt beim Push-Dienst eine noch nicht zugestellte Nachricht (Nachrichten des Disponenten und Meldungen zur
 // Disposition dürfen sich nicht gegenseitig ersetzen), hours: so lange hält der Push-Dienst die Nachricht für ein Gerät ohne Netz bereit
-async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESSAGE_HOURS } = {}) {
+async function pushDelivery(device, payload, { topic = 'nachricht', hours = MESSAGE_HOURS } = {}) {
   let sub;
   try {
     sub = JSON.parse(device.sub);
@@ -985,8 +985,9 @@ async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESS
     // unbrauchbares Abo in der Datenbank: löschen, das Gerät meldet sich neu an (siehe `dev` in der Abgleich-Antwort)
     console.error(`Push: Abo von Gerät ${String(device.did).slice(0, 8)} ist unbrauchbar – gelöscht`);
     sql.dropSub.run(device.did);
-    return false;
+    return { ok: false, gone: true };
   }
+  const host = new URL(sub.endpoint).host;
   try {
     const response = await fetch(sub.endpoint, {
       method: 'POST',
@@ -1006,19 +1007,21 @@ async function pushToDevice(device, payload, { topic = 'nachricht', hours = MESS
       // Abo abgelaufen/abgemeldet: am Gerät löschen (es meldet sich beim nächsten Öffnen der App neu an) – und sagen, dass es passiert ist
       console.error(`Push an ${new URL(sub.endpoint).host}: Abo von Gerät ${String(device.did).slice(0, 8)} abgelaufen (${response.status}) – Push dort aus, bis sich das Gerät neu anmeldet`);
       sql.dropSub.run(device.did);
-      return false;
+      return { ok: false, gone: true, status: response.status, host };
     }
     if (!response.ok)
       console.error(
         `Push an ${new URL(sub.endpoint).host} fehlgeschlagen: ${response.status} ${(await response.text()).slice(0, 200)}`
       );
-    return response.ok;
+    return { ok: response.ok, status: response.status, host };
   } catch (e) {
     // „fetch failed“ allein sagt nichts: die Ursache (ENOTFOUND, ETIMEDOUT, Zertifikat …) steckt in `cause` (geoReason, weiter unten)
     console.error(`Push an ${new URL(sub.endpoint).host} fehlgeschlagen: ${geoReason(e)}`);
-    return false;
+    return { ok: false, host, error: geoReason(e) };
   }
 }
+// wie pushDelivery, aber nur „angenommen oder nicht“ (true/false)
+const pushToDevice = async (...args) => (await pushDelivery(...args)).ok;
 // Push an mehrere Geräte zugleich; Rückgabe { ok: zugestellt, total: versucht }. payload: Objekt oder Funktion (Gerät) => Objekt. Mit `label` kommt
 // EINE Zeile ins Protokoll – auch dann, wenn es keinen Empfänger gibt, denn das ist der häufigste Grund für „es kommt nichts an“: kein Gerät des Teams
 // hat Benachrichtigungen erlaubt oder sich nach einem Datenbank-Wechsel neu angemeldet (die Abos stehen in der Datenbank). `team` zählt die Geräte dafür.
@@ -2228,6 +2231,23 @@ async function handleApi(req, res, url) {
     if (!found) return sendJson(req, res, 404, { error: 'Gerät nicht gefunden' });
     announce(changeSeq);
     return sendJson(req, res, 200, { ok: true });
+  }
+  // Test-Benachrichtigung an EIN Gerät: zeigt, ob der Push-Dienst sie annimmt (Antwort { ok, host, status, gone, error }) und – wenn ja –
+  // ob sie am Gerät erscheint. Gewöhnliche Benachrichtigung (wie „Auftrag disponiert“), eigenes Thema „test“, nur 1 Stunde gültig.
+  // 404/410 = Abo abgelaufen: es wird gelöscht (`gone`), das Gerät meldet sich beim nächsten Abgleich neu an.
+  if (pathname === '/api/devices/test-push' && method === 'POST') {
+    const did = validDeviceId((await readBody(req, 1e4)).did),
+      device = did && sql.getDev.get(did);
+    if (!did) return sendJson(req, res, 400, { error: 'Ungültige Geräte-ID' });
+    if (!device) return sendJson(req, res, 404, { error: 'Gerät nicht gefunden' });
+    if (!device.sub) return sendJson(req, res, 400, { error: 'Dieses Gerät hat kein Push-Abo (der Grund steht auf der Gerätekarte).' });
+    const result = await pushDelivery(
+      { did, sub: device.sub },
+      { t: 'dispo', title: 'Test-Benachrichtigung', body: 'Der Disponent hat eine Test-Benachrichtigung gesendet. Du siehst sie – Push funktioniert auf diesem Gerät.', at: Date.now(), n: 0 },
+      { topic: 'test', hours: 1 }
+    );
+    console.log(`Push Test an Gerät ${did.slice(0, 8)}: ${result.ok ? 'angenommen' : 'nicht angenommen'}${result.status ? ' (' + result.status + ')' : ''}${result.error ? ' – ' + result.error : ''}`);
+    return sendJson(req, res, 200, { ok: result.ok, host: result.host || '', status: result.status || 0, gone: !!result.gone, error: result.error || '' });
   }
   // ---- Benutzerverwaltung (Disponent) ----
   // Liste aller Benutzer; Anmeldung und Geräte (zuletzt gesehen, Anzahl) zeigen, wer die App wirklich nutzt

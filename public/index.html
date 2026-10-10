@@ -3515,8 +3515,10 @@
       // deviceList: Geräte vom Server (null = noch nicht geladen) · deviceListOffset: Serveruhr minus Geräteuhr (für „vor … Min“) ·
       // deviceListError: Ladefehler · deviceRenameId / deviceRenameText: Gerät, dessen Spitzname gerade bearbeitet wird ·
       // deviceLogoutArmed: Gerät, bei dem „Ausloggen“ einmal angetippt wurde (zweiter Tipp bestätigt) ·
-      // deviceTeamFilter: Team-Filter der Geräteliste ('' = alle | '\u0000d' = Disponenten | '\u0000n' = ohne Team)
-      let deviceTeamFilter = '',
+      // deviceTeamFilter: Team-Filter der Geräteliste ('' = alle | '\u0000d' = Disponenten | '\u0000n' = ohne Team) ·
+      // deviceTestBusy: Gerät, an das gerade eine Test-Benachrichtigung geht (Knopf gesperrt, Größe bleibt)
+      let deviceTestBusy = null,
+        deviceTeamFilter = '',
         deviceList = null,
         deviceListOffset = 0,
         deviceListError = '',
@@ -12543,6 +12545,32 @@
         }
         await loadDevices();
       }
+      // Test-Benachrichtigung an ein Gerät (POST /api/devices/test-push): Der Server sagt, was der Push-Dienst geantwortet hat. Angenommen heißt
+      // nur „beim Push-Dienst angekommen“ – erscheint sie am Gerät nicht, liegt es dort (Mitteilungen des Browsers/Handys, Fokus-Modus, Browser zu).
+      // Das Ergebnis erscheint als Kurzmeldung unten am Bildschirm (toast): sichtbar, wo auch immer der Disponent in der langen Liste steht, und ohne
+      // dass sich etwas verschiebt (ein Hinweis oben läge außerhalb des Bildschirms – die Seite hält die angetippte Karte fest). Danach lädt die
+      // Liste neu (ein abgelaufenes Abo ist dann weg).
+      async function testDevicePush(device) {
+        if (deviceTestBusy) return;
+        deviceTestBusy = device.did;
+        render();
+        const name = `„${device.name || deviceKind(device.ua)}“`;
+        try {
+          const r = await api('POST', '/api/devices/test-push', { did: device.did });
+          if (r.ok)
+            toast(`✓ Test an ${name} vom Push-Dienst (${r.host}) angenommen. Erscheint sie am Gerät nicht, blockiert es dort: Mitteilungen des Browsers, Fokus-Modus oder Browser geschlossen.`);
+          else if (r.gone)
+            toast(`⚠ Das Push-Abo von ${name} ist abgelaufen (${r.status || 'ungültig'}) und wurde gelöscht. Das Gerät meldet sich beim nächsten Öffnen der App neu an.`);
+          else if (r.status === 401 || r.status === 403)
+            toast(`⚠ Der Push-Dienst (${r.host}) lehnt den Server ab (${r.status}): Das Abo von ${name} gehört zu anderen Server-Schlüsseln. Am Gerät die App neu laden und Benachrichtigungen neu aktivieren.`);
+          else if (r.status) toast(`⚠ Der Push-Dienst (${r.host}) hat die Test-Benachrichtigung an ${name} nicht angenommen (${r.status}).`);
+          else toast(`⚠ Der Push-Dienst (${r.host}) ist vom Server aus nicht erreichbar: ${r.error}`);
+        } catch (e) {
+          toast('⚠ ' + (e.net ? 'Keine Verbindung zum Server' : errorMessageOf(e)));
+        }
+        deviceTestBusy = null;
+        await loadDevices();
+      }
       // ein Gerät gilt als online, wenn es sich in den letzten 2 Minuten beim Server gemeldet hat
       const DEVICE_ONLINE_MS = 2 * 60e3;
       // Die Monteur-Geräte antworten auf die Standortabfrage innerhalb weniger Sekunden: Liste nach 3, 8 und 15 Sekunden nachladen
@@ -12815,6 +12843,16 @@
                         },
                         device.name ? 'Umbenennen' : 'Spitzname geben'
                       ),
+                      device.push &&
+                        el(
+                          'button',
+                          {
+                            disabled: deviceTestBusy ? 'disabled' : null,
+                            title: 'Schickt diesem Gerät eine Test-Benachrichtigung und zeigt, ob der Push-Dienst sie annimmt',
+                            onclick: () => testDevicePush(device)
+                          },
+                          '🔔 Test senden'
+                        ),
                       device.role &&
                         !device.kick &&
                         (deviceLogoutArmed === device.did
